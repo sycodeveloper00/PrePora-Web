@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="A new Flutter project.">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="prepora">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>PrePora</title>
+  <link rel="manifest" href="manifest.json">
+
+  <!-- Firebase App -->
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+  <!-- PDF.js -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script>pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';</script>
+  <script>
+    var _currentPdf = null;
+    var _currentScale = 1.0;
+    var _baseScale = 1.0;
+    var _currentContainerId = null;
+
+    function renderPdfToCanvas(blobUrl, containerId, maxWidth) {
+      var container = document.getElementById(containerId);
+      if (!container) return;
+      container.innerHTML = '';
+      container.style.overflow = 'auto';
+      container.style.background = '#525355';
+      _currentContainerId = containerId;
+      _currentScale = 1.0;
+
+      var toolbar = document.createElement('div');
+      toolbar.style.cssText = 'position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:center;gap:8px;padding:8px 12px;background:#1E1E2E;border-bottom:1px solid #333;';
+      var btnStyle = 'padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;display:flex;align-items:center;gap:4px;';
+
+      var zoomOutBtn = document.createElement('button');
+      zoomOutBtn.innerHTML = '−';
+      zoomOutBtn.style.cssText = btnStyle + 'background:#333;color:white;';
+      zoomOutBtn.title = 'Zoom Out';
+      zoomOutBtn.onclick = function() { _changeScale(containerId, -0.2); };
+
+      var zoomLabel = document.createElement('span');
+      zoomLabel.id = 'pdf-zoom-label-' + containerId;
+      zoomLabel.style.cssText = 'color:#aaa;font-size:12px;min-width:50px;text-align:center;font-weight:600;';
+      zoomLabel.textContent = '100%';
+
+      var zoomInBtn = document.createElement('button');
+      zoomInBtn.innerHTML = '+';
+      zoomInBtn.style.cssText = btnStyle + 'background:#333;color:white;';
+      zoomInBtn.title = 'Zoom In';
+      zoomInBtn.onclick = function() { _changeScale(containerId, 0.2); };
+
+      var fitBtn = document.createElement('button');
+      fitBtn.innerHTML = '&#8596; Fit Width';
+      fitBtn.style.cssText = btnStyle + 'background:#4A148C;color:white;';
+      fitBtn.title = 'Fit to Width';
+      fitBtn.onclick = function() { _fitToWidth(containerId); };
+
+      toolbar.appendChild(zoomOutBtn);
+      toolbar.appendChild(zoomLabel);
+      toolbar.appendChild(zoomInBtn);
+      toolbar.appendChild(fitBtn);
+      container.appendChild(toolbar);
+
+      pdfjsLib.getDocument(blobUrl).promise.then(function(pdf) {
+        _currentPdf = pdf;
+        var totalPages = pdf.numPages;
+        for (var i = 1; i <= totalPages; i++) {
+          (function(pageNum) {
+            pdf.getPage(pageNum).then(function(page) {
+              var scale = maxWidth / page.getViewport({scale:1}).width;
+              _baseScale = scale;
+              _currentScale = 1.0;
+              var viewport = page.getViewport({scale: scale});
+              var canvas = document.createElement('canvas');
+              canvas.id = 'pdf-page-' + pageNum;
+              canvas.width = viewport.width;
+              canvas.height = viewport.height;
+              canvas.style.display = 'block';
+              canvas.style.margin = '0 auto 8px auto';
+              canvas.setAttribute('data-base-width', viewport.width);
+              canvas.setAttribute('data-base-height', viewport.height);
+              container.appendChild(canvas);
+              var ctx = canvas.getContext('2d');
+              page.render({canvasContext: ctx, viewport: viewport});
+            });
+          })(i);
+        }
+      }).catch(function(err) {
+        container.innerHTML = '<p style="color:white;text-align:center;padding:40px;">PDF load error: ' + err.message + '</p>';
+      });
+    }
+
+    function _changeScale(containerId, delta) {
+      _currentScale = Math.max(0.3, Math.min(5.0, _currentScale + delta));
+      _applyScale(containerId);
+    }
+
+    function _fitToWidth(containerId) {
+      _currentScale = 1.0;
+      _applyScale(containerId);
+    }
+
+    function _applyScale(containerId) {
+      if (!_currentPdf) return;
+      var label = document.getElementById('pdf-zoom-label-' + containerId);
+      if (label) label.textContent = Math.round(_currentScale * 100) + '%';
+
+      var container = document.getElementById(containerId);
+      if (!container) return;
+      var pages = container.querySelectorAll('canvas[id^="pdf-page-"]');
+      if (pages.length === 0) return;
+
+      var firstPage = pages[0];
+      var baseWidth = parseFloat(firstPage.getAttribute('data-base-width'));
+      var baseHeight = parseFloat(firstPage.getAttribute('data-base-height'));
+      var newWidth = baseWidth * _currentScale;
+      var newHeight = baseHeight * _currentScale;
+
+      for (var i = 0; i < pages.length; i++) {
+        var canvas = pages[i];
+        var bw = parseFloat(canvas.getAttribute('data-base-width'));
+        var bh = parseFloat(canvas.getAttribute('data-base-height'));
+        canvas.width = bw * _currentScale;
+        canvas.height = bh * _currentScale;
+        canvas.style.width = bw * _currentScale + 'px';
+        canvas.style.height = bh * _currentScale + 'px';
+      }
+
+      if (_currentPdf) {
+        var totalPages = _currentPdf.numPages;
+        var newViewport = firstPage.getAttribute('data-base-width');
+        for (var j = 1; j <= totalPages; j++) {
+          (function(pageNum) {
+            _currentPdf.getPage(pageNum).then(function(page) {
+              var vp = page.getViewport({scale: _baseScale * _currentScale});
+              var c = document.getElementById('pdf-page-' + pageNum);
+              if (c) {
+                c.width = vp.width;
+                c.height = vp.height;
+                c.style.width = vp.width + 'px';
+                c.style.height = vp.height + 'px';
+                c.setAttribute('data-base-width', page.getViewport({scale: _baseScale}).width);
+                c.setAttribute('data-base-height', page.getViewport({scale: _baseScale}).height);
+                var ctx = c.getContext('2d');
+                page.render({canvasContext: ctx, viewport: vp});
+              }
+            });
+          })(j);
+        }
+      }
+    }
+
+    function _pollPdfDivs() {
+      document.querySelectorAll('div[data-pdf-url]').forEach(function(el) {
+        if (el.getAttribute('data-pdf-rendered') === 'true') return;
+        el.setAttribute('data-pdf-rendered', 'true');
+        renderPdfToCanvas(el.getAttribute('data-pdf-url'), el.id, window.innerWidth);
+      });
+    }
+    setInterval(_pollPdfDivs, 500);
+  </script>
+  <!-- Firebase services -->
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-auth-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-storage-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-analytics-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-messaging-compat.js"></script>
+
+  <script>
+    const firebaseConfig = {
+      apiKey: "AIzaSyCIeAkGcbZCZPBB7n-2rmGx6f6yU2m58dY",
+      authDomain: "prepora-c2d23.firebaseapp.com",
+      projectId: "prepora-c2d23",
+      storageBucket: "prepora-c2d23.firebasestorage.app",
+      messagingSenderId: "546702209629",
+      appId: "1:546702209629:web:49233391c3654113abd3b4",
+      measurementId: "G-4KD9MKZ844"
+    };
+    firebase.initializeApp(firebaseConfig);
+    firebase.analytics();
+  </script>
+</head>
+<body>
+  <!--
+    You can customize the "flutter_bootstrap.js" script.
+    This is useful to provide a custom configuration to the Flutter loader
+    or to give the user feedback during the initialization process.
+
+    For more details:
+    * https://docs.flutter.dev/platform-integration/web/initialization
+  -->
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
