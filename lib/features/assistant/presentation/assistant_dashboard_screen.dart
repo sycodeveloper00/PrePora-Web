@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/widgets/glassmorphic_container.dart';
+import '../../../core/widgets/notification_popup_box.dart';
 import '../../../core/services/firebase_service.dart';
 
 class AssistantDashboardScreen extends StatefulWidget {
@@ -80,6 +81,40 @@ class _AssistantDashboardScreenState extends State<AssistantDashboardScreen> {
                     SizedBox(width: 4),
                     Text('Assistant', style: TextStyle(color: Colors.orange, fontSize: 11, fontWeight: FontWeight.bold)),
                   ]),
+                ),
+                const SizedBox(width: 8),
+                StreamBuilder<QuerySnapshot>(
+                  stream: FirebaseService.getNotificationsForUser(FirebaseService.currentUser?.uid ?? '', DateTime.now().subtract(const Duration(days: 30))),
+                  builder: (context, snap) {
+                    final docs = snap.data?.docs ?? [];
+                    final unread = docs.where((d) => (d.data() as Map<String, dynamic>)['read'] == false).length;
+                    return IconButton(
+                      icon: Stack(
+                        clipBehavior: Clip.none,
+                        children: [
+                          Icon(Icons.notifications_none_rounded, color: isDark ? Colors.white70 : Colors.black54, size: 24),
+                          if (unread > 0)
+                            Positioned(
+                              right: -4, top: -2,
+                              child: Container(
+                                padding: const EdgeInsets.all(4),
+                                decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle),
+                                constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+                                child: Text('$unread', style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+                              ),
+                            ),
+                        ],
+                      ),
+                      tooltip: 'Notifications',
+                      onPressed: () {
+                        NotificationPopupBox.show(
+                          context: context,
+                          docs: docs,
+                          panelType: NotificationPanelType.assistant,
+                        );
+                      },
+                    );
+                  },
                 ),
                 const SizedBox(width: 8),
                 IconButton(

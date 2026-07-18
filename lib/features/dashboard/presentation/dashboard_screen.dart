@@ -10,6 +10,7 @@ import '../../../core/widgets/animated_pressable.dart';
 import '../../../core/services/firebase_service.dart';
 import '../../../core/services/widget_service.dart';
 import '../../../core/theme/theme_provider.dart';
+import '../../../core/widgets/notification_popup_box.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -186,114 +187,18 @@ class _DashboardScreenState extends State<DashboardScreen>
   }
 
   void _showNotifications() {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final baseColor = isDark ? Colors.white : Colors.black87;
-    final mutedColor = isDark ? Colors.white70 : Colors.black54;
-    final dimColor = isDark ? Colors.white38 : Colors.black38;
-    final bgColor = isDark ? const Color(0xFF1A0533) : Colors.white;
-    showModalBottomSheet(
+    final uid = FirebaseService.currentUser?.uid ?? '';
+    FirebaseService.markStudentNotificationsRead(uid);
+    final docs = _latestNotificationDocs;
+    NotificationPopupBox.show(
       context: context,
-      backgroundColor: bgColor,
-      shape: RoundedRectangleBorder(
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (_) => SizedBox(
-        height: MediaQuery.of(context).size.height * 0.6,
-        child: Column(
-          children: [
-            Padding(
-              padding: const EdgeInsets.all(20),
-              child: Row(
-                children: [
-                  Icon(Icons.notifications_none_rounded, color: mutedColor),
-                  const SizedBox(width: 8),
-                  Text('Notifications', style: TextStyle(color: baseColor, fontSize: 18, fontWeight: FontWeight.bold)),
-                  const Spacer(),
-                  GestureDetector(
-                    onTap: () => Navigator.pop(context),
-                    child: Icon(Icons.close, color: dimColor),
-                  ),
-                ],
-              ),
-            ),
-            Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
-            Expanded(
-              child: StreamBuilder<QuerySnapshot>(
-            stream: FirebaseService.getNotificationsForUser(FirebaseService.currentUser!.uid, _userCreatedAt),
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                    return Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Icon(Icons.notifications_off_rounded, size: 60, color: isDark ? Colors.white12 : Colors.black12),
-                          const SizedBox(height: 16),
-                          Text('No notifications yet', style: TextStyle(color: dimColor)),
-                        ],
-                      ),
-                    );
-                  }
-                  return ListView.builder(
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                    itemCount: snapshot.data!.docs.length,
-                    itemBuilder: (context, index) {
-                      final data = snapshot.data!.docs[index].data() as Map<String, dynamic>;
-                      final message = data['message'] as String? ?? '';
-                      final userName = data['userName'] as String? ?? '';
-                      final role = data['role'] as String? ?? '';
-                      final time = data['createdAt'] as Timestamp?;
-                      final timeStr = time != null
-                          ? '${DateTime.now().difference(time.toDate()).inMinutes}m ago'
-                          : '';
-                      return Container(
-                        margin: const EdgeInsets.only(bottom: 8),
-                        padding: const EdgeInsets.all(14),
-                        decoration: BoxDecoration(
-                          color: (isDark ? Colors.white : Colors.black87).withValues(alpha: isDark ? 0.05 : 0.03),
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: (isDark ? Colors.white : Colors.black87).withValues(alpha: isDark ? 0.08 : 0.06)),
-                        ),
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Icon(
-                              role == 'admin' ? Icons.admin_panel_settings : Icons.workspace_premium,
-                              size: 20,
-                              color: role == 'admin' ? Colors.redAccent : Colors.orange,
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(
-                                    message,
-                                    style: TextStyle(color: baseColor, fontSize: 13),
-                                  ),
-                                  const SizedBox(height: 4),
-                                  Text(
-                                    '$userName • $timeStr',
-                                    style: TextStyle(color: dimColor, fontSize: 11),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      );
-                    },
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
+      docs: docs,
+      panelType: NotificationPanelType.student,
+      onRead: () => setState(() {}),
     );
   }
+
+  List<QueryDocumentSnapshot> _latestNotificationDocs = [];
 
   final List<Map<String, List<String>>> _examCategories = [
     {'Entry Tests': ['MDCAT', 'ECAT', 'NUST', 'NET', 'FAST', 'USAT', 'NTS NAT', 'GAT', 'GRE', 'HAT', 'SAT']},
@@ -549,19 +454,21 @@ class _DashboardScreenState extends State<DashboardScreen>
           StreamBuilder<QuerySnapshot>(
             stream: _notificationStream ?? FirebaseService.getNotificationsForUser(FirebaseService.currentUser?.uid ?? '', _userCreatedAt),
             builder: (context, snap) {
-              final count = snap.hasData ? snap.data!.docs.length : 0;
+              final docs = snap.data?.docs ?? [];
+              _latestNotificationDocs = docs;
+              final unread = docs.where((d) => (d.data() as Map<String, dynamic>)['read'] == false).length;
               return IconButton(
                 icon: Stack(
                   children: [
                     Icon(Icons.notifications_none_rounded, color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87),
-                    if (count > 0)
+                    if (unread > 0)
                       Positioned(
                         right: -2, top: -2,
                         child: Container(
                           padding: const EdgeInsets.all(4),
                           decoration: const BoxDecoration(color: Colors.redAccent, shape: BoxShape.circle),
                           constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
-                          child: Text('$count', style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
+                          child: Text('$unread', style: const TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold), textAlign: TextAlign.center),
                         ),
                       ),
                   ],

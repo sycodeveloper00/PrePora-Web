@@ -40,7 +40,7 @@ class _LoginScreenState extends State<LoginScreen> {
         final role = await FirebaseService.getUserRole(uid);
         if (role != null) FirebaseService.cacheUserRole(uid, role);
         if (mounted) {
-          if (kIsWeb && role == 'student') {
+          if (kIsWeb && role != 'admin' && role != 'Assistant') {
             setState(() => _isLoading = false);
             await FirebaseService.signOut();
             _showUnderDevelopmentDialog();
@@ -60,7 +60,7 @@ class _LoginScreenState extends State<LoginScreen> {
       }
     } catch (e) {
       if (e.toString().contains('BLOCKED')) {
-        if (mounted) context.go('/dashboard');
+        if (mounted) context.go('/blocked');
         return;
       }
       setState(() => _errorMessage = e.toString());

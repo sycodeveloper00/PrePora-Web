@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reset Password - PrePora</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      min-height: 100vh;
+      background: linear-gradient(135deg, #0D0D1A 0%, #1A0533 50%, #0D0D1A 100%);
+      font-family: 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .card {
+      background: rgba(255,255,255,0.03);
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 24px;
+      padding: 48px 40px;
+      max-width: 440px;
+      width: 100%;
+      text-align: center;
+      backdrop-filter: blur(20px);
+    }
+    .logo {
+      width: 80px; height: 80px;
+      border-radius: 20px;
+      object-fit: cover;
+      box-shadow: 0 8px 30px rgba(124,58,237,0.3);
+      margin-bottom: 16px;
+    }
+    .brand { color: #fff; font-size: 26px; font-weight: 800; letter-spacing: -0.5px; }
+    .tagline { color: rgba(255,255,255,0.5); font-size: 13px; margin-top: 4px; }
+    .divider {
+      height: 1px;
+      background: linear-gradient(90deg, transparent, rgba(124,58,237,0.4), transparent);
+      margin: 28px 0;
+    }
+    h2 { color: #fff; font-size: 20px; font-weight: 700; margin-bottom: 12px; }
+    .desc { color: rgba(255,255,255,0.6); font-size: 14px; line-height: 1.7; margin-bottom: 28px; }
+    .input-group { position: relative; margin-bottom: 16px; text-align: left; }
+    .input-group label { color: rgba(255,255,255,0.6); font-size: 12px; font-weight: 600; display: block; margin-bottom: 6px; }
+    .input-group input {
+      width: 100%; padding: 14px 16px; font-size: 15px;
+      background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1);
+      border-radius: 12px; color: #fff; outline: none;
+      transition: border-color 0.2s;
+    }
+    .input-group input:focus { border-color: #7C3AED; }
+    .input-group input::placeholder { color: rgba(255,255,255,0.3); }
+    .toggle-pass {
+      position: absolute; right: 14px; top: 38px;
+      background: none; border: none; cursor: pointer;
+      color: rgba(255,255,255,0.4); font-size: 18px;
+    }
+    .toggle-pass:hover { color: rgba(255,255,255,0.7); }
+    .btn {
+      width: 100%; padding: 16px; font-size: 16px; font-weight: 700;
+      color: #fff; border: none; border-radius: 12px; cursor: pointer;
+      background: linear-gradient(135deg, #7C3AED, #4A148C);
+      box-shadow: 0 4px 20px rgba(124,58,237,0.4);
+      transition: transform 0.15s, box-shadow 0.15s;
+      margin-top: 8px;
+    }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 6px 25px rgba(124,58,237,0.5); }
+    .btn:active { transform: translateY(0); }
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+    .spinner { display: inline-block; width: 20px; height: 20px; border: 3px solid rgba(255,255,255,0.3); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .msg { padding: 14px 18px; border-radius: 12px; font-size: 13px; line-height: 1.6; margin-bottom: 20px; }
+    .msg.error { background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.2); color: #FCA5A5; }
+    .msg.success { background: rgba(34,197,94,0.1); border: 1px solid rgba(34,197,94,0.2); color: #86EFAC; }
+    .footer-text { color: rgba(255,255,255,0.25); font-size: 11px; margin-top: 28px; }
+    .password-match { font-size: 12px; margin-top: 4px; }
+    .password-match.ok { color: #86EFAC; }
+    .password-match.no { color: #FCA5A5; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <!-- App Icon -->
+    <img src="https://zynfizrocesynbaguhtj.supabase.co/storage/v1/object/public/notices/public/email/logo.png" alt="PrePora" class="logo" />
+    <div class="brand">PrePora</div>
+    <div class="tagline">Your Learning Companion</div>
+    <div class="divider"></div>
+
+    <!-- Loading State -->
+    <div id="loading">
+      <div class="spinner"></div>
+      <p class="desc" style="margin-top:16px;">Verifying your reset link...</p>
+    </div>
+
+    <!-- Error State -->
+    <div id="error-state" style="display:none;">
+      <h2>Link Expired or Invalid</h2>
+      <div class="msg error" id="error-msg"></div>
+      <p class="desc">Please go back to PrePora app and request a new password reset link.</p>
+    </div>
+
+    <!-- Form State -->
+    <div id="form-state" style="display:none;">
+      <h2>Create New Password</h2>
+      <p class="desc">Enter your new password below. Make sure it's at least 6 characters.</p>
+      <form id="reset-form" autocomplete="off">
+        <div class="input-group">
+          <label for="password">New Password</label>
+          <input type="password" id="password" placeholder="Enter new password" minlength="6" required />
+          <button type="button" class="toggle-pass" onclick="togglePass('password', this)">&#128065;</button>
+        </div>
+        <div class="input-group">
+          <label for="confirm">Confirm Password</label>
+          <input type="password" id="confirm" placeholder="Confirm new password" minlength="6" required />
+          <button type="button" class="toggle-pass" onclick="togglePass('confirm', this)">&#128065;</button>
+          <div class="password-match" id="match-msg"></div>
+        </div>
+        <button type="submit" class="btn" id="submit-btn">Reset Password</button>
+      </form>
+    </div>
+
+    <!-- Success State -->
+    <div id="success-state" style="display:none;">
+      <div style="font-size:56px; margin-bottom:16px;">&#10003;</div>
+      <h2>Password Reset Successfully!</h2>
+      <p class="desc">Your password has been updated. You can now log in to PrePora with your new password.</p>
+    </div>
+
+    <div class="footer-text">&copy; 2026 PrePora. All rights reserved.</div>
+  </div>
+
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import { getAuth, verifyPasswordResetCode, confirmPasswordReset } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-auth.js";
+
+    const firebaseConfig = {
+      apiKey: "AIzaSyCIeAkGcbZCZPBB7n-2rmGx6f6yU2m58dY",
+      authDomain: "prepora-c2d23.firebaseapp.com",
+      projectId: "prepora-c2d23",
+      storageBucket: "prepora-c2d23.firebasestorage.app",
+      messagingSenderId: "546702209629",
+      appId: "1:546702209629:web:49233391c3654113abd3b4"
+    };
+
+    const app = initializeApp(firebaseConfig);
+    const auth = getAuth(app);
+
+    const params = new URLSearchParams(window.location.search);
+    const mode = params.get("mode");
+    const oobCode = params.get("oobCode");
+
+    const $ = id => document.getElementById(id);
+
+    function show(id) {
+      ["loading","error-state","form-state","success-state"].forEach(s => $(s).style.display = "none");
+      $(id).style.display = "block";
+    }
+
+    if (mode !== "resetPassword" || !oobCode) {
+      show("error-state");
+      $("error-msg").textContent = "Invalid request. Please use the link from your email.";
+    } else {
+      try {
+        const email = await verifyPasswordResetCode(auth, oobCode);
+        show("form-state");
+      } catch (err) {
+        show("error-state");
+        $("error-msg").textContent = err.code === "auth/invalid-action-code"
+          ? "This reset link has expired or has already been used."
+          : "Something went wrong. Please try again.";
+      }
+    }
+
+    $("reset-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const pw = $("password").value;
+      const cf = $("confirm").value;
+
+      if (pw.length < 6) {
+        $("match-msg").textContent = "Password must be at least 6 characters.";
+        $("match-msg").className = "password-match no";
+        return;
+      }
+      if (pw !== cf) {
+        $("match-msg").textContent = "Passwords do not match.";
+        $("match-msg").className = "password-match no";
+        return;
+      }
+
+      $("submit-btn").disabled = true;
+      $("submit-btn").innerHTML = '<span class="spinner"></span>';
+
+      try {
+        await confirmPasswordReset(auth, oobCode, pw);
+        show("success-state");
+      } catch (err) {
+        $("submit-btn").disabled = false;
+        $("submit-btn").textContent = "Reset Password";
+        $("match-msg").textContent = "Failed to reset password. Please try again.";
+        $("match-msg").className = "password-match no";
+      }
+    });
+
+    $("password").addEventListener("input", () => {
+      const pw = $("password").value;
+      const cf = $("confirm").value;
+      if (cf.length > 0) {
+        if (pw === cf) {
+          $("match-msg").textContent = "Passwords match";
+          $("match-msg").className = "password-match ok";
+        } else {
+          $("match-msg").textContent = "Passwords do not match";
+          $("match-msg").className = "password-match no";
+        }
+      }
+    });
+
+    $("confirm").addEventListener("input", () => {
+      const pw = $("password").value;
+      const cf = $("confirm").value;
+      if (pw === cf) {
+        $("match-msg").textContent = "Passwords match";
+        $("match-msg").className = "password-match ok";
+      } else {
+        $("match-msg").textContent = "Passwords do not match";
+        $("match-msg").className = "password-match no";
+      }
+    });
+
+    window.togglePass = function(id, btn) {
+      const input = $(id);
+      if (input.type === "password") {
+        input.type = "text";
+        btn.innerHTML = "&#128064;";
+      } else {
+        input.type = "password";
+        btn.innerHTML = "&#128065;";
+      }
+    };
+  </script>
+</body>
+</html>

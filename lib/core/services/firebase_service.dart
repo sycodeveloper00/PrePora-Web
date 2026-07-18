@@ -589,6 +589,21 @@ class FirebaseService {
         .snapshots();
   }
 
+  static Future<void> markStudentNotificationsRead(String uid) async {
+    final snap = await firestore
+        .collection('notifications')
+        .where('uid', isEqualTo: uid)
+        .get();
+    final batch = firestore.batch();
+    for (final d in snap.docs) {
+      final data = d.data();
+      if (data['read'] == false) {
+        batch.update(d.reference, {'read': true});
+      }
+    }
+    await batch.commit();
+  }
+
   // ─── Admin Notifications ───────────────────────────────────────────────────────
 
   static Future<void> addAdminNotification(String type, String message, {String? relatedUid}) async {
@@ -742,6 +757,7 @@ class FirebaseService {
         'uid': u.id,
         'message': message,
         'folderId': folderId,
+        'read': false,
         'createdAt': FieldValue.serverTimestamp(),
         'type': folderId != null ? 'folder_update' : 'general',
       });
@@ -754,6 +770,7 @@ class FirebaseService {
     final doc = await firestore.collection('notifications').add({
       'uid': uid,
       'message': message,
+      'read': false,
       'createdAt': FieldValue.serverTimestamp(),
       'type': 'targeted',
     });

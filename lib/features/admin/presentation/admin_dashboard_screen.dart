@@ -9,6 +9,7 @@ import '../../../core/widgets/animated_pressable.dart';
 import '../../../core/services/firebase_service.dart';
 import '../../../core/services/notification_service.dart';
 import '../../../core/theme/theme_provider.dart';
+import '../../../core/widgets/notification_popup_box.dart';
 import '../../folders/presentation/folder_details_screen.dart' show GroupLinkDialog;
 import '../../../core/utils.dart';
 
@@ -1079,85 +1080,11 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     return '';
   }
 
-  void _showAdminNotifications(BuildContext ctx, List<QueryDocumentSnapshot> docs) async {
-    await FirebaseService.markAdminNotificationsRead();
-    final isDark = Theme.of(ctx).brightness == Brightness.dark;
-    showModalBottomSheet(
+  void _showAdminNotifications(BuildContext ctx, List<QueryDocumentSnapshot> docs) {
+    NotificationPopupBox.show(
       context: ctx,
-      isScrollControlled: true,
-      backgroundColor: isDark ? const Color(0xFF1A0533) : Colors.white,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (_) => DraggableScrollableSheet(
-        initialChildSize: 0.6,
-        minChildSize: 0.3,
-        maxChildSize: 0.9,
-        expand: false,
-        builder: (__, scrollCtrl) => Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(children: [
-            Row(children: [
-              Icon(Icons.notifications_none_rounded, color: isDark ? Colors.white70 : Colors.black54),
-              const SizedBox(width: 8),
-              Text('Notifications', style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 18, fontWeight: FontWeight.bold)),
-              const Spacer(),
-              if (docs.isNotEmpty)
-                IconButton(
-                  icon: Icon(Icons.clear_all_rounded, color: isDark ? Colors.white54 : Colors.black45, size: 20),
-                  tooltip: 'Clear all',
-                  onPressed: () async {
-                    Navigator.pop(ctx);
-                    await FirebaseService.clearAdminNotifications();
-                    if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('All notifications cleared')));
-                  },
-                ),
-              IconButton(icon: Icon(Icons.close, color: isDark ? Colors.white54 : Colors.black45), onPressed: () => Navigator.pop(ctx)),
-            ]),
-            const Divider(),
-            Expanded(
-              child: docs.isEmpty
-                  ? Center(child: Text('No notifications', style: TextStyle(color: isDark ? Colors.white38 : Colors.black45)))
-                  : ListView.separated(
-                      controller: scrollCtrl,
-                      itemCount: docs.length,
-                      separatorBuilder: (_, __) => const Divider(height: 1),
-                      itemBuilder: (_, i) {
-                        final d = docs[i].data() as Map<String, dynamic>;
-                        final type = d['type'] as String? ?? '';
-                        final msg = d['message'] as String? ?? '';
-                        IconData icon;
-                        Color color;
-                        switch (type) {
-                          case 'registration': icon = Icons.person_add_rounded; color = Colors.green; break;
-                          case 'feedback': icon = Icons.support_agent_rounded; color = Colors.orange; break;
-                          case 'login': icon = Icons.login_rounded; color = Colors.blue; break;
-                          case 'logout': icon = Icons.logout_rounded; color = Colors.blueGrey; break;
-                          case 'auto_block': icon = Icons.block_rounded; color = Colors.red; break;
-                          case 'blocked': icon = Icons.block_rounded; color = Colors.red; break;
-                          default: icon = Icons.circle_rounded; color = Colors.grey;
-                        }
-                        return ListTile(
-                          leading: Icon(icon, color: color, size: 28),
-                          title: Text(msg, style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 14)),
-                          subtitle: d['createdAt'] != null
-                              ? Text(_formatTimestamp(d['createdAt']), style: TextStyle(color: isDark ? Colors.white38 : Colors.black45, fontSize: 11))
-                              : null,
-                          dense: true,
-                          onTap: () {
-                            Navigator.pop(ctx);
-                            switch (type) {
-                              case 'feedback': context.push('/admin/feedbacks'); break;
-                              case 'blocked': case 'auto_block': context.push('/admin', extra: {'studentUid': d['relatedUid']}); break;
-                              case 'registration': context.push('/admin/control-panel'); break;
-                              default: break;
-                            }
-                          },
-                        );
-                      },
-                    ),
-            ),
-          ]),
-        ),
-      ),
+      docs: docs,
+      panelType: NotificationPanelType.admin,
     );
   }
 
