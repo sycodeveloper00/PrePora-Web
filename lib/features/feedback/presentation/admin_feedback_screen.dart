@@ -58,12 +58,13 @@ class _AdminFeedbackScreenState extends State<AdminFeedbackScreen> {
       isScrollControlled: true,
       backgroundColor: isDark ? const Color(0xFF1A0533) : Colors.white,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (ctx) => StatefulBuilder(builder: (ctx, setLocal) {
+      builder: (sheetCtx) {
         var items = feedbacks;
         Set<String> updatingIds = {};
         Map<String, String?> selectedStatusPerTicket = {};
-        final ctxIsDark = Theme.of(ctx).brightness == Brightness.dark;
-        return DraggableScrollableSheet(
+        return StatefulBuilder(builder: (ctx, setLocal) {
+          final ctxIsDark = Theme.of(ctx).brightness == Brightness.dark;
+          return DraggableScrollableSheet(
           expand: false,
           maxChildSize: 0.85,
           initialChildSize: 0.6,
@@ -145,7 +146,8 @@ class _AdminFeedbackScreenState extends State<AdminFeedbackScreen> {
             ),
           ]),
         );
-      }),
+        });
+      },
     );
   }
 

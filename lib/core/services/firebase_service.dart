@@ -951,6 +951,23 @@ class FirebaseService {
     return snap.docs.map((e) => {'id': e.id, 'folderId': e.data()['folderId']}).toList();
   }
 
+  static Future<Set<String>> getUidsWithFolderAccess(String folderId) async {
+    final snap = await firestore
+        .collection('Assistant_access')
+        .where('folderId', isEqualTo: folderId)
+        .get();
+    return snap.docs.map((d) => d.data()['uid'] as String).toSet();
+  }
+
+  static Future<Set<String>> getUidsWithContentAccess(String folderId, String contentId) async {
+    final snap = await firestore
+        .collection('content_Assistant_access')
+        .where('folder_id', isEqualTo: folderId)
+        .where('content_id', isEqualTo: contentId)
+        .get();
+    return snap.docs.map((d) => d.data()['user_id'] as String).toSet();
+  }
+
   // ─── Settings ──────────────────────────────────────────────────────────────────
 
   static Future<Map<String, dynamic>> getSettings() async {

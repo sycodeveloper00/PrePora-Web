@@ -918,97 +918,120 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       backgroundColor: const Color(0xFF1A0533),
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (_) => DraggableScrollableSheet(
-        initialChildSize: 0.5, minChildSize: 0.3, maxChildSize: 0.7, expand: false,
-        builder: (ctx, scrollCtrl) => Column(children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            child: Row(children: [
-              const Icon(Icons.person_add_rounded, color: Colors.orange, size: 20),
-              const SizedBox(width: 8),
-              Expanded(child: Text('Grant Access — $folderName', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16))),
-              IconButton(
-                icon: const Icon(Icons.person_add_rounded, color: Colors.orange, size: 28),
-                tooltip: 'Add Assistant',
-                onPressed: () { Navigator.pop(ctx); _showCreateAssistantDialog(); },
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setLocal) {
+          Set<String> grantedUids = {};
+          List<Map<String, dynamic>> assistants = [];
+          bool loading = true;
+          Future<void> load() async {
+            final results = await Future.wait([
+              FirebaseService.getAllAssistant().first,
+              FirebaseService.getUidsWithFolderAccess(folderId),
+            ]);
+            final assistantSnap = results[0] as QuerySnapshot;
+            final uids = results[1] as Set<String>;
+            assistants = assistantSnap.docs.map((d) => {
+              'uid': d.id,
+              'name': ((d.data() as Map<String, dynamic>)['name'] as String?) ?? 'Unknown',
+              'email': ((d.data() as Map<String, dynamic>)['email'] as String?) ?? '',
+            }).toList();
+            grantedUids = uids;
+            loading = false;
+            if (ctx.mounted) setLocal(() {});
+          }
+          load();
+          return DraggableScrollableSheet(
+            initialChildSize: 0.5, minChildSize: 0.3, maxChildSize: 0.7, expand: false,
+            builder: (scrollCtx, scrollCtrl) => Column(children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                child: Row(children: [
+                  const Icon(Icons.person_add_rounded, color: Colors.orange, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text('Grant Access — $folderName', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16))),
+                  IconButton(
+                    icon: const Icon(Icons.person_add_rounded, color: Colors.orange, size: 28),
+                    tooltip: 'Add Assistant',
+                    onPressed: () { Navigator.pop(ctx); _showCreateAssistantDialog(); },
+                  ),
+                ]),
+              ),
+              const Divider(color: Colors.white12, height: 1),
+              Expanded(
+                child: loading
+                    ? const Center(child: CircularProgressIndicator())
+                    : assistants.isEmpty
+                        ? Center(
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                const Icon(Icons.person_off_rounded, size: 48, color: Colors.white12),
+                                const SizedBox(height: 12),
+                                const Text('No Assistant yet', style: TextStyle(color: Colors.white38, fontSize: 14)),
+                                const SizedBox(height: 12),
+                                ElevatedButton.icon(
+                                  icon: const Icon(Icons.person_add_rounded, size: 18),
+                                  label: const Text('Create Assistant'),
+                                  style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+                                  onPressed: () { Navigator.pop(ctx); _showCreateAssistantDialog(); },
+                                ),
+                              ],
+                            ),
+                          )
+                        : ListView.builder(
+                            controller: scrollCtrl,
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            itemCount: assistants.length,
+                            itemBuilder: (context, index) {
+                              final data = assistants[index];
+                              final uid = data['uid'] as String;
+                              final name = data['name'] as String;
+                              final email = data['email'] as String;
+                              final hasAccess = grantedUids.contains(uid);
+                              return Container(
+                                margin: const EdgeInsets.only(bottom: 8),
+                                padding: const EdgeInsets.all(14),
+                                decoration: BoxDecoration(
+                                  color: hasAccess ? Colors.green.withValues(alpha: 0.08) : Colors.white.withValues(alpha: 0.05),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: hasAccess ? Colors.green.withValues(alpha: 0.3) : Colors.white.withValues(alpha: 0.1)),
+                                ),
+                                child: Row(children: [
+                                  CircleAvatar(
+                                    backgroundColor: hasAccess ? Colors.green.withValues(alpha: 0.2) : Colors.white10,
+                                    child: Icon(hasAccess ? Icons.check : Icons.person, color: hasAccess ? Colors.green : Colors.white54, size: 18),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                    Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
+                                    Text(email, style: const TextStyle(color: Colors.white38, fontSize: 11)),
+                                  ])),
+                                  if (hasAccess)
+                                    ElevatedButton(
+                                      onPressed: () async {
+                                        await FirebaseService.revokeAssistantAccess(uid, folderId);
+                                        if (ctx.mounted) setLocal(() { grantedUids.remove(uid); });
+                                      },
+                                      style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6)),
+                                      child: const Text('Denied', style: TextStyle(color: Colors.white, fontSize: 12)),
+                                    )
+                                  else
+                                    ElevatedButton(
+                                      onPressed: () async {
+                                        await FirebaseService.grantAssistantAccess(uid, folderId, name);
+                                        if (ctx.mounted) setLocal(() { grantedUids.add(uid); });
+                                      },
+                                      style: ElevatedButton.styleFrom(backgroundColor: Colors.green, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6)),
+                                      child: const Text('Grant', style: TextStyle(color: Colors.white, fontSize: 12)),
+                                    ),
+                                ]),
+                              );
+                            },
+                          ),
               ),
             ]),
-          ),
-          const Divider(color: Colors.white12, height: 1),
-          Expanded(
-            child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseService.getAllAssistant(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                  return Center(
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.person_off_rounded, size: 48, color: Colors.white12),
-                        const SizedBox(height: 12),
-                        const Text('No Assistant yet', style: TextStyle(color: Colors.white38, fontSize: 14)),
-                        const SizedBox(height: 12),
-                        ElevatedButton.icon(
-                          icon: const Icon(Icons.person_add_rounded, size: 18),
-                          label: const Text('Create Assistant'),
-                          style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
-                          onPressed: () { Navigator.pop(ctx); _showCreateAssistantDialog(); },
-                        ),
-                      ],
-                    ),
-                  );
-                }
-                final docs = snapshot.data!.docs;
-                return ListView.builder(
-                  controller: scrollCtrl,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  itemCount: docs.length,
-                  itemBuilder: (context, index) {
-                    final data = docs[index].data() as Map<String, dynamic>;
-                    final uid = docs[index].id;
-                    final name = data['name'] as String? ?? 'Unknown';
-                    final email = data['email'] as String? ?? '';
-                    final folderIds = (data['folderIds'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [];
-                    final hasAccess = folderIds.contains(folderId);
-                    return Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: hasAccess ? Colors.green.withValues(alpha: 0.08) : Colors.white.withValues(alpha: 0.05),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: hasAccess ? Colors.green.withValues(alpha: 0.3) : Colors.white.withValues(alpha: 0.1)),
-                      ),
-                      child: Row(children: [
-                        CircleAvatar(
-                          backgroundColor: hasAccess ? Colors.green.withValues(alpha: 0.2) : Colors.white10,
-                          child: Icon(hasAccess ? Icons.check : Icons.person, color: hasAccess ? Colors.green : Colors.white54, size: 18),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Text(name, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14)),
-                          Text(email, style: const TextStyle(color: Colors.white38, fontSize: 11)),
-                        ])),
-                        if (hasAccess)
-                          ElevatedButton(
-                            onPressed: () async => await FirebaseService.revokeAssistantAccess(uid, folderId),
-                            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6)),
-                            child: const Text('Revoke', style: TextStyle(color: Colors.white, fontSize: 12)),
-                          )
-                        else
-                          ElevatedButton(
-                            onPressed: () async => await FirebaseService.grantAssistantAccess(uid, folderId, name),
-                            style: ElevatedButton.styleFrom(backgroundColor: Colors.green, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6)),
-                            child: const Text('Grant', style: TextStyle(color: Colors.white, fontSize: 12)),
-                          ),
-                      ]),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-        ]),
+          );
+        },
       ),
     );
   }

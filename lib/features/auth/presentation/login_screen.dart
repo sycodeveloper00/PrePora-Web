@@ -49,7 +49,8 @@ class _LoginScreenState extends State<LoginScreen> {
           if (role == 'admin') {
             context.go('/admin');
           } else if (role == 'Assistant') {
-            final folderIds = await FirebaseService.getAssistantFolderIds(credential.user!.uid);
+            final accessDocs = await FirebaseService.getAssistantFolderIds(credential.user!.uid);
+            final folderIds = accessDocs.map((e) => e['folderId'] as String?).whereType<String>().toList();
             if (mounted) {
               context.go('/assistant', extra: {'folderIds': folderIds, 'assistantName': credential.user!.displayName});
             }

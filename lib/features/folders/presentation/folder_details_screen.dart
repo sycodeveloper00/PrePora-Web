@@ -39,6 +39,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   String _folderName = '';
   String _subfolderName = '';
   Set<String> _assistantAccess = {};
+  Set<String> _pendingOptimistic = {};
   bool _isBlocked = false;
   bool _isVerified = true;
   bool _isPaidAccess = false;
@@ -105,7 +106,12 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
       if (uid != null) {
         final access = await FirebaseService.getContentAccess(uid);
         final ids = access[widget.folderId] ?? [];
-        if (mounted) setState(() => _assistantAccess.addAll(ids));
+        if (mounted) {
+          setState(() {
+            _assistantAccess = ids.toSet();
+            _assistantAccess.addAll(_pendingOptimistic);
+          });
+        }
       }
     }
   }
@@ -211,81 +217,103 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
       backgroundColor: isDark ? const Color(0xFF1A0533) : Colors.white,
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (_) => DraggableScrollableSheet(
-        initialChildSize: 0.5, minChildSize: 0.3, maxChildSize: 0.7, expand: false,
-        builder: (ctx, scrollCtrl) => Column(children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            child: Row(children: [
-              const Icon(Icons.person_add_rounded, color: Colors.orange, size: 20),
-              const SizedBox(width: 8),
-              Expanded(child: Text('Grant Access — $contentName', style: TextStyle(color: baseColor, fontWeight: FontWeight.bold, fontSize: 16))),
-              IconButton(
-                icon: const Icon(Icons.add_circle_rounded, color: Colors.orange, size: 28),
-                onPressed: () { Navigator.pop(ctx); _showCreateAssistantDialog(); },
+      builder: (_) => StatefulBuilder(
+        builder: (ctx, setLocal) {
+          Set<String> grantedUids = {};
+          List<Map<String, dynamic>> assistants = [];
+          bool loading = true;
+          Future<void> load() async {
+            final results = await Future.wait([
+              FirebaseService.getAllAssistant().first,
+              FirebaseService.getUidsWithContentAccess(widget.folderId, contentId),
+            ]);
+            final assistantSnap = results[0] as QuerySnapshot;
+            final uids = results[1] as Set<String>;
+            assistants = assistantSnap.docs.map((d) => {
+              'uid': d.id,
+              'name': ((d.data() as Map<String, dynamic>)['name'] as String?) ?? 'Unknown',
+              'email': ((d.data() as Map<String, dynamic>)['email'] as String?) ?? '',
+            }).toList();
+            grantedUids = uids;
+            loading = false;
+            if (ctx.mounted) setLocal(() {});
+          }
+          load();
+          return DraggableScrollableSheet(
+            initialChildSize: 0.5, minChildSize: 0.3, maxChildSize: 0.7, expand: false,
+            builder: (scrollCtx, scrollCtrl) => Column(children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                child: Row(children: [
+                  const Icon(Icons.person_add_rounded, color: Colors.orange, size: 20),
+                  const SizedBox(width: 8),
+                  Expanded(child: Text('Grant Access — $contentName', style: TextStyle(color: baseColor, fontWeight: FontWeight.bold, fontSize: 16))),
+                  IconButton(
+                    icon: const Icon(Icons.add_circle_rounded, color: Colors.orange, size: 28),
+                    onPressed: () { Navigator.pop(ctx); _showCreateAssistantDialog(); },
+                  ),
+                ]),
+              ),
+              Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
+              Expanded(
+                child: loading
+                    ? const Center(child: CircularProgressIndicator())
+                    : assistants.isEmpty
+                        ? Center(child: Text('No Assistant accounts.', style: TextStyle(color: dimColor)))
+                        : ListView.builder(
+                            controller: scrollCtrl,
+                            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                            itemCount: assistants.length,
+                            itemBuilder: (context, index) {
+                              final data = assistants[index];
+                              final uid = data['uid'] as String;
+                              final name = data['name'] as String;
+                              final email = data['email'] as String;
+                              final hasAccess = grantedUids.contains(uid);
+                              return Container(
+                                margin: const EdgeInsets.only(bottom: 8),
+                                padding: const EdgeInsets.all(14),
+                                decoration: BoxDecoration(
+                                  color: hasAccess ? Colors.green.withValues(alpha: 0.08) : (isDark ? Colors.white.withValues(alpha: 0.05) : Colors.black.withValues(alpha: 0.03)),
+                                  borderRadius: BorderRadius.circular(12),
+                                  border: Border.all(color: hasAccess ? Colors.green.withValues(alpha: 0.3) : (isDark ? Colors.white.withValues(alpha: 0.1) : Colors.black.withValues(alpha: 0.08))),
+                                ),
+                                child: Row(children: [
+                                  CircleAvatar(
+                                    backgroundColor: hasAccess ? Colors.green.withValues(alpha: 0.2) : (isDark ? Colors.white10 : Colors.black12),
+                                    child: Icon(hasAccess ? Icons.check : Icons.person, color: hasAccess ? Colors.green : (isDark ? Colors.white54 : Colors.black45), size: 18),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                    Text(name, style: TextStyle(color: baseColor, fontWeight: FontWeight.bold, fontSize: 14)),
+                                    Text(email, style: TextStyle(color: dimColor, fontSize: 11)),
+                                  ])),
+                                  if (hasAccess)
+                                    ElevatedButton(
+                                      onPressed: () async {
+                                        await FirebaseService.revokeContentAccess(uid, widget.folderId, contentId);
+                                        if (ctx.mounted) setLocal(() { grantedUids.remove(uid); });
+                                      },
+                                      style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6)),
+                                      child: const Text('Denied', style: TextStyle(color: Colors.white, fontSize: 12)),
+                                    )
+                                  else
+                                    ElevatedButton(
+                                      onPressed: () async {
+                                        await FirebaseService.grantContentAccess(uid, widget.folderId, contentId, name);
+                                        if (ctx.mounted) setLocal(() { grantedUids.add(uid); });
+                                      },
+                                      style: ElevatedButton.styleFrom(backgroundColor: Colors.green, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6)),
+                                      child: const Text('Grant', style: TextStyle(color: Colors.white, fontSize: 12)),
+                                    ),
+                                ]),
+                              );
+                            },
+                          ),
               ),
             ]),
-          ),
-          Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
-          Expanded(
-            child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseService.getAllAssistant(),
-              builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
-                if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
-                  return Center(child: Text('No Assistant accounts.', style: TextStyle(color: dimColor)));
-                }
-                final docs = snapshot.data!.docs;
-                return ListView.builder(
-                  controller: scrollCtrl,
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                  itemCount: docs.length,
-                  itemBuilder: (context, index) {
-                    final data = docs[index].data() as Map<String, dynamic>;
-                    final uid = docs[index].id;
-                    final name = data['name'] as String? ?? 'Unknown';
-                    final email = data['email'] as String? ?? '';
-                    final contentAccess = (data['contentAccess'] as List<dynamic>?)?.map((e) => e.toString()).toList() ?? [];
-                    final accessKey = '${widget.folderId}__$contentId';
-                    final hasAccess = contentAccess.contains(accessKey);
-                    return Container(
-                      margin: const EdgeInsets.only(bottom: 8),
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: hasAccess ? Colors.green.withValues(alpha: 0.08) : (isDark ? Colors.white.withValues(alpha: 0.05) : Colors.black.withValues(alpha: 0.03)),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: hasAccess ? Colors.green.withValues(alpha: 0.3) : (isDark ? Colors.white.withValues(alpha: 0.1) : Colors.black.withValues(alpha: 0.08))),
-                      ),
-                      child: Row(children: [
-                        CircleAvatar(
-                          backgroundColor: hasAccess ? Colors.green.withValues(alpha: 0.2) : (isDark ? Colors.white10 : Colors.black12),
-                          child: Icon(hasAccess ? Icons.check : Icons.person, color: hasAccess ? Colors.green : (isDark ? Colors.white54 : Colors.black45), size: 18),
-                        ),
-                        const SizedBox(width: 12),
-                        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                          Text(name, style: TextStyle(color: baseColor, fontWeight: FontWeight.bold, fontSize: 14)),
-                          Text(email, style: TextStyle(color: dimColor, fontSize: 11)),
-                        ])),
-                        if (hasAccess)
-                          ElevatedButton(
-                            onPressed: () async => await FirebaseService.revokeContentAccess(uid, widget.folderId, contentId),
-                            style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6)),
-                            child: const Text('Revoke', style: TextStyle(color: Colors.white, fontSize: 12)),
-                          )
-                        else
-                          ElevatedButton(
-                            onPressed: () async => await FirebaseService.grantContentAccess(uid, widget.folderId, contentId, name),
-                            style: ElevatedButton.styleFrom(backgroundColor: Colors.green, padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6)),
-                            child: const Text('Grant', style: TextStyle(color: Colors.white, fontSize: 12)),
-                          ),
-                      ]),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-        ]),
+          );
+        },
       ),
     );
   }
@@ -384,7 +412,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               final data = {'type': 'subfolder', 'name': ctrl.text.trim(), 'level': (widget.parentContentId != null) ? 1 : 0};
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
               final newId = await FirebaseService.addFolderContent(widget.folderId, data);
-              if (newId != null && !widget.isAdmin) _assistantAccess.add(newId);
+              if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
               await FirebaseService.addNotification('Created sub-folder: ${ctrl.text.trim()}', folderId: widget.folderId);
               _refreshAssistantAccess();
             },
@@ -425,7 +453,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                final data = {'type': 'lecture', 'name': titleCtrl.text.trim(), 'youtubeUrl': urlCtrl.text.trim()};
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
               final newId = await FirebaseService.addFolderContent(widget.folderId, data);
-              if (newId != null && !widget.isAdmin) _assistantAccess.add(newId);
+              if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
               await FirebaseService.addNotification('Added lecture: ${titleCtrl.text.trim()}', folderId: widget.folderId);
               _refreshAssistantAccess();
             },
@@ -503,7 +531,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
           final data = <String, dynamic>{'type': 'file', 'name': file.name, 'url': downloadUrl, 'source': 'supabase_storage'};
           if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
           final newId = await FirebaseService.addFolderContent(widget.folderId, data);
-          if (newId != null && !widget.isAdmin) _assistantAccess.add(newId);
+          if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
           await FirebaseService.addNotification('Uploaded file: ${file.name}', folderId: widget.folderId);
           count++;
         }
@@ -548,7 +576,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               final data = {'type': 'file', 'name': nameCtrl.text.trim(), 'url': urlCtrl.text.trim(), 'source': 'google_drive'};
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
               final newId = await FirebaseService.addFolderContent(widget.folderId, data);
-              if (newId != null && !widget.isAdmin) _assistantAccess.add(newId);
+              if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
               await FirebaseService.addNotification('Uploaded from Drive: ${nameCtrl.text.trim()}', folderId: widget.folderId);
               _refreshAssistantAccess();
             },
@@ -589,7 +617,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               final data = {'type': 'file', 'name': nameCtrl.text.trim(), 'url': linkCtrl.text.trim(), 'source': 'url'};
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
               final newId = await FirebaseService.addFolderContent(widget.folderId, data);
-              if (newId != null && !widget.isAdmin) _assistantAccess.add(newId);
+              if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
               await FirebaseService.addNotification('Uploaded file: ${nameCtrl.text.trim()}', folderId: widget.folderId);
               _refreshAssistantAccess();
             },
@@ -630,7 +658,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               final data = {'type': 'mocktest_url', 'name': nameCtrl.text.trim(), 'url': urlCtrl.text.trim()};
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
               final newId = await FirebaseService.addFolderContent(widget.folderId, data);
-              if (newId != null && !widget.isAdmin) _assistantAccess.add(newId);
+              if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
               await FirebaseService.addNotification('Added Mock Test URL: ${nameCtrl.text.trim()}', folderId: widget.folderId);
               _refreshAssistantAccess();
             },
@@ -671,7 +699,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               final data = {'type': 'mocktest_code', 'name': nameCtrl.text.trim(), 'code': codeCtrl.text.trim()};
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
               final newId = await FirebaseService.addFolderContent(widget.folderId, data);
-              if (newId != null && !widget.isAdmin) _assistantAccess.add(newId);
+              if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
               await FirebaseService.addNotification('Added Mock Test Code: ${nameCtrl.text.trim()}', folderId: widget.folderId);
               _refreshAssistantAccess();
             },
