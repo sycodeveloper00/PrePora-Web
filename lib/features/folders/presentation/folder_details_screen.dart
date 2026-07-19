@@ -105,7 +105,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
       if (uid != null) {
         final access = await FirebaseService.getContentAccess(uid);
         final ids = access[widget.folderId] ?? [];
-        if (mounted) setState(() => _assistantAccess = ids.toSet());
+        if (mounted) setState(() => _assistantAccess.addAll(ids));
       }
     }
   }
