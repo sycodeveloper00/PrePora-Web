@@ -125,18 +125,19 @@ class _StudentFeedbackScreenState extends State<StudentFeedbackScreen> {
           actions: [
             TextButton(onPressed: () => Navigator.pop(d), child: Text('Cancel', style: TextStyle(color: isDark ? Colors.white70 : Colors.black54))),
             ElevatedButton(
-              onPressed: () {
+              onPressed: sending ? null : () async {
+                if (sending) return;
                 if (ctrl.text.trim().isEmpty) return;
-                final msg = ctrl.text.trim();
-                if (!debounce('feed_send')) return;
-                if (d.mounted) Navigator.of(d, rootNavigator: true).pop();
-                FirebaseService.submitFeedback(msg).then((_) => _load());
+                setLocal(() => sending = true);
+                await FirebaseService.submitFeedback(ctrl.text.trim());
+                if (d.mounted) Navigator.pop(d);
+                _load();
               },
               style: ElevatedButton.styleFrom(
                 backgroundColor: const Color(0xFF4A148C),
                 foregroundColor: Colors.white,
               ),
-              child: const Text('Send'),
+              child: Text(sending ? 'Sending...' : 'Send'),
             ),
           ],
         ),

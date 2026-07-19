@@ -144,7 +144,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                 await FirebaseService.updateContentField(widget.folderId, contentId, 'updating', false);
                 await FirebaseService.updateContentField(widget.folderId, contentId, 'invisible', false);
                 setLocal(() { locked = val; updating = false; invisible = false; });
-                await FirebaseService.addNotification('Locked: $contentName', folderId: widget.folderId);
+                await FirebaseService.addNotification('Locked: $contentName', folderId: widget.folderId, contentData: {'locked': true});
               } else {
                 setLocal(() => locked = val);
                 await FirebaseService.addNotification('Unlocked: $contentName', folderId: widget.folderId);
@@ -157,7 +157,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                 await FirebaseService.updateContentField(widget.folderId, contentId, 'locked', false);
                 await FirebaseService.updateContentField(widget.folderId, contentId, 'invisible', false);
                 setLocal(() { updating = val; locked = false; invisible = false; });
-                await FirebaseService.addNotification('Updating: $contentName', folderId: widget.folderId);
+                await FirebaseService.addNotification('Updating: $contentName', folderId: widget.folderId, contentData: {'updating': true});
               } else {
                 setLocal(() => updating = val);
                 await FirebaseService.addNotification('Updating removed: $contentName', folderId: widget.folderId);
@@ -170,7 +170,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                 await FirebaseService.updateContentField(widget.folderId, contentId, 'locked', false);
                 await FirebaseService.updateContentField(widget.folderId, contentId, 'updating', false);
                 setLocal(() { invisible = val; locked = false; updating = false; });
-                await FirebaseService.addNotification('Hidden: $contentName', folderId: widget.folderId);
+                await FirebaseService.addNotification('Hidden: $contentName', folderId: widget.folderId, contentData: {'invisible': true});
               } else {
                 setLocal(() => invisible = val);
                 await FirebaseService.addNotification('Visible: $contentName', folderId: widget.folderId);
@@ -383,7 +383,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               Navigator.pop(d);
               final data = {'type': 'subfolder', 'name': ctrl.text.trim(), 'level': (widget.parentContentId != null) ? 1 : 0};
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
-              await FirebaseService.addFolderContent(widget.folderId, data);
+              final newId = await FirebaseService.addFolderContent(widget.folderId, data);
+              if (newId != null && !widget.isAdmin) _assistantAccess.add(newId);
               await FirebaseService.addNotification('Created sub-folder: ${ctrl.text.trim()}', folderId: widget.folderId);
               _refreshAssistantAccess();
             },
@@ -421,9 +422,10 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
             onPressed: () async {
               if (titleCtrl.text.trim().isEmpty || urlCtrl.text.trim().isEmpty) return;
               Navigator.pop(d);
-              final data = {'type': 'lecture', 'name': titleCtrl.text.trim(), 'youtubeUrl': urlCtrl.text.trim()};
+               final data = {'type': 'lecture', 'name': titleCtrl.text.trim(), 'youtubeUrl': urlCtrl.text.trim()};
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
-              await FirebaseService.addFolderContent(widget.folderId, data);
+              final newId = await FirebaseService.addFolderContent(widget.folderId, data);
+              if (newId != null && !widget.isAdmin) _assistantAccess.add(newId);
               await FirebaseService.addNotification('Added lecture: ${titleCtrl.text.trim()}', folderId: widget.folderId);
               _refreshAssistantAccess();
             },
@@ -500,7 +502,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
           final downloadUrl = await ref.getDownloadURL();
           final data = <String, dynamic>{'type': 'file', 'name': file.name, 'url': downloadUrl, 'source': 'supabase_storage'};
           if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
-          await FirebaseService.addFolderContent(widget.folderId, data);
+          final newId = await FirebaseService.addFolderContent(widget.folderId, data);
+          if (newId != null && !widget.isAdmin) _assistantAccess.add(newId);
           await FirebaseService.addNotification('Uploaded file: ${file.name}', folderId: widget.folderId);
           count++;
         }
@@ -544,7 +547,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               Navigator.pop(d);
               final data = {'type': 'file', 'name': nameCtrl.text.trim(), 'url': urlCtrl.text.trim(), 'source': 'google_drive'};
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
-              await FirebaseService.addFolderContent(widget.folderId, data);
+              final newId = await FirebaseService.addFolderContent(widget.folderId, data);
+              if (newId != null && !widget.isAdmin) _assistantAccess.add(newId);
               await FirebaseService.addNotification('Uploaded from Drive: ${nameCtrl.text.trim()}', folderId: widget.folderId);
               _refreshAssistantAccess();
             },
@@ -584,7 +588,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               Navigator.pop(d);
               final data = {'type': 'file', 'name': nameCtrl.text.trim(), 'url': linkCtrl.text.trim(), 'source': 'url'};
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
-              await FirebaseService.addFolderContent(widget.folderId, data);
+              final newId = await FirebaseService.addFolderContent(widget.folderId, data);
+              if (newId != null && !widget.isAdmin) _assistantAccess.add(newId);
               await FirebaseService.addNotification('Uploaded file: ${nameCtrl.text.trim()}', folderId: widget.folderId);
               _refreshAssistantAccess();
             },
@@ -624,7 +629,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               Navigator.pop(d);
               final data = {'type': 'mocktest_url', 'name': nameCtrl.text.trim(), 'url': urlCtrl.text.trim()};
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
-              await FirebaseService.addFolderContent(widget.folderId, data);
+              final newId = await FirebaseService.addFolderContent(widget.folderId, data);
+              if (newId != null && !widget.isAdmin) _assistantAccess.add(newId);
               await FirebaseService.addNotification('Added Mock Test URL: ${nameCtrl.text.trim()}', folderId: widget.folderId);
               _refreshAssistantAccess();
             },
@@ -664,7 +670,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               Navigator.pop(d);
               final data = {'type': 'mocktest_code', 'name': nameCtrl.text.trim(), 'code': codeCtrl.text.trim()};
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
-              await FirebaseService.addFolderContent(widget.folderId, data);
+              final newId = await FirebaseService.addFolderContent(widget.folderId, data);
+              if (newId != null && !widget.isAdmin) _assistantAccess.add(newId);
               await FirebaseService.addNotification('Added Mock Test Code: ${nameCtrl.text.trim()}', folderId: widget.folderId);
               _refreshAssistantAccess();
             },
@@ -1516,7 +1523,7 @@ child: TextField(
                 if (invisible)
                   const Row(children: [Icon(Icons.visibility_off_rounded, color: Colors.purple, size: 12), SizedBox(width: 4), Text('Hidden', style: TextStyle(color: Colors.purple, fontSize: 11))]),
               ])),
-              if (widget.isAdmin) ...[
+              if (widget.isAdmin || widget.canEdit) ...[
                 PopupMenuButton<String>(
                   icon: Icon(Icons.more_vert, size: 20, color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87),
                   color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF2D2D2D) : Colors.white,
@@ -1539,17 +1546,19 @@ child: TextField(
                     }
                   },
                   itemBuilder: (context) => [
-                    PopupMenuItem(
-                      value: 'lock',
-                      child: ListTile(
-                        leading: Icon(locked ? Icons.lock_rounded : Icons.lock_open_rounded, color: Colors.redAccent),
-                        title: Text(locked ? 'Unlock' : 'Lock'),
+                    if (widget.isAdmin) ...[
+                      PopupMenuItem(
+                        value: 'lock',
+                        child: ListTile(
+                          leading: Icon(locked ? Icons.lock_rounded : Icons.lock_open_rounded, color: Colors.redAccent),
+                          title: Text(locked ? 'Unlock' : 'Lock'),
+                        ),
                       ),
-                    ),
-                    const PopupMenuItem(
-                      value: 'Assistant',
-                      child: ListTile(leading: Icon(Icons.people_alt_rounded, color: Colors.orange), title: Text('Assistant Access')),
-                    ),
+                      const PopupMenuItem(
+                        value: 'Assistant',
+                        child: ListTile(leading: Icon(Icons.people_alt_rounded, color: Colors.orange), title: Text('Assistant Access')),
+                      ),
+                    ],
                     const PopupMenuItem(value: 'edit', child: ListTile(leading: Icon(Icons.edit, color: Colors.green), title: Text('Edit'))),
                     const PopupMenuItem(value: 'rename', child: ListTile(leading: Icon(Icons.drive_file_rename_outline, color: Colors.blue), title: Text('Rename'))),
                     const PopupMenuItem(value: 'delete', child: ListTile(leading: Icon(Icons.delete, color: Colors.red), title: Text('Delete', style: TextStyle(color: Colors.red)))),
@@ -1605,7 +1614,7 @@ child: TextField(
                 if (invisible)
                   const Row(children: [Icon(Icons.visibility_off_rounded, color: Colors.purple, size: 12), SizedBox(width: 4), Text('Hidden', style: TextStyle(color: Colors.purple, fontSize: 11))]),
               ])),
-              if (widget.isAdmin) ...[
+              if (widget.isAdmin || widget.canEdit) ...[
                 PopupMenuButton<String>(
                   icon: Icon(Icons.more_vert, size: 20, color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87),
                   color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF2D2D2D) : Colors.white,
@@ -1630,21 +1639,23 @@ child: TextField(
                     }
                   },
                   itemBuilder: (context) => [
-                    PopupMenuItem(
-                      value: 'lock',
-                      child: ListTile(
-                        leading: Icon(locked ? Icons.lock_rounded : Icons.lock_open_rounded, color: Colors.redAccent),
-                        title: Text(locked ? 'Unlock' : 'Lock'),
+                    if (widget.isAdmin) ...[
+                      PopupMenuItem(
+                        value: 'lock',
+                        child: ListTile(
+                          leading: Icon(locked ? Icons.lock_rounded : Icons.lock_open_rounded, color: Colors.redAccent),
+                          title: Text(locked ? 'Unlock' : 'Lock'),
+                        ),
                       ),
-                    ),
-                    const PopupMenuItem(
-                      value: 'Assistant',
-                      child: ListTile(leading: Icon(Icons.people_alt_rounded, color: Colors.orange), title: Text('Assistant Access')),
-                    ),
-                    const PopupMenuItem(
-                      value: 'group',
-                      child: ListTile(leading: Icon(Icons.groups_rounded, color: Colors.amber), title: Text('Group Link')),
-                    ),
+                      const PopupMenuItem(
+                        value: 'Assistant',
+                        child: ListTile(leading: Icon(Icons.people_alt_rounded, color: Colors.orange), title: Text('Assistant Access')),
+                      ),
+                      const PopupMenuItem(
+                        value: 'group',
+                        child: ListTile(leading: Icon(Icons.groups_rounded, color: Colors.amber), title: Text('Group Link')),
+                      ),
+                    ],
                     const PopupMenuItem(value: 'edit', child: ListTile(leading: Icon(Icons.edit, color: Colors.green), title: Text('Edit'))),
                     const PopupMenuItem(value: 'rename', child: ListTile(leading: Icon(Icons.drive_file_rename_outline, color: Colors.blue), title: Text('Rename'))),
                     const PopupMenuItem(value: 'delete', child: ListTile(leading: Icon(Icons.delete, color: Colors.red), title: Text('Delete', style: TextStyle(color: Colors.red)))),
@@ -1696,7 +1707,7 @@ child: TextField(
                 if (invisible)
                   const Row(children: [Icon(Icons.visibility_off_rounded, color: Colors.purple, size: 12), SizedBox(width: 4), Text('Hidden', style: TextStyle(color: Colors.purple, fontSize: 11))]),
               ])),
-              if (widget.isAdmin) ...[
+              if (widget.isAdmin || widget.canEdit) ...[
                 PopupMenuButton<String>(
                   icon: Icon(Icons.more_vert, size: 20, color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87),
                   color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF2D2D2D) : Colors.white,
@@ -1719,17 +1730,19 @@ child: TextField(
                     }
                   },
                   itemBuilder: (context) => [
-                    PopupMenuItem(
-                      value: 'lock',
-                      child: ListTile(
-                        leading: Icon(locked ? Icons.lock_rounded : Icons.lock_open_rounded, color: Colors.redAccent),
-                        title: Text(locked ? 'Unlock' : 'Lock'),
+                    if (widget.isAdmin) ...[
+                      PopupMenuItem(
+                        value: 'lock',
+                        child: ListTile(
+                          leading: Icon(locked ? Icons.lock_rounded : Icons.lock_open_rounded, color: Colors.redAccent),
+                          title: Text(locked ? 'Unlock' : 'Lock'),
+                        ),
                       ),
-                    ),
-                    const PopupMenuItem(
-                      value: 'Assistant',
-                      child: ListTile(leading: Icon(Icons.people_alt_rounded, color: Colors.orange), title: Text('Assistant Access')),
-                    ),
+                      const PopupMenuItem(
+                        value: 'Assistant',
+                        child: ListTile(leading: Icon(Icons.people_alt_rounded, color: Colors.orange), title: Text('Assistant Access')),
+                      ),
+                    ],
                     const PopupMenuItem(value: 'edit', child: ListTile(leading: Icon(Icons.edit, color: Colors.green), title: Text('Edit'))),
                     const PopupMenuItem(value: 'rename', child: ListTile(leading: Icon(Icons.drive_file_rename_outline, color: Colors.blue), title: Text('Rename'))),
                     const PopupMenuItem(value: 'delete', child: ListTile(leading: Icon(Icons.delete, color: Colors.red), title: Text('Delete', style: TextStyle(color: Colors.red)))),
@@ -1781,7 +1794,7 @@ child: TextField(
                 if (invisible)
                   const Row(children: [Icon(Icons.visibility_off_rounded, color: Colors.purple, size: 12), SizedBox(width: 4), Text('Hidden', style: TextStyle(color: Colors.purple, fontSize: 11))]),
               ])),
-              if (widget.isAdmin) ...[
+              if (widget.isAdmin || widget.canEdit) ...[
                 PopupMenuButton<String>(
                   icon: Icon(Icons.more_vert, size: 20, color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87),
                   color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF2D2D2D) : Colors.white,
@@ -1804,17 +1817,19 @@ child: TextField(
                     }
                   },
                   itemBuilder: (context) => [
-                    PopupMenuItem(
-                      value: 'lock',
-                      child: ListTile(
-                        leading: Icon(locked ? Icons.lock_rounded : Icons.lock_open_rounded, color: Colors.redAccent),
-                        title: Text(locked ? 'Unlock' : 'Lock'),
+                    if (widget.isAdmin) ...[
+                      PopupMenuItem(
+                        value: 'lock',
+                        child: ListTile(
+                          leading: Icon(locked ? Icons.lock_rounded : Icons.lock_open_rounded, color: Colors.redAccent),
+                          title: Text(locked ? 'Unlock' : 'Lock'),
+                        ),
                       ),
-                    ),
-                    const PopupMenuItem(
-                      value: 'Assistant',
-                      child: ListTile(leading: Icon(Icons.people_alt_rounded, color: Colors.orange), title: Text('Assistant Access')),
-                    ),
+                      const PopupMenuItem(
+                        value: 'Assistant',
+                        child: ListTile(leading: Icon(Icons.people_alt_rounded, color: Colors.orange), title: Text('Assistant Access')),
+                      ),
+                    ],
                     const PopupMenuItem(value: 'edit', child: ListTile(leading: Icon(Icons.edit, color: Colors.green), title: Text('Edit'))),
                     const PopupMenuItem(value: 'rename', child: ListTile(leading: Icon(Icons.drive_file_rename_outline, color: Colors.blue), title: Text('Rename'))),
                     const PopupMenuItem(value: 'delete', child: ListTile(leading: Icon(Icons.delete, color: Colors.red), title: Text('Delete', style: TextStyle(color: Colors.red)))),
@@ -1866,7 +1881,7 @@ child: TextField(
                 if (invisible)
                   const Row(children: [Icon(Icons.visibility_off_rounded, color: Colors.purple, size: 12), SizedBox(width: 4), Text('Hidden', style: TextStyle(color: Colors.purple, fontSize: 11))]),
               ])),
-              if (widget.isAdmin) ...[
+              if (widget.isAdmin || widget.canEdit) ...[
                 PopupMenuButton<String>(
                   icon: Icon(Icons.more_vert, size: 20, color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87),
                   color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF2D2D2D) : Colors.white,
@@ -1889,17 +1904,19 @@ child: TextField(
                     }
                   },
                   itemBuilder: (context) => [
-                    PopupMenuItem(
-                      value: 'lock',
-                      child: ListTile(
-                        leading: Icon(locked ? Icons.lock_rounded : Icons.lock_open_rounded, color: Colors.redAccent),
-                        title: Text(locked ? 'Unlock' : 'Lock'),
+                    if (widget.isAdmin) ...[
+                      PopupMenuItem(
+                        value: 'lock',
+                        child: ListTile(
+                          leading: Icon(locked ? Icons.lock_rounded : Icons.lock_open_rounded, color: Colors.redAccent),
+                          title: Text(locked ? 'Unlock' : 'Lock'),
+                        ),
                       ),
-                    ),
-                    const PopupMenuItem(
-                      value: 'Assistant',
-                      child: ListTile(leading: Icon(Icons.people_alt_rounded, color: Colors.orange), title: Text('Assistant Access')),
-                    ),
+                      const PopupMenuItem(
+                        value: 'Assistant',
+                        child: ListTile(leading: Icon(Icons.people_alt_rounded, color: Colors.orange), title: Text('Assistant Access')),
+                      ),
+                    ],
                     const PopupMenuItem(value: 'edit', child: ListTile(leading: Icon(Icons.edit, color: Colors.green), title: Text('Edit'))),
                     const PopupMenuItem(value: 'rename', child: ListTile(leading: Icon(Icons.drive_file_rename_outline, color: Colors.blue), title: Text('Rename'))),
                     const PopupMenuItem(value: 'delete', child: ListTile(leading: Icon(Icons.delete, color: Colors.red), title: Text('Delete', style: TextStyle(color: Colors.red)))),

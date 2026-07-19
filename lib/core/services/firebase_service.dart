@@ -749,6 +749,17 @@ class FirebaseService {
       final invisible = contentData['invisible'] as bool? ?? false;
       if (locked || updating || invisible) return null;
     }
+    if (folderId != null) {
+      final folderDoc = await firestore.collection('folders').doc(folderId).get();
+      if (folderDoc.exists) {
+        final folderData = folderDoc.data() as Map<String, dynamic>?;
+        if (folderData != null) {
+          final folderLocked = folderData['locked'] as bool? ?? false;
+          final folderInvisible = folderData['invisible'] as bool? ?? false;
+          if (folderLocked || folderInvisible) return null;
+        }
+      }
+    }
     final users = await firestore.collection('users').get();
     final batch = firestore.batch();
     for (final u in users.docs) {
@@ -779,30 +790,38 @@ class FirebaseService {
 
   // ─── Feedback ──────────────────────────────────────────────────────────────────
 
+  static bool _submittingFeedback = false;
+
   static Future<String?> submitFeedback(dynamic feedback) async {
-    Map<String, dynamic> data;
-    if (feedback is String) {
-      data = {
-        'message': feedback,
-        'uid': currentUser?.uid ?? '',
-        'student_name': currentUser?.displayName ?? '',
-        'createdAt': FieldValue.serverTimestamp(),
-        'status': 'pending',
-        'viewed': false,
-      };
-    } else if (feedback is Map<String, dynamic>) {
-      data = Map.from(feedback);
-      data['createdAt'] ??= FieldValue.serverTimestamp();
-      data['viewed'] ??= false;
-    } else {
-      return null;
+    if (_submittingFeedback) return null;
+    _submittingFeedback = true;
+    try {
+      Map<String, dynamic> data;
+      if (feedback is String) {
+        data = {
+          'message': feedback,
+          'uid': currentUser?.uid ?? '',
+          'student_name': currentUser?.displayName ?? '',
+          'createdAt': FieldValue.serverTimestamp(),
+          'status': 'pending',
+          'viewed': false,
+        };
+      } else if (feedback is Map<String, dynamic>) {
+        data = Map.from(feedback);
+        data['createdAt'] ??= FieldValue.serverTimestamp();
+        data['viewed'] ??= false;
+      } else {
+        return null;
+      }
+      final doc = await firestore.collection('feedbacks').add(data);
+      final ticketNo = doc.id.substring(0, 6).toUpperCase();
+      await doc.update({'ticketNo': ticketNo});
+      final name = currentUser?.displayName ?? 'Unknown';
+      await addAdminNotification('feedback', 'New Contact Support message from $name', relatedUid: currentUser?.uid);
+      return doc.id;
+    } finally {
+      _submittingFeedback = false;
     }
-    final doc = await firestore.collection('feedbacks').add(data);
-    final ticketNo = doc.id.substring(0, 6).toUpperCase();
-    await doc.update({'ticketNo': ticketNo});
-    final name = currentUser?.displayName ?? 'Unknown';
-    await addAdminNotification('feedback', 'New Contact Support message from $name', relatedUid: currentUser?.uid);
-    return doc.id;
   }
 
   static Future<List<Map<String, dynamic>>> getStudentFeedbacksOnce(String uid) async {

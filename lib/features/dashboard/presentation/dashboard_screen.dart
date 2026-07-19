@@ -1307,11 +1307,11 @@ class _DashboardScreenState extends State<DashboardScreen>
           actions: [
             TextButton(onPressed: () => Navigator.pop(d), child: const Text('Cancel')),
             StatefulBuilder(builder: (ctx, setBtn) {
-              var _sending = false;
+              bool sending = false;
               return ElevatedButton(
-                onPressed: _sending ? null : () async {
-                  if (_sending) return;
-                  setBtn(() => _sending = true);
+                onPressed: sending ? null : () async {
+                  if (sending) return;
+                  setBtn(() => sending = true);
                   final missing = <String>[];
                   if (nameCtrl.text.trim().isEmpty) missing.add('Name');
                   if (emailCtrl.text.trim().isEmpty) missing.add('Email');
@@ -1320,7 +1320,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                   if (bankCtrl.text.trim().isEmpty) missing.add('Bank Name');
                   if (receiptCtrl.text.trim().isEmpty) missing.add('Receipt ID');
                   if (missing.isNotEmpty) {
-                    setBtn(() => _sending = false);
+                    setBtn(() => sending = false);
                     setDState(() => errorMsg = 'Please fill all required fields: ${missing.join(', ')}');
                     return;
                   }
@@ -1334,7 +1334,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                   if (d.mounted) Navigator.pop(d);
                 },
                 style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A148C)),
-                child: Text(_sending ? 'Sending...' : 'Send', style: const TextStyle(color: Colors.white)),
+                child: Text(sending ? 'Sending...' : 'Send', style: const TextStyle(color: Colors.white)),
               );
             }),
           ],
@@ -1366,17 +1366,17 @@ class _DashboardScreenState extends State<DashboardScreen>
         actions: [
           TextButton(onPressed: () => Navigator.pop(d), child: const Text('Cancel')),
           StatefulBuilder(builder: (ctx, setBtn) {
-            var _sending = false;
+            bool sending = false;
             return ElevatedButton(
-              onPressed: _sending ? null : () async {
-                if (_sending) return;
+              onPressed: sending ? null : () async {
+                if (sending) return;
                 if (ctrl.text.trim().isEmpty) return;
-                setBtn(() => _sending = true);
+                setBtn(() => sending = true);
                 await FirebaseService.submitFeedback(ctrl.text.trim());
                 if (d.mounted) Navigator.pop(d);
               },
               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A148C)),
-              child: Text(_sending ? 'Sending...' : 'Send', style: const TextStyle(color: Colors.white)),
+              child: Text(sending ? 'Sending...' : 'Send', style: const TextStyle(color: Colors.white)),
             );
           }),
         ],
