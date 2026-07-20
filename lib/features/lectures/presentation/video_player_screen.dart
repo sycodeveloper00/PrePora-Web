@@ -110,13 +110,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
               child: Column(
                 children: [
                 // ─── Video Player ───────────────────────────────────────
-                ClipRect(
-                  child: SizedBox(
-                    height: 300,
-                    child: YoutubePlayer(
-                      controller: _controller,
-                      aspectRatio: 16 / 9,
-                    ),
+                AspectRatio(
+                  aspectRatio: 16 / 9,
+                  child: YoutubePlayer(
+                    controller: _controller,
+                    aspectRatio: 16 / 9,
                   ),
                 ),
 

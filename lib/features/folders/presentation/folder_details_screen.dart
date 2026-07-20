@@ -1070,17 +1070,30 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     return FutureBuilder<DocumentSnapshot>(
       future: _folderFuture,
       builder: (context, folderSnap) {
-        _folderName = folderSnap.hasData && folderSnap.data!.exists
-            ? (folderSnap.data!.data() as Map<String, dynamic>)['name'] as String? ?? 'Folder'
-            : 'Folder';
-        final folderName = _folderName;
+        if (folderSnap.hasData && folderSnap.data!.exists) {
+          _folderName = (folderSnap.data!.data() as Map<String, dynamic>)['name'] as String? ?? 'Folder';
+        }
+        final isLoading = folderSnap.connectionState == ConnectionState.waiting;
+        final folderName = _folderName.isNotEmpty ? _folderName : (isLoading ? '' : 'Folder');
 
         return Scaffold(
           appBar: AppBar(
             title: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(widget.parentContentId != null && _subfolderName.isNotEmpty ? _subfolderName : folderName,
-                style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
-              if (widget.parentContentId != null && _subfolderName.isNotEmpty)
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (widget.parentContentId != null && _subfolderName.isNotEmpty)
+                    Text(_subfolderName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14))
+                  else if (isLoading && folderName.isEmpty)
+                    const SizedBox(
+                      width: 80, height: 14,
+                      child: LinearProgressIndicator(backgroundColor: Colors.white24),
+                    )
+                  else
+                    Text(folderName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
+                ],
+              ),
+              if (widget.parentContentId != null && _subfolderName.isNotEmpty && folderName.isNotEmpty)
                 Text('in $folderName', style: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white38 : Colors.black45, fontSize: 11)),
             ]),
             leading: IconButton(icon: const Icon(Icons.arrow_back_ios_new_rounded), onPressed: () => context.pop()),
