@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import '../services/firebase_service.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/signup_screen.dart';
 import '../../features/auth/presentation/forgot_password_screen.dart';
@@ -28,9 +29,36 @@ import '../../features/webview/presentation/webview_screen.dart';
 import '../../features/splash_onboarding/presentation/splash_screen.dart';
 import '../../features/notifications/presentation/admin_notifications_screen.dart';
 
+const _publicPaths = {
+  '/splash',
+  '/auth/login',
+  '/auth/signup',
+  '/auth/forgot-password',
+  '/terms',
+};
+
+class GoRouterRedirect {
+  static String? guard(BuildContext context, GoRouterState state) {
+    final path = state.matchedLocation;
+    final user = FirebaseService.currentUser;
+
+    if (user == null && !_publicPaths.contains(path)) return '/auth/login';
+    if (user != null && path == '/auth/login') return '/dashboard';
+
+    final role = FirebaseService.cachedRole;
+    if (role == null) return null;
+
+    if (path.startsWith('/admin') && role != 'admin') return '/auth/login';
+    if (path == '/assistant' && role != 'Assistant') return '/auth/login';
+
+    return null;
+  }
+}
+
 class AppRouter {
   static final GoRouter router = GoRouter(
     initialLocation: '/splash',
+    redirect: GoRouterRedirect.guard,
     routes: <RouteBase>[
       GoRoute(path: '/splash', builder: (c, s) => const SplashScreen()),
       GoRoute(path: '/auth/login', builder: (c, s) => const LoginScreen()),

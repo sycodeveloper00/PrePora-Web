@@ -38,6 +38,7 @@ class _SplashScreenState extends State<SplashScreen> {
         role = await FirebaseService.getUserRole(uid);
         if (role != null) FirebaseService.cacheUserRole(uid, role);
       }
+      FirebaseService.cachedRole = role;
       if (!mounted) return;
       if (role == 'admin') {
         context.go('/admin');

@@ -53,7 +53,21 @@ class _AppLifecycleState extends State<_AppLifecycle> {
       if (kIsWeb && FirebaseService.currentUser != null) {
         NotificationService.startListeningForNotifications(FirebaseService.currentUser!.uid);
       }
+      _startSessionIfAdminOrAssistant();
     });
+  }
+
+  Future<void> _startSessionIfAdminOrAssistant() async {
+    final user = FirebaseService.currentUser;
+    if (user == null) return;
+    String? role = FirebaseService.cachedRole;
+    role ??= await FirebaseService.getUserRole(user.uid);
+    FirebaseService.cachedRole = role;
+    if (role == 'admin' || role == 'Assistant') {
+      SessionManager.start(onExpiredCallback: () async {
+        await FirebaseService.signOut();
+      });
+    }
   }
 
   @override
@@ -67,13 +81,17 @@ class PrePoraApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final themeMode = ref.watch(themeModeProvider);
     return _AppLifecycle(
-      child: MaterialApp.router(
-        title: 'PrePora',
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.lightTheme,
-        darkTheme: AppTheme.darkTheme,
-        themeMode: themeMode,
-        routerConfig: AppRouter.router,
+      child: Listener(
+        onPointerDown: (_) => SessionManager.reset(),
+        onPointerMove: (_) => SessionManager.reset(),
+        child: MaterialApp.router(
+          title: 'PrePora',
+          debugShowCheckedModeBanner: false,
+          theme: AppTheme.lightTheme,
+          darkTheme: AppTheme.darkTheme,
+          themeMode: themeMode,
+          routerConfig: AppRouter.router,
+        ),
       ),
     );
   }

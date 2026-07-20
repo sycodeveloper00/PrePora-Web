@@ -38,7 +38,16 @@ class _LoginScreenState extends State<LoginScreen> {
       if (mounted && credential?.user != null) {
         final uid = credential!.user!.uid;
         final role = await FirebaseService.getUserRole(uid);
-        if (role != null) FirebaseService.cacheUserRole(uid, role);
+        if (role != null) {
+          FirebaseService.cacheUserRole(uid, role);
+          FirebaseService.cachedRole = role;
+        }
+        if (role == 'admin' || role == 'Assistant') {
+          SessionManager.start(onExpiredCallback: () async {
+            await FirebaseService.signOut();
+            if (context.mounted) context.go('/auth/login');
+          });
+        }
         if (mounted) {
           if (kIsWeb && role != 'admin' && role != 'Assistant') {
             setState(() => _isLoading = false);
