@@ -325,8 +325,8 @@
   </script>
 </head>
 <body>
-  <!-- SEO Content for Search Engines (hidden when Flutter loads) -->
-  <div id="seo-content" style="position:absolute;width:100%;min-height:100vh;overflow:auto;z-index:1;background:#fff;">
+  <!-- SEO Content for Search Engines (hidden from users, visible to crawlers) -->
+  <div id="seo-content" style="position:absolute;left:0;top:0;width:1px;height:1px;overflow:hidden;opacity:0;" aria-hidden="true">
     <header style="text-align:center;padding:40px 20px;font-family:sans-serif;background:linear-gradient(135deg,#6C63FF,#3F3D56);color:#fff;">
       <h1 style="font-size:2em;">PrePora - Free Study Notes, Past Papers &amp; Tests for Pakistani Students</h1>
       <p style="max-width:750px;margin:15px auto;font-size:1.1em;">Pakistan's #1 free education platform. Access study notes, solved past papers, practice MCQs, mock tests, video lectures &amp; AI tutor for all Pakistani universities.</p>
@@ -540,18 +540,40 @@
     For more details:
     * https://docs.flutter.dev/platform-integration/web/initialization
   -->
+  <!-- Loading Spinner (Physics Atom - visible while Flutter loads) -->
+  <div id="loading" style="position:fixed;top:0;left:0;width:100%;height:100%;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#1a1a2e,#16213e);z-index:9999;">
+    <div style="text-align:center;color:white;font-family:sans-serif;">
+      <div style="position:relative;width:120px;height:120px;margin:0 auto 20px;">
+        <!-- Nucleus -->
+        <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);width:18px;height:18px;background:radial-gradient(circle,#FFD700,#FF8C00);border-radius:50%;box-shadow:0 0 20px #FFD700,0 0 40px rgba(255,215,0,0.4);"></div>
+        <!-- Electron Orbit 1 -->
+        <div style="position:absolute;top:50%;left:50%;width:100px;height:100px;margin:-50px 0 0 -50px;border:2px solid rgba(108,99,255,0.4);border-radius:50%;animation:orbit1 2s linear infinite;">
+          <div style="position:absolute;top:-5px;left:50%;margin-left:-5px;width:10px;height:10px;background:#6C63FF;border-radius:50%;box-shadow:0 0 10px #6C63FF;"></div>
+        </div>
+        <!-- Electron Orbit 2 -->
+        <div style="position:absolute;top:50%;left:50%;width:100px;height:100px;margin:-50px 0 0 -50px;border:2px solid rgba(255,107,107,0.4);border-radius:50%;transform:rotate(60deg);animation:orbit2 2.5s linear infinite;">
+          <div style="position:absolute;top:-5px;left:50%;margin-left:-5px;width:10px;height:10px;background:#FF6B6B;border-radius:50%;box-shadow:0 0 10px #FF6B6B;"></div>
+        </div>
+        <!-- Electron Orbit 3 -->
+        <div style="position:absolute;top:50%;left:50%;width:100px;height:100px;margin:-50px 0 0 -50px;border:2px solid rgba(78,205,196,0.4);border-radius:50%;transform:rotate(120deg);animation:orbit3 3s linear infinite;">
+          <div style="position:absolute;top:-5px;left:50%;margin-left:-5px;width:10px;height:10px;background:#4ECDC4;border-radius:50%;box-shadow:0 0 10px #4ECDC4;"></div>
+        </div>
+      </div>
+      <p style="font-size:16px;font-weight:500;letter-spacing:1px;color:rgba(255,255,255,0.8);">Loading PrePora...</p>
+    </div>
+  </div>
+  <style>
+    @keyframes orbit1{0%{transform:rotate(0deg)}100%{transform:rotate(360deg)}}
+    @keyframes orbit2{0%{transform:rotate(60deg)}100%{transform:rotate(420deg)}}
+    @keyframes orbit3{0%{transform:rotate(120deg)}100%{transform:rotate(480deg)}}
+  </style>
+
   <script src="flutter_bootstrap.js" async></script>
   <script>
-    // Hide SEO content when Flutter loads
     window.addEventListener('flutter-first-frame', function() {
-      var seo = document.getElementById('seo-content');
-      if (seo) seo.style.display = 'none';
+      var loader = document.getElementById('loading');
+      if (loader) loader.style.display = 'none';
     });
-    // Fallback: hide after 5 seconds if Flutter takes time
-    setTimeout(function() {
-      var seo = document.getElementById('seo-content');
-      if (seo) seo.style.display = 'none';
-    }, 5000);
   </script>
 </body>
 </html>
