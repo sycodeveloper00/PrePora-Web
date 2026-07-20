@@ -1,11 +1,11 @@
 {
-    "name": "prepora",
-    "short_name": "prepora",
+    "name": "PrePora - Smart Study Platform for Pakistani Students",
+    "short_name": "PrePora",
     "start_url": ".",
     "display": "standalone",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "description": "Access lectures, notes, past papers, AI tutor, practice tests & more. Built for Pakistani university students.",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [
