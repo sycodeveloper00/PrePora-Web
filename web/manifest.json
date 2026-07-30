@@ -2,12 +2,11 @@
     "name": "PrePora - Smart Study Platform for Pakistani Students",
     "short_name": "PrePora",
     "start_url": ".",
-    "display": "standalone",
+    "display": "browser",
     "background_color": "#0175C2",
     "theme_color": "#0175C2",
     "description": "Access lectures, notes, past papers, AI tutor, practice tests & more. Built for Pakistani university students.",
     "orientation": "portrait-primary",
-    "prefer_related_applications": false,
     "icons": [
         {
             "src": "icons/Icon-192.png",
@@ -18,18 +17,6 @@
             "src": "icons/Icon-512.png",
             "sizes": "512x512",
             "type": "image/png"
-        },
-        {
-            "src": "icons/Icon-maskable-192.png",
-            "sizes": "192x192",
-            "type": "image/png",
-            "purpose": "maskable"
-        },
-        {
-            "src": "icons/Icon-maskable-512.png",
-            "sizes": "512x512",
-            "type": "image/png",
-            "purpose": "maskable"
         }
     ]
 }

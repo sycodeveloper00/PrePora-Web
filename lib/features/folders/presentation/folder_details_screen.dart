@@ -9,6 +9,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import '../../../core/widgets/glassmorphic_container.dart';
+import '../../../core/widgets/professional_loader.dart';
 import '../../../core/services/firebase_service.dart';
 import 'folder_browser_screen.dart';
 
@@ -19,6 +20,7 @@ class FolderDetailsScreen extends StatefulWidget {
   final bool isAdmin;
   final Set<String>? assistantContentAccess;
   final String? parentContentId;
+  final String? targetStudentUid;
 
   const FolderDetailsScreen({
     super.key,
@@ -28,6 +30,7 @@ class FolderDetailsScreen extends StatefulWidget {
     this.isAdmin = false,
     this.assistantContentAccess,
     this.parentContentId,
+    this.targetStudentUid,
   });
 
   @override
@@ -48,6 +51,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   Set<String> _selectedIds = {};
   bool _isSelectMode = false;
   String? _groupLink;
+  final Map<String, double> _uploadProgress = {};
 
   // ─── Cached futures & streams to prevent blinking rebuild loops ───
   late Future<DocumentSnapshot> _folderFuture;
@@ -116,6 +120,14 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     }
   }
 
+  Future<void> _sendScopedNotification(String message, {String? parentContentId, Map<String, dynamic>? contentData}) async {
+    if (widget.targetStudentUid != null) {
+      await FirebaseService.addTargetedNotification(widget.targetStudentUid!, message, folderId: widget.folderId, parentContentId: parentContentId, contentData: contentData);
+    } else {
+      await FirebaseService.addNotification(message, folderId: widget.folderId, parentContentId: parentContentId, contentData: contentData);
+    }
+  }
+
   List<DocumentSnapshot> _filterDocs(List<DocumentSnapshot> docs, String query) {
     if (query.isEmpty) return docs;
     final q = query.toLowerCase();
@@ -150,10 +162,10 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                 await FirebaseService.updateContentField(widget.folderId, contentId, 'updating', false);
                 await FirebaseService.updateContentField(widget.folderId, contentId, 'invisible', false);
                 setLocal(() { locked = val; updating = false; invisible = false; });
-                await FirebaseService.addNotification('Locked: $contentName', folderId: widget.folderId, contentData: {'locked': true});
+                await _sendScopedNotification('Locked: $contentName', contentData: {'locked': true});
               } else {
                 setLocal(() => locked = val);
-                await FirebaseService.addNotification('Unlocked: $contentName', folderId: widget.folderId);
+                await _sendScopedNotification('Unlocked: $contentName', parentContentId: widget.parentContentId);
               }
             }),
             const SizedBox(height: 12),
@@ -163,10 +175,10 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                 await FirebaseService.updateContentField(widget.folderId, contentId, 'locked', false);
                 await FirebaseService.updateContentField(widget.folderId, contentId, 'invisible', false);
                 setLocal(() { updating = val; locked = false; invisible = false; });
-                await FirebaseService.addNotification('Updating: $contentName', folderId: widget.folderId, contentData: {'updating': true});
+                await _sendScopedNotification('Updating: $contentName', contentData: {'updating': true});
               } else {
                 setLocal(() => updating = val);
-                await FirebaseService.addNotification('Updating removed: $contentName', folderId: widget.folderId);
+                await _sendScopedNotification('Updating removed: $contentName', parentContentId: widget.parentContentId);
               }
             }),
             const SizedBox(height: 12),
@@ -176,10 +188,10 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                 await FirebaseService.updateContentField(widget.folderId, contentId, 'locked', false);
                 await FirebaseService.updateContentField(widget.folderId, contentId, 'updating', false);
                 setLocal(() { invisible = val; locked = false; updating = false; });
-                await FirebaseService.addNotification('Hidden: $contentName', folderId: widget.folderId, contentData: {'invisible': true});
+                await _sendScopedNotification('Hidden: $contentName', contentData: {'invisible': true});
               } else {
                 setLocal(() => invisible = val);
-                await FirebaseService.addNotification('Visible: $contentName', folderId: widget.folderId);
+                await _sendScopedNotification('Visible: $contentName', parentContentId: widget.parentContentId);
               }
             }),
             const SizedBox(height: 16),
@@ -257,7 +269,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
               Expanded(
                 child: loading
-                    ? const Center(child: CircularProgressIndicator())
+                    ? const Center(child: ProfessionalLoader())
                     : assistants.isEmpty
                         ? Center(child: Text('No Assistant accounts.', style: TextStyle(color: dimColor)))
                         : ListView.builder(
@@ -413,7 +425,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
               final newId = await FirebaseService.addFolderContent(widget.folderId, data);
               if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
-              await FirebaseService.addNotification('Created sub-folder: ${ctrl.text.trim()}', folderId: widget.folderId);
+              await _sendScopedNotification('Created sub-folder: ${ctrl.text.trim()}', parentContentId: widget.parentContentId);
               _refreshAssistantAccess();
             },
             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A148C)),
@@ -454,7 +466,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
               final newId = await FirebaseService.addFolderContent(widget.folderId, data);
               if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
-              await FirebaseService.addNotification('Added lecture: ${titleCtrl.text.trim()}', folderId: widget.folderId);
+              await _sendScopedNotification('Added lecture: ${titleCtrl.text.trim()}', parentContentId: widget.parentContentId);
               _refreshAssistantAccess();
             },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade700),
@@ -521,19 +533,28 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
             }
             continue;
           }
-          if (ctx.mounted) {
-            ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Uploading ${file.name}...'), backgroundColor: Colors.orange, duration: const Duration(seconds: 1)));
+
+          if (mounted) setState(() => _uploadProgress[file.name] = 0);
+
+          try {
+            final storageName = '${DateTime.now().millisecondsSinceEpoch}_${file.name}';
+            final ref = FirebaseService.storage.ref('folder_files/$storageName');
+            await ref.putData(bytes, metadata: SettableMetadata(contentDisposition: 'inline; filename="${file.name}"'), onProgress: (p) {
+              if (mounted) setState(() => _uploadProgress[file.name] = p);
+            });
+            if (mounted) setState(() => _uploadProgress.remove(file.name));
+
+            final downloadUrl = await ref.getDownloadURL();
+            final data = <String, dynamic>{'type': 'file', 'name': file.name, 'url': downloadUrl, 'source': 'supabase_storage'};
+            if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
+            final newId = await FirebaseService.addFolderContent(widget.folderId, data);
+            if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
+            await _sendScopedNotification('Uploaded file: ${file.name}', parentContentId: widget.parentContentId);
+            count++;
+          } catch (e) {
+            if (mounted) setState(() => _uploadProgress.remove(file.name));
+            rethrow;
           }
-          final fileName = '${DateTime.now().millisecondsSinceEpoch}_${file.name}';
-          final ref = FirebaseService.storage.ref('folder_files/$fileName');
-          await ref.putData(bytes, metadata: SettableMetadata(contentDisposition: 'inline; filename="${file.name}"'));
-          final downloadUrl = await ref.getDownloadURL();
-          final data = <String, dynamic>{'type': 'file', 'name': file.name, 'url': downloadUrl, 'source': 'supabase_storage'};
-          if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
-          final newId = await FirebaseService.addFolderContent(widget.folderId, data);
-          if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
-          await FirebaseService.addNotification('Uploaded file: ${file.name}', folderId: widget.folderId);
-          count++;
         }
         _refreshAssistantAccess();
         if (ctx.mounted && count > 0) {
@@ -577,7 +598,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
               final newId = await FirebaseService.addFolderContent(widget.folderId, data);
               if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
-              await FirebaseService.addNotification('Uploaded from Drive: ${nameCtrl.text.trim()}', folderId: widget.folderId);
+              await _sendScopedNotification('Uploaded from Drive: ${nameCtrl.text.trim()}', parentContentId: widget.parentContentId);
               _refreshAssistantAccess();
             },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.amber.shade800),
@@ -618,7 +639,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
               final newId = await FirebaseService.addFolderContent(widget.folderId, data);
               if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
-              await FirebaseService.addNotification('Uploaded file: ${nameCtrl.text.trim()}', folderId: widget.folderId);
+              await _sendScopedNotification('Uploaded file: ${nameCtrl.text.trim()}', parentContentId: widget.parentContentId);
               _refreshAssistantAccess();
             },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.teal.shade700),
@@ -659,7 +680,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
               final newId = await FirebaseService.addFolderContent(widget.folderId, data);
               if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
-              await FirebaseService.addNotification('Added Mock Test URL: ${nameCtrl.text.trim()}', folderId: widget.folderId);
+              await _sendScopedNotification('Added Mock Test URL: ${nameCtrl.text.trim()}', parentContentId: widget.parentContentId);
               _refreshAssistantAccess();
             },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.orange.shade800),
@@ -700,7 +721,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
               final newId = await FirebaseService.addFolderContent(widget.folderId, data);
               if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
-              await FirebaseService.addNotification('Added Mock Test Code: ${nameCtrl.text.trim()}', folderId: widget.folderId);
+              await _sendScopedNotification('Added Mock Test Code: ${nameCtrl.text.trim()}', parentContentId: widget.parentContentId);
               _refreshAssistantAccess();
             },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.orange.shade800),
@@ -751,7 +772,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
             onPressed: () async {
               Navigator.pop(d);
               await FirebaseService.deleteFolderContent(widget.folderId, contentId);
-              await FirebaseService.addNotification('Deleted: $contentName', folderId: widget.folderId, contentData: data);
+              await _sendScopedNotification('Deleted: $contentName', parentContentId: widget.parentContentId, contentData: data);
             },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
             child: const Text('Delete', style: TextStyle(color: Colors.white)),
@@ -782,7 +803,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               if (ctrl.text.trim().isEmpty) return;
               Navigator.pop(d);
               await FirebaseService.renameFolderContent(widget.folderId, contentId, ctrl.text.trim());
-              await FirebaseService.addNotification('Renamed "$currentName" to "${ctrl.text.trim()}"', folderId: widget.folderId);
+              await _sendScopedNotification('Renamed "$currentName" to "${ctrl.text.trim()}"', parentContentId: widget.parentContentId);
             },
             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A148C)),
             child: const Text('Rename', style: TextStyle(color: Colors.white)),
@@ -831,7 +852,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               } else if (type == 'mocktest_code') {
                 await FirebaseService.updateContentField(widget.folderId, contentId, 'code', urlCtrl.text.trim());
               }
-              await FirebaseService.addNotification('Updated: ${nameCtrl.text.trim()}', folderId: widget.folderId, contentData: data);
+              await _sendScopedNotification('Updated: ${nameCtrl.text.trim()}', parentContentId: widget.parentContentId, contentData: data);
             },
             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A148C)),
             child: const Text('Save', style: TextStyle(color: Colors.white)),
@@ -914,7 +935,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     for (final id in _selectedIds) {
       await FirebaseService.deleteFolderContent(widget.folderId, id);
     }
-    await FirebaseService.addNotification('Deleted $count item(s)', folderId: widget.folderId);
+    await _sendScopedNotification('Deleted $count item(s)', parentContentId: widget.parentContentId);
     _clearSelection();
   }
 
@@ -944,6 +965,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
         sourceFolderId: widget.folderId,
         isMove: isMove,
         selectedIds: _selectedIds.toList(),
+        parentContentId: widget.parentContentId,
       ),
     )).then((result) {
       if (result == true) _clearSelection();
@@ -983,12 +1005,25 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
       }
     }
 
+    String? activityId;
+    if (!widget.isAdmin) {
+      final currentUser = FirebaseService.currentUser;
+      if (currentUser != null) {
+        final folderPath = _subfolderName.isNotEmpty ? '$_folderName > $_subfolderName' : _folderName;
+        FirebaseService.logActivity(uid: currentUser.uid, name: name, type: type, folderPath: folderPath).then((id) {
+          activityId = id;
+        });
+      }
+    }
+
     switch (type) {
       case 'lecture':
         final url = data['youtubeUrl'] as String? ?? '';
         final videoId = _extractYoutubeId(url);
         if (videoId.isNotEmpty) {
-          context.push('/lectures/$videoId', extra: {'name': name, 'folderId': widget.folderId, 'folderName': folderName, 'parentContentId': widget.parentContentId});
+          context.push('/lectures/$videoId', extra: {'name': name, 'folderId': widget.folderId, 'folderName': folderName, 'parentContentId': widget.parentContentId}).then((_) {
+            if (activityId != null) FirebaseService.endActivity(activityId!);
+          });
         } else {
           ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Invalid YouTube URL')));
         }
@@ -996,24 +1031,28 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
       case 'mocktest_url':
         final url = data['url'] as String? ?? '';
         if (url.isNotEmpty) {
-          context.push('/webview', extra: {'url': url, 'title': name, 'folderId': widget.folderId, 'parentContentId': widget.parentContentId, 'isMockTest': true});
+          context.push('/webview', extra: {'url': url, 'title': name, 'folderId': widget.folderId, 'parentContentId': widget.parentContentId, 'isMockTest': true}).then((_) {
+            if (activityId != null) FirebaseService.endActivity(activityId!);
+          });
         }
         break;
       case 'mocktest_code':
         final code = data['code'] as String? ?? '';
         if (code.isNotEmpty) {
-          context.push('/webview', extra: {'html': code, 'title': name, 'folderId': widget.folderId, 'parentContentId': widget.parentContentId, 'isMockTest': true});
+          context.push('/webview', extra: {'html': code, 'title': name, 'folderId': widget.folderId, 'parentContentId': widget.parentContentId, 'isMockTest': true}).then((_) {
+            if (activityId != null) FirebaseService.endActivity(activityId!);
+          });
         }
         break;
       case 'file':
-        _openFile(data);
+        _openFile(data, activityId: activityId);
         break;
       default:
         break;
     }
   }
 
-  void _openFile(Map<String, dynamic> data) async {
+  void _openFile(Map<String, dynamic> data, {String? activityId}) async {
     final url = data['url'] as String? ?? '';
     final source = data['source'] as String? ?? 'url';
     final name = data['name'] as String? ?? 'File';
@@ -1037,13 +1076,21 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     }
 
     if (['jpg', 'jpeg', 'png', 'gif', 'webp'].contains(ext)) {
-      context.push('/image_viewer', extra: {'url': url, 'title': displayTitle});
+      context.push('/image_viewer', extra: {'url': url, 'title': displayTitle}).then((_) {
+        if (activityId != null) FirebaseService.endActivity(activityId);
+      });
     } else if (ext == 'pdf') {
-      context.push('/pdf_reader/view', extra: {'url': url, 'folderId': widget.folderId, 'parentContentId': widget.parentContentId});
+      context.push('/pdf_reader/view', extra: {'url': url, 'folderId': widget.folderId, 'parentContentId': widget.parentContentId}).then((_) {
+        if (activityId != null) FirebaseService.endActivity(activityId);
+      });
     } else if (['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm'].contains(ext)) {
-      context.push('/media_player', extra: {'url': url, 'title': displayTitle, 'isAudio': false});
+      context.push('/media_player', extra: {'url': url, 'title': displayTitle, 'isAudio': false}).then((_) {
+        if (activityId != null) FirebaseService.endActivity(activityId);
+      });
     } else if (['mp3', 'wav', 'aac', 'ogg', 'flac', 'wma', 'm4a', 'opus'].contains(ext)) {
-      context.push('/media_player', extra: {'url': url, 'title': displayTitle, 'isAudio': true});
+      context.push('/media_player', extra: {'url': url, 'title': displayTitle, 'isAudio': true}).then((_) {
+        if (activityId != null) FirebaseService.endActivity(activityId);
+      });
     } else if (source == 'internal_storage' && !url.startsWith('http://') && !url.startsWith('https://')) {
       if (kIsWeb) {
         ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -1059,7 +1106,20 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
         }
       }
     } else if (url.isNotEmpty) {
-      context.push('/webview', extra: {'url': url, 'title': displayTitle, 'folderId': widget.folderId, 'parentContentId': widget.parentContentId});
+      final isCloudDrive = url.contains('drive.google.com') || url.contains('docs.google.com') || url.contains('googleapis.com/drive') ||
+          url.contains('onedrive.live.com') || url.contains('1drv.ms') || url.contains('sharepoint.com') ||
+          url.contains('dropbox.com');
+      if (isCloudDrive) {
+        final uri = Uri.parse(url);
+        if (await canLaunchUrl(uri)) {
+          await launchUrl(uri, mode: LaunchMode.platformDefault);
+        }
+        if (activityId != null) FirebaseService.endActivity(activityId);
+      } else {
+        context.push('/webview', extra: {'url': url, 'title': displayTitle, 'folderId': widget.folderId, 'parentContentId': widget.parentContentId}).then((_) {
+          if (activityId != null) FirebaseService.endActivity(activityId);
+        });
+      }
     }
   }
 
@@ -1087,7 +1147,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                   else if (isLoading && folderName.isEmpty)
                     const SizedBox(
                       width: 80, height: 14,
-                      child: LinearProgressIndicator(backgroundColor: Colors.white24),
+                      child: ProfessionalLoader(size: 14),
                     )
                   else
                     Text(folderName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14)),
@@ -1102,7 +1162,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
             children: [
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-child: TextField(
+              child: TextField(
                     onChanged: (v) => setState(() => _searchQuery = v),
                     style: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87),
                     decoration: InputDecoration(
@@ -1112,8 +1172,10 @@ child: TextField(
                           ? IconButton(icon: Icon(Icons.clear, color: Theme.of(context).brightness == Brightness.dark ? Colors.white54 : Colors.black54), onPressed: () => setState(() => _searchQuery = ''))
                           : null,
                       filled: true, fillColor: Theme.of(context).brightness == Brightness.dark ? Colors.white10 : Colors.black12,
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: Theme.of(context).brightness == Brightness.dark ? Colors.white12 : Colors.black12)),
+                      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: Theme.of(context).brightness == Brightness.dark ? Colors.white12 : Colors.black12)),
+                      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: Theme.of(context).brightness == Brightness.dark ? Colors.cyanAccent : const Color(0xFF4A148C), width: 1.5)),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
                     ),
                   ),
               ),
@@ -1122,7 +1184,7 @@ child: TextField(
                 child: StreamBuilder<QuerySnapshot>(
                   stream: _contentsStream,
                   builder: (context, snapshot) {
-                    if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+                    if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: ProfessionalLoader());
                     if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
                       return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                         const Icon(Icons.folder_open_rounded, size: 80, color: Colors.white12),
@@ -1149,7 +1211,7 @@ child: TextField(
                         ? filteredDocs
                         : filteredDocs.where((doc) {
                             final d = doc.data() as Map<String, dynamic>;
-                            return d['invisible'] != true && d['locked'] != true && d['updating'] != true;
+                            return d['invisible'] != true;
                           }).toList();
 
                     // If local order has missing or extra IDs vs stream, reset local order
@@ -1254,6 +1316,12 @@ child: TextField(
                             },
                           );
 
+                    if (_uploadProgress.isNotEmpty) {
+                      return Column(children: [
+                        ..._uploadProgress.entries.map((e) => _buildUploadingFileCard(e.key, e.value)),
+                        Expanded(child: listWidget),
+                      ]);
+                    }
                     if (_groupLink == null || _groupLink!.isEmpty || !widget.isAdmin) return listWidget;
                     return Column(children: [_buildGroupBanner(), Expanded(child: listWidget)]);
                   },
@@ -1632,6 +1700,7 @@ child: TextField(
               context.push('/folders/${widget.folderId}/sub/$id', extra: {
                 'canEdit': widget.canEdit, 'canManage': widget.canManage,
                 'isAdmin': widget.isAdmin,
+                if (widget.targetStudentUid != null) 'targetStudentUid': widget.targetStudentUid,
                 if (widget.assistantContentAccess != null) 'assistantContentAccess': widget.assistantContentAccess!.toList(),
               });
             },
@@ -1915,6 +1984,8 @@ child: TextField(
               const SizedBox(width: 14),
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(name, style: TextStyle(color: disabled ? Colors.grey : null, fontWeight: FontWeight.bold, fontSize: 14)),
+                if (data['source'] == 'google_drive')
+                  const Row(children: [Icon(Icons.cloud_rounded, color: Color(0xFF4285F4), size: 12), SizedBox(width: 4), Text('Google Drive', style: TextStyle(color: Color(0xFF4285F4), fontSize: 11))]),
                 if (updating)
                   const Row(children: [Icon(Icons.update_rounded, color: Colors.orange, size: 12), SizedBox(width: 4), Text('Updating...', style: TextStyle(color: Colors.orange, fontSize: 11))]),
                 if (locked && !updating)
@@ -1968,6 +2039,45 @@ child: TextField(
             ]),
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildUploadingFileCard(String fileName, double progress) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12, left: 16, right: 16, top: 16),
+      child: GlassmorphicContainer(
+        padding: const EdgeInsets.all(16),
+        child: Row(children: [
+          SizedBox(
+            width: 36,
+            height: 36,
+            child: Stack(alignment: Alignment.center, children: [
+              CircularProgressIndicator(
+                value: progress,
+                strokeWidth: 3,
+                backgroundColor: isDark ? Colors.white12 : Colors.black12,
+                valueColor: const AlwaysStoppedAnimation(Color(0xFF7C4DFF)),
+              ),
+              Text('${(progress * 100).toInt()}%', style: const TextStyle(fontSize: 8, fontWeight: FontWeight.bold, color: Color(0xFF7C4DFF))),
+            ]),
+          ),
+          const SizedBox(width: 14),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(fileName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14), maxLines: 1, overflow: TextOverflow.ellipsis),
+            const SizedBox(height: 4),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: progress,
+                minHeight: 4,
+                backgroundColor: isDark ? Colors.white12 : Colors.black12,
+                valueColor: const AlwaysStoppedAnimation(Color(0xFF7C4DFF)),
+              ),
+            ),
+          ])),
+        ]),
       ),
     );
   }
@@ -2122,7 +2232,7 @@ class _GroupLinkDialogState extends State<GroupLinkDialog> {
               _loading
                   ? const SizedBox(
                       height: 100,
-                      child: Center(child: CircularProgressIndicator(color: Colors.amber)),
+                      child: Center(child: ProfessionalLoader(color: Colors.amber)),
                     )
                   : Column(mainAxisSize: MainAxisSize.min, children: [
                       TextField(
@@ -2256,7 +2366,7 @@ class _GroupLinkDialogState extends State<GroupLinkDialog> {
                         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
                       ),
                       child: _saving
-                          ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                          ? const SizedBox(width: 16, height: 16, child: ProfessionalLoader(size: 16))
                           : const Text('Save'),
                     ),
                   ],

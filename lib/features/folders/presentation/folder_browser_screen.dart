@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/services/firebase_service.dart';
 import '../../../core/utils.dart';
+import '../../../core/widgets/professional_loader.dart';
 
 class BrowseNode {
   final String id;
@@ -24,12 +25,14 @@ class FolderBrowserScreen extends StatefulWidget {
   final String sourceFolderId;
   final bool isMove;
   final List<String> selectedIds;
+  final String? parentContentId;
 
   const FolderBrowserScreen({
     super.key,
     required this.sourceFolderId,
     required this.isMove,
     required this.selectedIds,
+    this.parentContentId,
   });
 
   @override
@@ -155,24 +158,15 @@ class _FolderBrowserScreenState extends State<FolderBrowserScreen> {
     final action = widget.isMove ? 'Moved' : 'Copied';
     try {
       for (final contentId in widget.selectedIds) {
-        final doc = await FirebaseService.firestore
-            .collection('folders').doc(srcFolderId)
-            .collection('contents').doc(contentId).get();
-        if (!doc.exists) continue;
-        final data = Map<String, dynamic>.from(doc.data() as Map<String, dynamic>);
-        data.remove('createdAt');
-        data.remove('order');
-        if (targetParentContentId != null) {
-          data['parentContentId'] = targetParentContentId;
-        } else {
-          data.remove('parentContentId');
-        }
-        await FirebaseService.addFolderContent(targetTopLevelFolderId, data);
-        if (widget.isMove) {
-          await FirebaseService.deleteFolderContent(srcFolderId, contentId);
-        }
+        await _copyOrMoveContent(
+          srcFolderId: srcFolderId,
+          contentId: contentId,
+          targetTopLevelFolderId: targetTopLevelFolderId,
+          targetParentContentId: targetParentContentId,
+          isMove: widget.isMove,
+        );
       }
-      await FirebaseService.addNotification('$action ${widget.selectedIds.length} item(s)', folderId: srcFolderId);
+      await FirebaseService.addNotification('$action ${widget.selectedIds.length} item(s)', folderId: srcFolderId, parentContentId: widget.parentContentId);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('$action successfully'), backgroundColor: Colors.green),
@@ -185,6 +179,48 @@ class _FolderBrowserScreenState extends State<FolderBrowserScreen> {
           SnackBar(content: Text('Error: $e'), backgroundColor: Colors.redAccent),
         );
       }
+    }
+  }
+
+  Future<void> _copyOrMoveContent({
+    required String srcFolderId,
+    required String contentId,
+    required String targetTopLevelFolderId,
+    required String? targetParentContentId,
+    required bool isMove,
+  }) async {
+    final doc = await FirebaseService.firestore
+        .collection('folders').doc(srcFolderId)
+        .collection('contents').doc(contentId).get();
+    if (!doc.exists) return;
+    final data = Map<String, dynamic>.from(doc.data() as Map<String, dynamic>);
+    data.remove('createdAt');
+    data.remove('order');
+    if (targetParentContentId != null) {
+      data['parentContentId'] = targetParentContentId;
+    } else {
+      data.remove('parentContentId');
+    }
+    final newContentId = await FirebaseService.addFolderContent(targetTopLevelFolderId, data);
+    final isSubfolder = data['type'] == 'subfolder';
+    if (isSubfolder && newContentId != null) {
+      final childrenSnap = await FirebaseService.firestore
+          .collection('folders').doc(srcFolderId)
+          .collection('contents')
+          .where('parentContentId', isEqualTo: contentId)
+          .get();
+      for (final childDoc in childrenSnap.docs) {
+        await _copyOrMoveContent(
+          srcFolderId: srcFolderId,
+          contentId: childDoc.id,
+          targetTopLevelFolderId: targetTopLevelFolderId,
+          targetParentContentId: newContentId,
+          isMove: isMove,
+        );
+      }
+    }
+    if (isMove) {
+      await FirebaseService.deleteFolderContent(srcFolderId, contentId);
     }
   }
 
@@ -336,7 +372,7 @@ class _FolderBrowserScreenState extends State<FolderBrowserScreen> {
             ),
           Expanded(
             child: _loading
-                ? const Center(child: CircularProgressIndicator(color: Colors.amber))
+                ? const Center(child: ProfessionalLoader())
                 : _currentNodes.isEmpty
                     ? Center(child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,

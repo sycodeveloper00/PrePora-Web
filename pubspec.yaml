@@ -103,6 +103,13 @@ flutter:
         - asset: assets/fonts/Outfit-Bold.ttf
           weight: 700
 
+    - family: Noto Nastaliq Urdu
+      fonts:
+        - asset: web/fonts/NotoNastaliqUrdu-Regular.ttf
+          weight: 400
+        - asset: web/fonts/NotoNastaliqUrdu-Bold.ttf
+          weight: 700
+
 
   # To add assets to your application, add an assets section, like this:
   # assets:

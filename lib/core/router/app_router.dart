@@ -1,9 +1,12 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:firebase_auth/firebase_auth.dart' as fb_auth;
 import '../services/firebase_service.dart';
 import '../../features/auth/presentation/login_screen.dart';
 import '../../features/auth/presentation/signup_screen.dart';
 import '../../features/auth/presentation/forgot_password_screen.dart';
+import '../../features/auth/presentation/reset_password_screen.dart';
 import '../../features/auth/presentation/terms_accept_screen.dart';
 import '../../features/dashboard/presentation/dashboard_screen.dart';
 import '../../features/folders/presentation/folder_details_screen.dart';
@@ -28,42 +31,105 @@ import '../../features/settings/presentation/admin_settings_screen.dart';
 import '../../features/webview/presentation/webview_screen.dart';
 import '../../features/splash_onboarding/presentation/splash_screen.dart';
 import '../../features/notifications/presentation/admin_notifications_screen.dart';
+import '../../features/student/presentation/student_progress_screen.dart';
+import '../../features/link_web/presentation/link_web_screen.dart';
 
-const _publicPaths = {
-  '/splash',
-  '/auth/login',
-  '/auth/signup',
-  '/auth/forgot-password',
-  '/terms',
-};
+enum WebDomain { preporaWeb, adminPrepora, unknown }
 
-class GoRouterRedirect {
+WebDomain _detectDomain() {
+  if (!kIsWeb) return WebDomain.unknown;
+  try {
+    final host = Uri.base.host;
+    if (host.contains('admin-prepora')) return WebDomain.adminPrepora;
+    if (host.contains('prepora-web')) return WebDomain.preporaWeb;
+  } catch (_) {}
+  return WebDomain.unknown;
+}
+
+final WebDomain _currentDomain = _detectDomain();
+
+class AuthGuard {
+  static String? _cachedUserRole;
+
+  static void setUserRole(String? role) => _cachedUserRole = role;
+
   static String? guard(BuildContext context, GoRouterState state) {
     final path = state.matchedLocation;
-    final user = FirebaseService.currentUser;
 
-    if (user == null && !_publicPaths.contains(path)) return '/auth/login';
-    if (user != null && path == '/auth/login') return '/dashboard';
+    if (_currentDomain == WebDomain.preporaWeb) {
+      if (path == '/link-web') return null;
+      if (path == '/auth/login' || path == '/auth/signup' || path == '/auth/forgot-password') return '/link-web';
 
-    final role = FirebaseService.cachedRole;
-    if (role == null) return null;
+      try {
+        final user = fb_auth.FirebaseAuth.instance.currentUser;
+        if (user == null) return '/link-web';
+      } catch (_) {
+        return '/link-web';
+      }
 
-    if (path.startsWith('/admin') && role != 'admin') return '/auth/login';
-    if (path == '/assistant' && role != 'Assistant') return '/auth/login';
+      if (path == '/auth/reset-password') return null;
+      return null;
+    }
+
+    if (_currentDomain == WebDomain.adminPrepora) {
+      if (path == '/auth/login' || path == '/auth/forgot-password' || path == '/auth/reset-password') return null;
+
+      try {
+        final user = FirebaseService.currentUser;
+        if (user == null) return '/auth/login';
+
+        final role = _cachedUserRole ?? FirebaseService.cachedRole;
+        if (role == null) return '/auth/login';
+        if (role != 'admin') return '/auth/login';
+      } catch (_) {
+        return '/auth/login';
+      }
+
+      if (path == '/auth/signup') return '/admin';
+      return null;
+    }
+
+    if (path == '/link-web' || path == '/splash' || path == '/auth/login' || path == '/auth/signup' || path == '/auth/forgot-password' || path == '/auth/reset-password' || path == '/terms') return null;
+
+    try {
+      final user = FirebaseService.currentUser;
+      if (user == null) return '/auth/login';
+
+      final role = _cachedUserRole ?? FirebaseService.cachedRole;
+      if (role == null) return null;
+      if (path.startsWith('/admin') && role != 'admin') return '/auth/login';
+      if (path == '/assistant' && role != 'Assistant') return '/auth/login';
+    } catch (_) {
+      return '/auth/login';
+    }
 
     return null;
   }
 }
 
 class AppRouter {
+  static String get _initialLocation {
+    if (_currentDomain == WebDomain.adminPrepora) return '/auth/login';
+    if (_currentDomain == WebDomain.preporaWeb) return '/link-web';
+    return '/link-web';
+  }
+
   static final GoRouter router = GoRouter(
-    initialLocation: '/splash',
-    redirect: GoRouterRedirect.guard,
+    initialLocation: _initialLocation,
+    redirect: AuthGuard.guard,
     routes: <RouteBase>[
       GoRoute(path: '/splash', builder: (c, s) => const SplashScreen()),
+      GoRoute(path: '/link-web', builder: (c, s) => const LinkWebScreen()),
       GoRoute(path: '/auth/login', builder: (c, s) => const LoginScreen()),
       GoRoute(path: '/auth/signup', builder: (c, s) => const SignupScreen()),
       GoRoute(path: '/auth/forgot-password', builder: (c, s) => const ForgotPasswordScreen()),
+      GoRoute(
+        path: '/auth/reset-password',
+        builder: (c, s) {
+          final token = s.uri.queryParameters['token'];
+          return ResetPasswordScreen(token: token);
+        },
+      ),
 
       GoRoute(path: '/dashboard', builder: (c, s) => const DashboardScreen()),
       GoRoute(
@@ -77,6 +143,7 @@ class AppRouter {
             canEdit: extra?['canEdit'] as bool? ?? false,
             canManage: extra?['canManage'] as bool? ?? false,
             isAdmin: extra?['isAdmin'] as bool? ?? false,
+            targetStudentUid: extra?['targetStudentUid'] as String?,
             assistantContentAccess: extra?['assistantContentAccess'] is List
                 ? (extra!['assistantContentAccess'] as List).cast<String>().toSet()
                 : null,
@@ -93,6 +160,7 @@ class AppRouter {
             canEdit: extra?['canEdit'] as bool? ?? false,
             canManage: extra?['canManage'] as bool? ?? false,
             isAdmin: extra?['isAdmin'] as bool? ?? false,
+            targetStudentUid: extra?['targetStudentUid'] as String?,
             assistantContentAccess: extra?['assistantContentAccess'] is List
                 ? (extra!['assistantContentAccess'] as List).cast<String>().toSet()
                 : null,
@@ -121,6 +189,7 @@ class AppRouter {
       GoRoute(path: '/admin/control-panel', builder: (c, s) => const AdminControlPanelScreen()),
       GoRoute(path: '/student/notices', builder: (c, s) => const StudentNoticeScreen()),
       GoRoute(path: '/student/feedbacks', builder: (c, s) => const StudentFeedbackScreen()),
+      GoRoute(path: '/student/progress', builder: (c, s) => const StudentProgressScreen()),
       GoRoute(
         path: '/media_player',
         builder: (c, s) {

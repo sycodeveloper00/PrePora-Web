@@ -5,7 +5,6 @@ import 'package:http/http.dart' as http;
 import '../services/firebase_service.dart';
 
 class AiService {
-  // Free API key from BazaarLink — sign up at https://bazaarlink.ai/free for your own key
   static const String _apiKey =
       'sk-bl-foHbeBqqZJM8O6gYEmmouGtftnSBdpPNqvy_aRc-BTEW7Qfr';
   static const String _baseUrl = 'https://bazaarlink.ai/api/v1';
@@ -41,27 +40,72 @@ class AiService {
       '- Do not add extra blank lines at the start of your response.\n'
       '- Keep proper formatting for readability.\n\n'
       'MATHEMATICAL EXPRESSIONS:\n'
-      '- ALWAYS wrap math in \$...\$ or \$\$...\$\$: \$\frac{a}{b}\$ NOT \frac{a}{b}\n'
-      '- Fractions: \$\frac{a}{b}\$\n'
+      '- ALL math MUST be wrapped in \$...\$ (inline) or \$\$...\$\$ (block). This is ABSOLUTELY CRITICAL.\n'
+      '- EVERY fraction, every exponent, every symbol — always inside \$ delimiters.\n'
+      '- GOOD: The answer is \$\\frac{a}{b}\$  BAD: The answer is \\frac{a}{b}\n'
+      '- GOOD: \$x^{2} + y^{2} = r^{2}\$  BAD: x^2 + y^2 = r^2\n'
+      '- NEVER output bare LaTeX commands without \$ wrapping. If you write \\frac, \\sqrt, \\int, \\sum, etc., they MUST be inside \$...\$.\n'
+      '- Fractions: \$\\frac{a}{b}\$\n'
       '- Exponents: \$x^{n}\$\n'
       '- Subscripts: \$x_{i}\$\n'
-      '- Square roots: \$\sqrt{x}\$\n'
-      '- Summations: \$\sum_{i=1}^{n}\$\n'
-      '- Integrals: \$\int_{a}^{b}\$\n'
-      '- Greek letters: \$\alpha, \beta, \theta, \pi\$\n\n'
-      'PROFESSIONALISM:\n'
-      '- Professional expert tutor tone — knowledgeable but approachable\n'
-      '- Include relevant formulas and step-by-step reasoning\n'
-      '- For MCQs, briefly explain WHY each option is right or wrong\n'
-      '- Reference real exam patterns and past paper trends\n'
-      '- Offer memory techniques (mnemonics) for difficult concepts\n\n'
-      'LANGUAGES:\n'
-      '- You understand ALL human and programming languages\n'
-      '- Reply in the same language the student uses\n'
-      '- NEVER respond in Chinese (Chinese, Mandarin, Cantonese, etc)\n'
-      '- CRITICAL: When the student writes in Roman Urdu (Urdu using English alphabet, like "aap kaise hain"), you MUST ALWAYS reply in Roman Urdu using the English alphabet. NEVER use Arabic/Urdu script (نستعلیق).\n'
-      '- CRITICAL: If the student writes in English, reply in English only\n'
-      '- For technical terms, include English in parentheses: مثال (example)\n'
+      '- Square roots: \$\\sqrt{x}\$\n'
+      '- Summations: \$\\sum_{i=1}^{n}\$\n'
+      '- Integrals: \$\\int_{a}^{b}\$\n'
+      '- Greek letters: \$\\alpha, \\beta, \\theta, \\pi\$\n\n'
+      'PROFESSIONALISM & RESPONSE STYLE:\n'
+      '- You are a world-class academic tutor — be confident, clear, and precise.\n'
+      '- NEVER start responses with "Sure!", "Of course!", "Great question!", or similar filler.\n'
+      '- NEVER use emojis in responses. Be professional and academic.\n'
+      '- Use clear structure: headings, bullet points, numbered steps.\n\n'
+      'MATH PROBLEMS (CRITICAL - MUST FOLLOW):\n'
+      '- ALWAYS solve step-by-step. NEVER give just the final answer.\n'
+      '- ALWAYS start with "Given:" or "We need to find:" to state the problem.\n'
+      '- Show EVERY algebraic step on a SEPARATE LINE using markdown numbered list.\n'
+      '- Each step must have a brief English explanation of what was done.\n'
+      '- End with "**Answer:**" or "**Therefore:**" clearly.\n'
+      '- Format: use block math delimiters for equations on their own lines.\n'
+      '- Example for "solve 2x+3=7":\n'
+      '  **Given:** \$2x + 3 = 7\$\n'
+      '  **Step 1:** Subtract 3 from both sides\n'
+      '\$\$2x + 3 - 3 = 7 - 3\$\$\n'
+      '\$\$2x = 4\$\$\n'
+      '  **Step 2:** Divide both sides by 2\n'
+      '\$\$x = \\\\frac{4}{2}\$\$\n'
+      '\$\$x = 2\$\$\n'
+      '  **Answer:** \$x = 2\$\n'
+      '  **Verification:** Substitute back: \$2(2) + 3 = 4 + 3 = 7\$ ✓\n\n'
+      '- For MCQs: state the answer first, then brief explanation.\n'
+      '- For concepts: define → explain → example → key takeaway.\n'
+      '- Reference real exam patterns (MDCAT, ECAT, NUST, FAST, CSS, IELTS).\n'
+      '- Use mnemonics for difficult memorization tasks.\n'
+      '- Be encouraging but not patronizing. Be direct but not rude.\n'
+      '- Keep responses concise but COMPLETE. Do NOT skip steps.\n\n'
+      'LANGUAGE RULES (STRICT — VIOLATION = WRONG):\n'
+      'DETECTION: Look at what script the student uses. Determine their language BEFORE replying.\n'
+      'English alphabet = English or Roman Urdu. Arabic script = Urdu. No ambiguity.\n\n'
+      'RULE 1: ENGLISH input (like "What is photosynthesis?", "solve 2x+3=7", "explain Newton\'s laws") → Reply 100% in ENGLISH.\n'
+      'Labels: "Solution:", "Step 1:", "Answer:", "Given:", "Therefore:", "Method:", "Explanation:".\n'
+      'RULE 2: PURE MATH with English alphabet ONLY (like "2x+3=7", "x^2+5x+6=0", "solve this: 3x-9=0") → Reply in ENGLISH.\n'
+      'Even if there is no English word, English alphabet math = ENGLISH reply. Use "Solution:", NOT "حل:".\n'
+      'RULE 3: ROMAN URDU input (English alphabet Urdu words like "aap kaise hain", "ye kya hai", "solve karo", "mujhe samjhao") → Reply in ROMAN URDU using English alphabet ONLY.\n'
+      'Labels: "hal:", "step 1:", "jawab:", "diya gaya:", "is liye:". NEVER convert to نستعلیق.\n'
+      'RULE 4: URDU input (نستعلیق script like "تجویز کریں", "یہ کیا ہے", "مجھے سمجھاؤ") → Reply in نستعلیق ONLY.\n'
+      'Labels: "حل:", "مرحلہ 1:", "جواب:", "دیا گیا:", "اس لیے:".\n'
+      'RULE 5: MIXED English+Roman Urdu (like "ye photosynthesis kya hota hai") → Reply in ROMAN URDU.\n\n'
+      'CRITICAL: "solve this: 2x+3=7" is ENGLISH alphabet input → ENGLISH reply. NOT Urdu.\n'
+      'CRITICAL: "kisi aur method se kroo" has Roman Urdu words → ROMAN Urdu reply. NOT نستعلیق.\n'
+      'CRITICAL: NEVER use نستعلیق script unless the student EXPLICITLY writes in نستعلیق.\n'
+      'CRITICAL: NEVER mix نستعلیق labels (حل:, جواب:) with Roman Urdu or English text.\n\n'
+      '- HINDI input (Devanagari script) → HINDI reply in Devanagari script.\n'
+      '- ROMAN HINDI input (like "yeh kya hai bhai") → Reply in ROMAN HINDI using English alphabet.\n'
+      '- ARABIC input → ARABIC reply.\n'
+      '- CHINESE/JAPANESE/KOREAN input → Reply in ENGLISH (never in those languages).\n'
+      '- NEVER mix languages in a single reply. One reply = one language/script.\n'
+      '- NEVER switch to English if the student is writing in Urdu/Roman Urdu. Stay in their language.\n'
+      '- NEVER switch to Urdu (نستعلیق) if the student is writing in Roman Urdu or English.\n'
+      '- NEVER switch to Urdu (نستعلیق) if the student is writing in English. Stay in English.\n'
+      '- Code snippets inside ```code blocks``` are always in English regardless of conversation language.\n'
+      '- Mathematical formulas are always in LaTeX regardless of conversation language.\n'
       '- Specify code language in code blocks: ```python\n\n'
       'WEB & YOUTUBE ACCESS:\n'
       '- You HAVE full permission to access YouTube, Google, and any web content.\n'
@@ -84,12 +128,19 @@ class AiService {
       'politely apologize and guide them to use the Feedback option in the Settings menu '
       'to report it to the admin. Do NOT try to fix the app yourself.\n\n'
       'CONTENT ACCESS:\n'
-      'You have full access to the student\'s study catalog — folders, lectures, files, '
-      'mock tests, and notes (excluding admin-locked content). Use this to provide '
-      'contextually relevant answers. When discussing a topic, reference available '
-      'lectures or resources the student can review for deeper understanding.\n'
+      'You have access to the user\'s study catalog — folders, lectures, files, '
+      'mock tests, and notes. Only unlocked and visible content is included. '
+      'Locked or hidden items are NOT accessible. For assistants, only assigned folders are shown.\n'
+      'Use this to provide contextually relevant answers. When discussing a topic, '
+      'reference available lectures or resources the user can review for deeper understanding.\n'
       'IMPORTANT: Never output any URLs, file paths, folder IDs, or document links '
-      'from the catalog. Only mention folder or lecture names in plain text.';
+      'from the catalog. Only mention folder or lecture names in plain text.\n\n'
+      'IDENTITY & PRIVACY:\n'
+      '- You are "PrePora AI" — NEVER reveal the name of any API provider, service, backend, '
+      'or technology powering you (e.g., BazaarLink, OpenAI, Anthropic, or any other provider).\n'
+      '- If asked what AI model you are, say "I am PrePora AI, your study assistant."\n'
+      '- NEVER include API keys, endpoint URLs, model names, or any technical backend details in responses.\n'
+      '- NEVER mention that you use any third-party AI service.';
 
   final List<Map<String, String>> _messages = [];
   bool _contextLoaded = false;
@@ -97,6 +148,23 @@ class AiService {
   AiService() {
     _messages.add({'role': 'system', 'content': _baseSystemPrompt});
   }
+
+  String get _apiUrl => kIsWeb ? '/api/proxy' : '$_baseUrl/chat/completions';
+
+  Map<String, String> _headers({bool withAuth = true}) {
+    final h = <String, String>{'Content-Type': 'application/json'};
+    if (withAuth) h['Authorization'] = 'Bearer $_apiKey';
+    return h;
+  }
+
+  Map<String, dynamic> _body({required bool stream}) => {
+        'model': 'auto:free',
+        'messages': _messages,
+        'max_tokens': 4096,
+        'temperature': 0.3,
+        'stream': stream,
+        'enable_thinking': false,
+      };
 
   Future<String> sendMessage(String message) async {
     _messages.add({'role': 'user', 'content': message});
@@ -107,22 +175,14 @@ class AiService {
 
     try {
       final response = await http.post(
-        Uri.parse('$_baseUrl/chat/completions'),
-        headers: {
-          'Authorization': 'Bearer $_apiKey',
-          'Content-Type': 'application/json',
-        },
-        body: jsonEncode({
-          'model': 'auto:free',
-          'messages': _messages,
-          'max_tokens': 2048,
-          'temperature': 0.3,
-        }),
+        Uri.parse(_apiUrl),
+        headers: _headers(),
+        body: jsonEncode(_body(stream: false)),
       );
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        final reply = fixLatex(data['choices'][0]['message']['content'] as String);
+        final reply = data['choices'][0]['message']['content'] as String;
         _messages.add({'role': 'assistant', 'content': reply});
         return reply;
       }
@@ -143,24 +203,339 @@ class AiService {
     }
   }
 
-  /// Fixes LaTeX commands corrupted by JSON decoding (\\f → formfeed, \\t → tab, etc.)
-  /// Also escapes | → \vert inside $...$ and $$...$$ to prevent markdown table breakage.
+  /// Fixes messy AI LaTeX output so flutter_math_fork can parse it.
+  /// Uses line-by-line processing for reliability.
   static String fixLatex(String text) {
     String result = text
         .replaceAll('\u000c', '\\f')
         .replaceAll('\u0009', '\\t')
         .replaceAll('\u0008', '\\b');
-    // Escape | inside inline math $...$
+
+    // Step 1: Convert ```latex or ```math code blocks to $$...$$
+    result = result.replaceAllMapped(
+      RegExp(r'```(?:latex|math)?\s*\r?\n([\s\S]*?)\r?\n```', multiLine: true),
+      (m) => '\n\n\$\$${m[1]}\$\$\n\n',
+    );
+
+    // Step 2: Replace \left/\right — flutter_math_fork does NOT support them
+    result = result
+        .replaceAllMapped(RegExp(r'\\left\s*\('), (_) => '(')
+        .replaceAllMapped(RegExp(r'\\left\s*\['), (_) => '[')
+        .replaceAllMapped(RegExp(r'\\left\s*\\\{'), (_) => r'\{')
+        .replaceAllMapped(RegExp(r'\\left\s*\|'), (_) => '|')
+        .replaceAllMapped(RegExp(r'\\right\s*\)'), (_) => ')')
+        .replaceAllMapped(RegExp(r'\\right\s*\]'), (_) => ']')
+        .replaceAllMapped(RegExp(r'\\right\s*\\\}'), (_) => r'\}')
+        .replaceAllMapped(RegExp(r'\\right\s*\|'), (_) => '|');
+
+    // Step 3: Strip pre-existing $ delimiters AND single backticks from lines containing LaTeX
+    // AI sends $...$ around math and `\frac{...}` in backticks which conflicts with rendering
+    final preLines = result.split('\n');
+    final latexCmdRe2 = RegExp(r'\\[a-zA-Z]+|\^[\{\d]|\_[\{\d]');
+    final strippedLines = <String>[];
+    for (var line in preLines) {
+      final t = line.trim();
+      if (t.isNotEmpty && latexCmdRe2.hasMatch(t)) {
+        var stripped = line.replaceAll('\$', '');
+        // Strip single backticks around LaTeX: `\frac{4}{2}` → \frac{4}{2}
+        stripped = stripped.replaceAllMapped(
+          RegExp(r'`([^`]*\\[a-zA-Z][^`]*?)`'),
+          (m) => m[1]!,
+        );
+        strippedLines.add(stripped);
+      } else {
+        strippedLines.add(line);
+      }
+    }
+    result = strippedLines.join('\n');
+
+    // Step 3.5: Split crammed multi-step equations into separate lines
+    // AI sometimes sends "2x + 3 = 7 2x = 7 - 3 2x = 4 x =\frac{4}{2} = 2" all on one line
+    // Split before patterns like "2x =", "x =" when preceded by other math (multiple = signs)
+    final equationSplitRe = RegExp(r'(?<=\S)\s+(?=\d*x\s*=|x\s*=|Solution|Step\s|Method|hal:|jawab:)');
+    final splitLines = result.split('\n');
+    final splitProcessed = <String>[];
+    for (var line in splitLines) {
+      final trimmed = line.trim();
+      // Only split lines with 3+ equals signs (multi-step equations crammed together)
+      if (trimmed.isNotEmpty &&
+          !trimmed.startsWith('\$\$') &&
+          !trimmed.startsWith('#') &&
+          !trimmed.startsWith('```') &&
+          RegExp(r'=').allMatches(trimmed).length >= 3) {
+        final parts = trimmed.split(equationSplitRe);
+        for (var part in parts) {
+          if (part.trim().isNotEmpty) {
+            splitProcessed.add(part.trim());
+          }
+        }
+      } else {
+        splitProcessed.add(line);
+      }
+    }
+    result = splitProcessed.join('\n');
+
+    // Step 4: Process line-by-line
+    final lines = result.split('\n');
+    final processed = <String>[];
+    final latexCmdRe = RegExp(r'\\[a-zA-Z]+|\^[\{\d]|\_[\{\d]');
+    // Matches 3+ consecutive letters NOT preceded by \ (real text words)
+    final textWordRe = RegExp(r'[a-zA-Z]{3,}');
+
+    for (var line in lines) {
+      final trimmed = line.trim();
+
+      // Skip empty lines, already $$ wrapped, indented (code), headings, horizontal rules
+      if (trimmed.isEmpty ||
+          trimmed.startsWith('\$\$') ||
+          trimmed.startsWith('    ') ||
+          trimmed.startsWith('\t') ||
+          trimmed.startsWith('#') ||
+          trimmed.startsWith('---') ||
+          trimmed.startsWith('***')) {
+        processed.add(line);
+        continue;
+      }
+
+      // If line has NO LaTeX commands, leave as-is
+      if (!latexCmdRe.hasMatch(trimmed)) {
+        processed.add(line);
+        continue;
+      }
+
+      final hasBoldMarkers = trimmed.contains('**');
+      final strippedForWords = trimmed.replaceAll(RegExp(r'\\[a-zA-Z]+'), '');
+      final hasTextWords = textWordRe.hasMatch(strippedForWords);
+      final isJustNumber = RegExp(r'^[\d\s\.\+\-\*\/\=\(\)\√]+$', caseSensitive: false).hasMatch(trimmed);
+      // Check for non-Latin scripts (Arabic, Urdu, Chinese, etc.) — treat as text so they don't get wrapped in $$...$$
+      final hasNonLatin = RegExp(r'[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF\u4E00-\u9FFF\u3040-\u309F\u30A0-\u30FF]').hasMatch(trimmed);
+
+      final isFullMath = !hasTextWords && !hasBoldMarkers && !isJustNumber && !hasNonLatin;
+
+      if (isFullMath) {
+        processed.add('\$$trimmed\$');
+      } else {
+        processed.add(_wrapInlineMath(trimmed));
+      }
+    }
+    result = processed.join('\n');
+
+    // Step 5: Escape | inside inline math $...$
     result = result.replaceAllMapped(
       RegExp(r'\$(.+?)\$'),
       (m) => '\$${m[1]!.replaceAll('|', '\\vert')}\$',
     );
-    // Escape | inside block math $$...$$
+    // Step 6: Escape | inside block math $$...$$
     result = result.replaceAllMapped(
       RegExp(r'\$\$(.+?)\$\$', dotAll: true),
       (m) => '\$\$${m[1]!.replaceAll('|', '\\vert')}\$\$',
     );
+
     return result;
+  }
+
+  /// Reads a brace-enclosed group starting at [start] (the char after \command).
+  /// Returns the index after the closing }, or -1 if unbalanced.
+  /// Skips escaped braces \{ and \} so they don't break depth counting.
+  static int _readBraceGroup(String text, int start) {
+    if (start >= text.length || text[start] != '{') return -1;
+    int depth = 0;
+    for (int i = start; i < text.length; i++) {
+      if (text[i] == '\\' && i + 1 < text.length && (text[i + 1] == '{' || text[i + 1] == '}')) {
+        i++; // skip \{ or \}
+        continue;
+      }
+      if (text[i] == '{') {
+        depth++;
+      } else if (text[i] == '}') {
+        depth--;
+        if (depth == 0) return i;
+      }
+    }
+    return -1;
+  }
+
+  /// Extracts a full LaTeX command (with all its brace groups) starting at [pos]
+  /// where text[pos] == '\'. Returns the full command string or null.
+  static String? _extractLatexCommand(String text, int pos) {
+    if (pos >= text.length || text[pos] != '\\') return null;
+    // Read command name: \frac, \sqrt, \boxed, etc.
+    final nameMatch = RegExp(r'\\([a-zA-Z]+)').firstMatch(text.substring(pos));
+    if (nameMatch == null) return null;
+    final cmdName = nameMatch.group(0)!;
+    int end = pos + cmdName.length;
+
+    // \sqrt[n]{...} — optional bracket argument
+    if (cmdName == '\\sqrt' && end < text.length && text[end] == '[') {
+      final bracketEnd = text.indexOf(']', end);
+      if (bracketEnd != -1) end = bracketEnd + 1;
+    }
+
+    // Commands that take brace arguments: \frac takes 2, \boxed/\sqrt/\text takes 1
+    int braceArgs = 0;
+    if (cmdName == '\\frac' || cmdName == '\\dfrac' || cmdName == '\\tfrac') {
+      braceArgs = 2;
+    } else if (cmdName == '\\boxed' || cmdName == '\\sqrt' || cmdName == '\\text' ||
+        cmdName == '\\mathrm' || cmdName == '\\mathbf' || cmdName == '\\overline' ||
+        cmdName == '\\underline' || cmdName == '\\hat' || cmdName == '\\bar' ||
+        cmdName == '\\vec' || cmdName == '\\dot' || cmdName == '\\ddot' ||
+        cmdName == '\\tilde' || cmdName == '\\widehat' || cmdName == '\\overbrace' ||
+        cmdName == '\\underbrace' || cmdName == '\\color' || cmdName == '\\operatorname') {
+      braceArgs = 1;
+    }
+
+    for (int i = 0; i < braceArgs; i++) {
+      while (end < text.length && text[end] == ' ') {
+        end++;
+      }
+      if (end < text.length && text[end] == '{') {
+        final closeIdx = _readBraceGroup(text, end);
+        if (closeIdx != -1) {
+          end = closeIdx + 1;
+        } else {
+          break; // unbalanced
+        }
+      } else {
+        break; // no brace group
+      }
+    }
+
+    // Handle sub/superscripts for operators like \int, \sum, \prod, \lim
+    if (braceArgs == 0) {
+      // Check for _{...} or _x
+      if (end < text.length && text[end] == '_') {
+        end++;
+        if (end < text.length && text[end] == '{') {
+          final close = _readBraceGroup(text, end);
+          if (close != -1) {
+            end = close + 1;
+          } else if (end < text.length) {
+            end++;
+          }
+        } else if (end < text.length) {
+          end++;
+        }
+      }
+      // Check for ^{...} or ^x
+      if (end < text.length && text[end] == '^') {
+        end++;
+        if (end < text.length && text[end] == '{') {
+          final close = _readBraceGroup(text, end);
+          if (close != -1) {
+            end = close + 1;
+          } else if (end < text.length) {
+            end++;
+          }
+        } else if (end < text.length) {
+          end++;
+        }
+      }
+    }
+
+    return text.substring(pos, end);
+  }
+
+  /// Wraps individual LaTeX commands in $...$ for mixed text+math lines.
+  /// Simple char-by-char scan: finds \command, extracts full thing with brace-balancing, wraps it.
+  static String _wrapInlineMath(String line) {
+    final buf = StringBuffer();
+    int i = 0;
+
+    while (i < line.length) {
+      if (line[i] == '\\' && i + 1 < line.length) {
+        final next = line[i + 1];
+
+        // Skip escaped braces \{ and \}
+        if (next == '{' || next == '}') {
+          buf.write(line.substring(i, i + 2));
+          i += 2;
+          continue;
+        }
+
+        // Skip escaped dollar sign \$
+        if (next == '\$') {
+          buf.write(line.substring(i, i + 2));
+          i += 2;
+          continue;
+        }
+
+        // Must be a letter to be a LaTeX command
+        if (RegExp(r'[a-zA-Z]').hasMatch(next)) {
+          final cmd = _extractLatexCommand(line, i);
+          if (cmd != null && cmd.length > 1) {
+            buf.write('\$$cmd\$');
+            i += cmd.length;
+            continue;
+          }
+        }
+      }
+
+      // Handle ^{...} and _{...} superscript/subscript
+      if ((line[i] == '^' || line[i] == '_') && i + 1 < line.length && line[i + 1] == '{') {
+        final endBrace = _readBraceGroup(line, i + 1);
+        if (endBrace > 0) {
+          // Remove preceding token from buffer if already written
+          final bufStr = buf.toString();
+          final precedingChar = bufStr.isNotEmpty ? bufStr[bufStr.length - 1] : '';
+          if (RegExp(r'[\d\.\)]').hasMatch(precedingChar)) {
+            buf.clear();
+            buf.write(bufStr.substring(0, bufStr.length - 1));
+            final fullExpr = '$precedingChar${line.substring(i, endBrace + 1)}';
+            buf.write('\$$fullExpr\$');
+          } else if (precedingChar == '}' && bufStr.length >= 2) {
+            // Find the matching $...$ block before this }
+            final dollarIdx = bufStr.lastIndexOf('\$');
+            if (dollarIdx >= 0) {
+              final mathBlock = bufStr.substring(dollarIdx);
+              buf.clear();
+              buf.write(bufStr.substring(0, dollarIdx));
+              final fullExpr = '$mathBlock${line.substring(i, endBrace + 1)}';
+              buf.write('\$$fullExpr\$');
+            } else {
+              buf.write('\$${line.substring(i, endBrace + 1)}\$');
+            }
+          } else {
+            buf.write('\$${line.substring(i, endBrace + 1)}\$');
+          }
+          i = endBrace + 1;
+          continue;
+        }
+      }
+
+      // Handle ^digit and _digit (without braces) — e.g. ^2, _3
+      if ((line[i] == '^' || line[i] == '_') && i + 1 < line.length && RegExp(r'[\d]').hasMatch(line[i + 1])) {
+        // Remove preceding token from buffer if already written
+        final bufStr = buf.toString();
+        final precedingChar = bufStr.isNotEmpty ? bufStr[bufStr.length - 1] : '';
+        if (RegExp(r'[\d\.\)]').hasMatch(precedingChar)) {
+          buf.clear();
+          buf.write(bufStr.substring(0, bufStr.length - 1));
+          final fullExpr = '$precedingChar${line.substring(i, i + 2)}';
+          buf.write('\$$fullExpr\$');
+        } else if (precedingChar == '}' && bufStr.length >= 2) {
+          final dollarIdx = bufStr.lastIndexOf('\$');
+          if (dollarIdx >= 0) {
+            final mathBlock = bufStr.substring(dollarIdx);
+            buf.clear();
+            buf.write(bufStr.substring(0, dollarIdx));
+            final fullExpr = '$mathBlock${line.substring(i, i + 2)}';
+            buf.write('\$$fullExpr\$');
+          } else {
+            buf.write('\$${line.substring(i, i + 2)}\$');
+          }
+        } else {
+          buf.write('\$${line.substring(i, i + 2)}\$');
+        }
+        i += 2;
+        continue;
+      }
+
+      // Not a command — copy as-is
+      buf.write(line[i]);
+      i++;
+    }
+
+    return buf.toString();
   }
 
   /// Streams a response chunk-by-chunk via SSE for a live typing effect.
@@ -170,69 +545,59 @@ class AiService {
       _messages.removeRange(1, _messages.length - 20);
     }
 
+    // Web: use Vercel serverless proxy with SSE streaming.
+    // Mobile: direct API streaming.
     if (kIsWeb) {
-      // On web, try multiple CORS proxies then direct
-      final apiUrl = '$_baseUrl/chat/completions';
-      final proxies = [
-        'https://api.allorigins.win/raw?url=${Uri.encodeComponent(apiUrl)}',
-        'https://corsproxy.io/?${Uri.encodeComponent(apiUrl)}',
-        apiUrl,
-      ];
-      for (final url in proxies) {
-        try {
-          final response = await http.post(
-            Uri.parse(url),
-            headers: {
-              'Authorization': 'Bearer $_apiKey',
-              'Content-Type': 'application/json',
-            },
-            body: jsonEncode({
-              'model': 'auto:free',
-              'messages': _messages,
-              'max_tokens': 2048,
-              'temperature': 0.3,
-              'stream': false,
-            }),
-          ).timeout(Duration(seconds: url == apiUrl ? 15 : 30));
+      final fullBuffer = StringBuffer();
+      http.Client? client;
+      try {
+        client = http.Client();
+        final request = http.Request('POST', Uri.parse(_apiUrl));
+        request.headers.addAll(_headers());
+        request.body = jsonEncode(_body(stream: true));
+        final streamed = await client.send(request).timeout(const Duration(seconds: 90));
 
-          if (response.statusCode == 200) {
-            final data = jsonDecode(response.body);
-            final reply = fixLatex(data['choices'][0]['message']['content'] as String);
-            _messages.add({'role': 'assistant', 'content': reply});
-            yield reply;
-            return;
+        await for (final chunk in streamed.stream
+            .transform(utf8.decoder)
+            .transform(const LineSplitter())) {
+          if (chunk.startsWith('data: ')) {
+            final data = chunk.substring(6).trim();
+            if (data == '[DONE]') break;
+            try {
+              final json = jsonDecode(data) as Map<String, dynamic>;
+              final delta = ((json['choices'] as List<dynamic>?)?.firstOrNull
+                  as Map<String, dynamic>?)?['delta'] as Map<String, dynamic>?;
+              final raw = delta?['content'] as String?;
+              if (raw != null && raw.isNotEmpty) {
+                fullBuffer.write(raw);
+                yield raw;
+              }
+            } catch (_) {}
           }
-          if (response.statusCode == 401) {
-            yield '⚠️ API key issue detected. Please contact the admin to get a valid API key.';
-            return;
-          }
-          if (response.statusCode == 429) {
-            yield '🤖 AI service is temporarily busy. Please wait a moment and try again.';
-            return;
-          }
-        } catch (_) {
-          continue;
+        }
+        if (fullBuffer.isNotEmpty) {
+          _messages.add({'role': 'assistant', 'content': fullBuffer.toString()});
+        }
+        client.close();
+        return;
+      } catch (e) {
+        client?.close();
+        if (fullBuffer.isNotEmpty) {
+          _messages.add({'role': 'assistant', 'content': fullBuffer.toString()});
+          return;
         }
       }
       yield '❌ Connection Error\n\nPlease check your internet connection and try again.';
       return;
     }
 
+    // Mobile: direct streaming via SSE
     final request = http.Request(
       'POST',
-      Uri.parse('$_baseUrl/chat/completions'),
+      Uri.parse(_apiUrl),
     );
-    request.headers.addAll({
-      'Authorization': 'Bearer $_apiKey',
-      'Content-Type': 'application/json',
-    });
-    request.body = jsonEncode({
-      'model': 'auto:free',
-      'messages': _messages,
-      'max_tokens': 2048,
-      'temperature': 0.3,
-      'stream': true,
-    });
+    request.headers.addAll(_headers());
+    request.body = jsonEncode(_body(stream: true));
 
     final fullBuffer = StringBuffer();
     http.Client? client;
@@ -240,7 +605,7 @@ class AiService {
     try {
       client = http.Client();
       final streamed =
-          await client.send(request).timeout(const Duration(seconds: 30));
+          await client.send(request).timeout(const Duration(seconds: 60));
 
       await for (final chunk in streamed.stream
           .transform(utf8.decoder)
@@ -254,9 +619,8 @@ class AiService {
                 as Map<String, dynamic>?)?['delta'] as Map<String, dynamic>?;
             final raw = delta?['content'] as String?;
             if (raw != null && raw.isNotEmpty) {
-              final content = fixLatex(raw);
-              fullBuffer.write(content);
-              yield content;
+              fullBuffer.write(raw);
+              yield raw;
             }
           } catch (_) {
             // skip malformed chunks
@@ -363,6 +727,24 @@ If the student seems confused, offer simpler explanations. Suggest relevant topi
         'Here is the complete study content catalog available to this user in the PrePora app:');
 
     try {
+      final userDoc = await FirebaseService.firestore.collection('users').doc(uid).get();
+      final role = (userDoc.data()?['role'] as String?) ?? 'student';
+
+      Set<String> allowedFolderIds;
+      if (role == 'Assistant') {
+        final accessSnap = await FirebaseService.firestore
+            .collection('Assistant_access')
+            .where('uid', isEqualTo: uid)
+            .get();
+        allowedFolderIds = accessSnap.docs
+            .map((d) => d.data()['folderId'] as String? ?? '')
+            .where((id) => id.isNotEmpty)
+            .toSet();
+        if (allowedFolderIds.isEmpty) return '';
+      } else {
+        allowedFolderIds = {};
+      }
+
       final foldersSnap = await FirebaseService.firestore
           .collection('folders')
           .orderBy('createdAt')
@@ -374,8 +756,10 @@ If the student seems confused, offer simpler explanations. Suggest relevant topi
         final folderId = folderDoc.id;
         final folderLocked = folderData['locked'] as bool? ?? false;
         final folderUpdating = folderData['updating'] as bool? ?? false;
+        final folderInvisible = folderData['invisible'] as bool? ?? false;
 
-        if (folderLocked || folderUpdating) continue;
+        if (folderLocked || folderUpdating || folderInvisible) continue;
+        if (role == 'Assistant' && !allowedFolderIds.contains(folderId)) continue;
 
         buffer.writeln('\n📁 Folder: $folderName');
 
@@ -386,40 +770,89 @@ If the student seems confused, offer simpler explanations. Suggest relevant topi
             .orderBy('createdAt')
             .get();
 
+        final contentMap = <String, Map<String, dynamic>>{};
+        for (final c in contentsSnap.docs) {
+          contentMap[c.id] = c.data();
+        }
+
+        final lockedIds = <String>{};
+        final invisibleIds = <String>{};
+        for (final entry in contentMap.entries) {
+          final d = entry.value;
+          final t = d['type'] as String? ?? '';
+          if (d['locked'] == true && t == 'subfolder') lockedIds.add(entry.key);
+          if (d['invisible'] == true && t == 'subfolder') invisibleIds.add(entry.key);
+        }
+
+        String buildPath(String? parentContentId) {
+          if (parentContentId == null || parentContentId.isEmpty) return '';
+          final parent = contentMap[parentContentId];
+          if (parent == null) return '';
+          final parentName = parent['name'] as String? ?? '';
+          final grandParent = parent['parentContentId'] as String? ?? '';
+          if (grandParent.isNotEmpty) {
+            return '${buildPath(grandParent)} > $parentName';
+          }
+          return parentName;
+        }
+
+        bool isAncestorLocked(String? parentContentId, {int depth = 0}) {
+          if (parentContentId == null || parentContentId.isEmpty || depth > 10) return false;
+          if (lockedIds.contains(parentContentId) || invisibleIds.contains(parentContentId)) return true;
+          final parent = contentMap[parentContentId];
+          if (parent == null) return false;
+          final gp = parent['parentContentId'] as String? ?? '';
+          return isAncestorLocked(gp, depth: depth + 1);
+        }
+
         for (final contentDoc in contentsSnap.docs) {
           final data = contentDoc.data();
           final type = data['type'] as String? ?? 'file';
           final name = data['name'] as String? ?? 'Unnamed';
           final locked = data['locked'] as bool? ?? false;
+          final invisible = data['invisible'] as bool? ?? false;
+          final parentContentId = data['parentContentId'] as String? ?? '';
 
-          if (locked) continue;
+          if (locked || invisible) continue;
+          if (isAncestorLocked(parentContentId)) continue;
+
+          final path = buildPath(parentContentId);
+          final prefix = path.isNotEmpty ? '  [$path] ' : '  ';
 
           switch (type) {
             case 'lecture':
               final url = data['youtubeUrl'] as String? ?? '';
-              buffer.writeln('  🎬 Lecture: "$name" → $url');
+              buffer.writeln(url.isNotEmpty
+                  ? '$prefix🎬 Lecture: "$name" → $url'
+                  : '$prefix🎬 Lecture: "$name"');
             case 'file':
               final url = data['url'] as String? ?? '';
-              buffer.writeln('  📄 File: "$name"');
-              if (url.isNotEmpty) buffer.writeln('    URL: $url');
+              buffer.writeln(url.isNotEmpty
+                  ? '$prefix📄 File: "$name" → $url'
+                  : '$prefix📄 File: "$name"');
             case 'link':
               final url = data['url'] as String? ?? '';
-              buffer.writeln('  🔗 Link: "$name" → $url');
+              buffer.writeln(url.isNotEmpty
+                  ? '$prefix🔗 Link: "$name" → $url'
+                  : '$prefix🔗 Link: "$name"');
             case 'mocktest_url':
               final url = data['url'] as String? ?? '';
-              buffer.writeln('  📝 Mock Test (URL): "$name" → $url');
+              buffer.writeln(url.isNotEmpty
+                  ? '$prefix📝 Mock Test: "$name" → $url'
+                  : '$prefix📝 Mock Test: "$name"');
             case 'mocktest_code':
-              buffer.writeln('  📝 Mock Test (Code): "$name"');
+              buffer.writeln('$prefix📝 Mock Test (Code): "$name"');
             case 'subfolder':
-              buffer.writeln('  📂 Sub-folder: "$name"');
+              buffer.writeln('$prefix📂 Sub-folder: "$name"');
             case 'group':
-              final url = data['url'] as String? ?? '';
-              buffer.writeln('  💬 Group: "$name" → $url');
+              final url = data['url'] as String? ?? data['group_link'] as String? ?? '';
+              buffer.writeln(url.isNotEmpty
+                  ? '$prefix💬 Group: "$name" → $url'
+                  : '$prefix💬 Group: "$name"');
           }
         }
       }
 
-      // Fetch user's saved notes
       final notesSnap = await FirebaseService.firestore
           .collection('users')
           .doc(uid)

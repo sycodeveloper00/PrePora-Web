@@ -6,6 +6,9 @@ import 'package:package_info_plus/package_info_plus.dart';
 import '../../../core/services/firebase_service.dart';
 import '../../../core/theme/theme_provider.dart';
 import '../../../core/utils.dart';
+import '../../../core/widgets/professional_loader.dart';
+import '../../student/presentation/student_progress_screen.dart';
+import '../../../core/widgets/gender_badge.dart';
 
 class AdminControlPanelScreen extends StatefulWidget {
   const AdminControlPanelScreen({super.key});
@@ -52,7 +55,7 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
         leading: IconButton(icon: const Icon(Icons.arrow_back_ios_new_rounded), onPressed: () => context.pop()),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: ProfessionalLoader())
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
@@ -91,14 +94,21 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
     final baseColor = isDark ? Colors.white : Colors.black87;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Padding(
-        padding: const EdgeInsets.only(left: 4, bottom: 6),
-        child: Text(title, style: TextStyle(color: baseColor.withValues(alpha: 0.5), fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.5)),
+        padding: const EdgeInsets.only(left: 4, bottom: 8),
+        child: Text(title, style: TextStyle(color: baseColor.withValues(alpha: 0.5), fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8)),
       ),
       Container(
         decoration: BoxDecoration(
           color: (isDark ? Colors.white : Colors.black87).withValues(alpha: isDark ? 0.05 : 0.03),
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: (isDark ? Colors.white : Colors.black87).withValues(alpha: isDark ? 0.08 : 0.06)),
+          boxShadow: [
+            BoxShadow(
+              color: (isDark ? Colors.black : Colors.grey).withValues(alpha: 0.04),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
         ),
         child: Column(children: tiles),
       ),
@@ -110,7 +120,14 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
     final baseColor = isDark ? Colors.white : Colors.black87;
     final dimColor = isDark ? Colors.white38 : Colors.black54;
     return ListTile(
-      leading: Icon(icon, color: iconColor, size: 22),
+      leading: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: iconColor.withValues(alpha: isDark ? 0.2 : 0.1),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Icon(icon, color: iconColor, size: 20),
+      ),
       title: Text(title, style: TextStyle(color: baseColor, fontWeight: FontWeight.w600, fontSize: 14)),
       subtitle: Text(subtitle, style: TextStyle(color: dimColor, fontSize: 11)),
       trailing: trailing ?? Icon(Icons.chevron_right, color: dimColor, size: 18),
@@ -185,7 +202,7 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
       builder: (ctx) => FutureBuilder<List<Map<String, dynamic>>>(
         future: FirebaseService.getAllStudents(),
         builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) return SizedBox(height: 300, child: Center(child: CircularProgressIndicator(color: isDark ? Colors.white : Colors.black87)));
+          if (snap.connectionState == ConnectionState.waiting) return SizedBox(height: 300, child: Center(child: ProfessionalLoader()));
           final students = snap.data ?? [];
           return StatefulBuilder(builder: (ctx, setLocal) {
             if (students.isEmpty) return SizedBox(height: 200, child: Center(child: Text('No students registered', style: TextStyle(color: dimColor))));
@@ -237,22 +254,16 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
 
   void _showStudentActivity(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final baseColor = isDark ? Colors.white : Colors.black87;
+    final baseColor = isDark ? Colors.white : const Color(0xFF1A0533);
     final dimColor = isDark ? Colors.white38 : Colors.black54;
     final bgColor = isDark ? const Color(0xFF1A0533) : Colors.white;
     final cardBg = isDark ? const Color(0xFF0D0D2E) : Colors.grey.shade50;
-    showModalBottomSheet(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: bgColor,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (ctx) => SizedBox(
-        height: MediaQuery.of(ctx).size.height * 0.9,
-        child: StudentActivityPage(
-          isDark: isDark, baseColor: baseColor, dimColor: dimColor, bgColor: bgColor, cardBg: cardBg,
-        ),
+    Navigator.push(context, MaterialPageRoute(
+      fullscreenDialog: true,
+      builder: (_) => StudentActivityPage(
+        isDark: isDark, baseColor: baseColor, dimColor: dimColor, bgColor: bgColor, cardBg: cardBg,
       ),
-    );
+    ));
   }
 
   // ─── All Students ─────────────────────────────────────────────────────
@@ -269,7 +280,7 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
       builder: (ctx) => FutureBuilder<List<Map<String, dynamic>>>(
         future: FirebaseService.getAllStudents(),
         builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) return SizedBox(height: 300, child: Center(child: CircularProgressIndicator(color: isDark ? Colors.white : Colors.black87)));
+          if (snap.connectionState == ConnectionState.waiting) return SizedBox(height: 300, child: Center(child: ProfessionalLoader()));
           final students = snap.data ?? [];
           return StatefulBuilder(builder: (ctx, setLocal) {
             if (students.isEmpty) return SizedBox(height: 200, child: Center(child: Text('No students registered', style: TextStyle(color: dimColor))));
@@ -357,7 +368,7 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
       builder: (ctx) => FutureBuilder<List<Map<String, dynamic>>>(
         future: FirebaseService.getAllStudents(),
         builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) return SizedBox(height: 300, child: Center(child: CircularProgressIndicator(color: isDark ? Colors.white : Colors.black87)));
+          if (snap.connectionState == ConnectionState.waiting) return SizedBox(height: 300, child: Center(child: ProfessionalLoader()));
           final allStudents = snap.data ?? [];
           return StatefulBuilder(builder: (ctx, setLocal) {
             final students = allStudents.where((s) => s['blocked'] == true || s['blocked'] == null || s['blocked'] == false).toList();
@@ -467,7 +478,7 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
             child: StreamBuilder<QuerySnapshot>(
               stream: FirebaseService.getAllAssistant(),
               builder: (context, snap) {
-                if (snap.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+                if (snap.connectionState == ConnectionState.waiting) return const Center(child: ProfessionalLoader());
                 if (!snap.hasData || snap.data!.docs.isEmpty) {
                   return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                     Icon(Icons.person_off_rounded, size: 50, color: isDark ? Colors.white12 : Colors.black12),
@@ -722,18 +733,24 @@ class _StudentActivityPageState extends State<StudentActivityPage> {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
-          child: Row(children: [
-            const Icon(Icons.history_rounded, color: Colors.lime, size: 22),
-            const SizedBox(width: 8),
-            Text('Student Activity', style: TextStyle(color: widget.baseColor, fontWeight: FontWeight.bold, fontSize: 16)),
-            const Spacer(),
-            IconButton(icon: Icon(Icons.close, color: widget.dimColor), onPressed: () => Navigator.pop(context)),
-          ]),
+    return Scaffold(
+      backgroundColor: widget.bgColor,
+      appBar: AppBar(
+        backgroundColor: widget.bgColor,
+        foregroundColor: widget.baseColor,
+        elevation: 0,
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back_ios_new_rounded, color: widget.baseColor),
+          onPressed: () => Navigator.pop(context),
         ),
+        title: Row(children: [
+          const Icon(Icons.history_rounded, color: Colors.lime, size: 22),
+          const SizedBox(width: 8),
+          Text('Student Activity', style: TextStyle(color: widget.baseColor, fontWeight: FontWeight.bold, fontSize: 16)),
+        ]),
+      ),
+      body: Column(
+      children: [
         Divider(color: widget.isDark ? Colors.white12 : Colors.black12),
         Expanded(
           child: _error != null
@@ -745,7 +762,7 @@ class _StudentActivityPageState extends State<StudentActivityPage> {
                   Text(_error!, style: TextStyle(color: widget.dimColor, fontSize: 12), textAlign: TextAlign.center),
                 ]))
               : _students == null
-              ? const Center(child: CircularProgressIndicator())
+              ? const Center(child: ProfessionalLoader())
               : _students!.isEmpty
                   ? Center(child: Text('No students registered', style: TextStyle(color: widget.dimColor)))
                   : ListView.builder(
@@ -756,103 +773,58 @@ class _StudentActivityPageState extends State<StudentActivityPage> {
                         final uid = s['id'] as String? ?? '';
                         final name = s['name'] as String? ?? 'Unknown';
                         final email = s['email'] as String? ?? '';
+                        final gender = s['gender'] as String? ?? '';
                         return Card(
                           color: widget.cardBg, margin: const EdgeInsets.only(bottom: 8),
                           child: ListTile(
                             leading: CircleAvatar(backgroundColor: Colors.lime.shade800, child: Text(name.isNotEmpty ? name[0].toUpperCase() : '?', style: const TextStyle(color: Colors.white))),
-                            title: Text(name, style: TextStyle(color: widget.baseColor, fontWeight: FontWeight.bold)),
+                            title: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Flexible(child: Text(name, style: TextStyle(color: widget.baseColor, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)),
+                                if (gender.isNotEmpty) ...[
+                                  const SizedBox(width: 6),
+                                  GenderBadge(gender: gender, size: 16),
+                                ],
+                              ],
+                            ),
                             subtitle: Text(email, style: TextStyle(color: widget.dimColor, fontSize: 12)),
-                            trailing: const Icon(Icons.chevron_right, color: Colors.lime, size: 20),
-                            onTap: () => _showStudentLoginHistory(uid, name),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: const Icon(Icons.insights_rounded, color: Colors.cyan, size: 20),
+                                tooltip: 'View Progress',
+                                onPressed: () {
+                                  Navigator.pop(context);
+                                  Navigator.push(context, MaterialPageRoute(
+                                    builder: (_) => StudentProgressScreen(targetUid: uid),
+                                  ));
+                                },
+                              ),
+                              const Icon(Icons.chevron_right, color: Colors.lime, size: 20),
+                            ],
+                          ),
+                          onTap: () => _showStudentLoginHistory(uid, name),
                           ),
                         );
                       },
                     ),
         ),
       ],
+    ),
     );
   }
 
   void _showStudentLoginHistory(String uid, String name) {
-    final isDark = widget.isDark;
-    final baseColor = widget.baseColor;
-    final dimColor = widget.dimColor;
-    showModalBottomSheet(
-      context: context, isScrollControlled: true, backgroundColor: widget.bgColor,
-      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (ctx) => Container(
-        padding: const EdgeInsets.all(24),
-        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Row(children: [
-            CircleAvatar(backgroundColor: Colors.lime.shade800, child: Text(name[0].toUpperCase(), style: const TextStyle(color: Colors.white))),
-            const SizedBox(width: 10),
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(name, style: TextStyle(color: baseColor, fontWeight: FontWeight.bold, fontSize: 16)),
-              Text('Login Activity', style: TextStyle(color: dimColor, fontSize: 12)),
-            ])),
-            IconButton(icon: Icon(Icons.close, color: dimColor), onPressed: () => Navigator.pop(ctx)),
-          ]),
-          const SizedBox(height: 16),
-          SizedBox(
-            height: 300,
-            child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseService.firestore.collection('login_attempts')
-                  .where('uid', isEqualTo: uid)
-                  .snapshots(),
-              builder: (ctx, snap) {
-                if (snap.hasError) {
-                  return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                    Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 32),
-                    const SizedBox(height: 8),
-                    Text('Could not load history', style: TextStyle(color: Colors.redAccent, fontSize: 13)),
-                    Padding(padding: const EdgeInsets.only(top: 4), child: Text('${snap.error}', style: TextStyle(color: dimColor, fontSize: 10), textAlign: TextAlign.center)),
-                  ]));
-                }
-                if (!snap.hasData) {
-                  return const Center(child: CircularProgressIndicator(strokeWidth: 2));
-                }
-                final logs = snap.data!.docs.toList();
-                logs.sort((a, b) {
-                  final aTime = (a.data() as Map<String, dynamic>)['timestamp'] as String? ?? '';
-                  final bTime = (b.data() as Map<String, dynamic>)['timestamp'] as String? ?? '';
-                  return bTime.compareTo(aTime);
-                });
-                if (logs.isEmpty) {
-                  return Center(child: Text('No login history yet', style: TextStyle(color: dimColor)));
-                }
-                return ListView.separated(
-                  shrinkWrap: true,
-                  itemCount: logs.length,
-                  separatorBuilder: (_, __) => Divider(color: isDark ? Colors.white12 : Colors.black12),
-                  itemBuilder: (_, i) {
-                    final d = logs[i].data() as Map<String, dynamic>;
-                    final timeStr = d['timestamp'] as String? ?? '';
-                    final deviceModel = d['deviceModel'] as String? ?? 'Unknown device';
-                    final deviceId = d['deviceId'] as String? ?? '';
-                    final timeDisplay = timeStr.isNotEmpty ? timeStr.replaceFirst('T', ' ').substring(0, 19) : 'N/A';
-                    return ListTile(
-                      leading: const Icon(Icons.login_rounded, color: Colors.green, size: 20),
-                      title: Text(deviceModel, style: TextStyle(color: baseColor, fontSize: 13, fontWeight: FontWeight.bold)),
-                      subtitle: Text('$timeDisplay • ${deviceId.isNotEmpty ? deviceId.substring(0, 8) : "?"}', style: TextStyle(color: dimColor, fontSize: 11)),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-          const SizedBox(height: 16),
-          SizedBox(
-            width: double.infinity,
-            child: ElevatedButton.icon(
-              onPressed: () { Navigator.pop(ctx); _showSendNotificationDialog(uid, name); },
-              icon: const Icon(Icons.notifications_active_rounded, size: 18),
-              label: const Text('Send Notification'),
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.orange, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 12)),
-            ),
-          ),
-        ]),
+    Navigator.push(context, MaterialPageRoute(
+      fullscreenDialog: true,
+      builder: (_) => _StudentDevicePage(
+        uid: uid, name: name,
+        isDark: widget.isDark, baseColor: widget.baseColor, dimColor: widget.dimColor,
+        bgColor: widget.bgColor, cardBg: widget.cardBg,
       ),
-    );
+    ));
   }
 
   void _showSendNotificationDialog(String uid, String name) {
@@ -891,5 +863,532 @@ class _StudentActivityPageState extends State<StudentActivityPage> {
         ],
       ),
     );
+  }
+}
+
+class _StudentDevicePage extends StatefulWidget {
+  final String uid, name;
+  final bool isDark;
+  final Color baseColor, dimColor, bgColor, cardBg;
+  const _StudentDevicePage({required this.uid, required this.name, required this.isDark, required this.baseColor, required this.dimColor, required this.bgColor, required this.cardBg});
+  @override
+  State<_StudentDevicePage> createState() => _StudentDevicePageState();
+}
+
+class _StudentDevicePageState extends State<_StudentDevicePage> with SingleTickerProviderStateMixin {
+  late TabController _tabCtrl;
+
+  int _currentTabIndex = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _tabCtrl = TabController(length: 3, vsync: this);
+    _tabCtrl.addListener(() {
+      if (_tabCtrl.indexIsChanging) {
+        setState(() => _currentTabIndex = _tabCtrl.index);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _tabCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: widget.bgColor,
+      appBar: AppBar(
+        backgroundColor: widget.bgColor,
+        foregroundColor: widget.baseColor,
+        elevation: 0,
+        title: Row(children: [
+          CircleAvatar(backgroundColor: Colors.lime.shade800, radius: 16, child: Text(widget.name[0].toUpperCase(), style: const TextStyle(color: Colors.white, fontSize: 14))),
+          const SizedBox(width: 10),
+          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Text(widget.name, style: TextStyle(color: widget.baseColor, fontWeight: FontWeight.bold, fontSize: 16)),
+            Text('Student Overview', style: TextStyle(color: widget.dimColor, fontSize: 11)),
+          ])),
+        ]),
+        bottom: TabBar(
+          controller: _tabCtrl,
+          indicatorColor: Colors.cyan,
+          labelColor: widget.baseColor,
+          unselectedLabelColor: widget.dimColor,
+          tabs: const [
+            Tab(text: 'Devices', icon: Icon(Icons.phone_android_rounded, size: 18)),
+            Tab(text: 'Progress', icon: Icon(Icons.insights_rounded, size: 18)),
+            Tab(text: 'Notifications', icon: Icon(Icons.notifications_rounded, size: 18)),
+          ],
+        ),
+      ),
+      body: TabBarView(
+        controller: _tabCtrl,
+        children: [
+          _buildDevicesTab(),
+          _buildProgressTab(),
+          _buildNotificationsTab(),
+        ],
+      ),
+      floatingActionButton: _currentTabIndex == 2
+          ? FloatingActionButton(
+              onPressed: () => _showSendNotificationDialog(),
+              backgroundColor: Colors.orange,
+              child: const Icon(Icons.send_rounded, color: Colors.white),
+            )
+          : null,
+    );
+  }
+
+  Widget _buildDevicesTab() {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseService.firestore.collection('login_attempts')
+          .where('uid', isEqualTo: widget.uid)
+          .snapshots(),
+      builder: (ctx, loginSnap) {
+        if (loginSnap.hasError) {
+          return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 32),
+            const SizedBox(height: 8),
+            Text('Could not load devices', style: TextStyle(color: Colors.redAccent, fontSize: 13)),
+          ]));
+        }
+        if (!loginSnap.hasData) return const Center(child: ProfessionalLoader());
+        final loginLogs = loginSnap.data!.docs.toList();
+        loginLogs.sort((a, b) {
+          final aT = (a.data() as Map<String, dynamic>)['timestamp'] as String? ?? '';
+          final bT = (b.data() as Map<String, dynamic>)['timestamp'] as String? ?? '';
+          return bT.compareTo(aT);
+        });
+        if (loginLogs.isEmpty) {
+          return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Icon(Icons.phone_android_rounded, size: 48, color: widget.dimColor.withValues(alpha: 0.3)),
+            const SizedBox(height: 12),
+            Text('No devices yet', style: TextStyle(color: widget.dimColor, fontSize: 14)),
+          ]));
+        }
+        final now = DateTime.now();
+        final latestTime = loginLogs.isNotEmpty ? (() {
+          final ts = (loginLogs.first.data() as Map<String, dynamic>)['timestamp'] as String? ?? '';
+          if (ts.isNotEmpty) { try { return DateTime.parse(ts); } catch (_) {} }
+          return null;
+        })() : null;
+        final latestDeviceId = latestTime != null && now.difference(latestTime).inMinutes < 5
+            ? (loginLogs.first.data() as Map<String, dynamic>)['deviceId'] as String?
+            : null;
+        return StreamBuilder<QuerySnapshot>(
+          stream: FirebaseService.firestore.collection('web_sessions')
+              .where('uid', isEqualTo: widget.uid)
+              .where('status', isEqualTo: 'connected')
+              .snapshots(),
+          builder: (ctx, webSnap) {
+            final activeWebSessions = webSnap.hasData ? webSnap.data!.docs : [];
+            return ListView.separated(
+              padding: const EdgeInsets.all(16),
+              itemCount: loginLogs.length,
+              separatorBuilder: (_, __) => Divider(height: 1, color: widget.isDark ? Colors.white10 : Colors.black12),
+              itemBuilder: (_, i) {
+                final d = loginLogs[i].data() as Map<String, dynamic>;
+                final deviceModel = d['deviceModel'] as String? ?? 'Unknown device';
+                final deviceId = d['deviceId'] as String? ?? '';
+                final ts = d['timestamp'] as String? ?? '';
+                final timeDisplay = ts.isNotEmpty ? ts.replaceFirst('T', ' ').substring(0, 19) : 'N/A';
+                final isLatestActive = latestDeviceId != null && deviceId == latestDeviceId;
+                final totalDeviceWebSessions = activeWebSessions.length;
+                return ListTile(
+                  contentPadding: const EdgeInsets.symmetric(vertical: 4),
+                  leading: Stack(
+                    children: [
+                      Icon(Icons.phone_android_rounded, color: isLatestActive ? Colors.green : Colors.lime.shade700, size: 24),
+                      if (isLatestActive)
+                        Positioned(right: -2, top: -2, child: Container(
+                          width: 10, height: 10,
+                          decoration: BoxDecoration(color: Colors.green, shape: BoxShape.circle,
+                            border: Border.all(color: widget.bgColor, width: 2)),
+                        )),
+                    ],
+                  ),
+                  title: Row(children: [
+                    Flexible(child: Text(deviceModel, style: TextStyle(color: widget.baseColor, fontSize: 14, fontWeight: FontWeight.bold), overflow: TextOverflow.ellipsis)),
+                    if (isLatestActive) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                        decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(8)),
+                        child: const Text('Active', style: TextStyle(color: Colors.green, fontSize: 11, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                    if (totalDeviceWebSessions > 0) ...[
+                      const SizedBox(width: 8),
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                        decoration: BoxDecoration(color: const Color(0xFF00E5FF).withValues(alpha: 0.15), borderRadius: BorderRadius.circular(6)),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          const Icon(Icons.language_rounded, size: 10, color: Color(0xFF00E5FF)),
+                          const SizedBox(width: 3),
+                          Text('$totalDeviceWebSessions', style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 10, fontWeight: FontWeight.bold)),
+                        ]),
+                      ),
+                    ],
+                  ]),
+                  subtitle: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const SizedBox(height: 4),
+                      Text(timeDisplay, style: TextStyle(color: widget.dimColor, fontSize: 12)),
+                      if (isLatestActive && activeWebSessions.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        ...activeWebSessions.map((w) {
+                          final wd = w.data() as Map<String, dynamic>;
+                          final webBrowser = wd['webBrowser'] as String? ?? 'Web Browser';
+                          return Padding(
+                            padding: const EdgeInsets.only(bottom: 2),
+                            child: Row(children: [
+                              Container(width: 6, height: 6, decoration: const BoxDecoration(color: Color(0xFF00E5FF), shape: BoxShape.circle)),
+                              const SizedBox(width: 6),
+                              Text(webBrowser, style: const TextStyle(color: Color(0xFF00E5FF), fontSize: 11, fontWeight: FontWeight.w600)),
+                            ]),
+                          );
+                        }),
+                      ],
+                    ],
+                  ),
+                  trailing: const Icon(Icons.chevron_right, size: 20),
+                  onTap: () {
+                    Navigator.push(context, MaterialPageRoute(
+                      fullscreenDialog: true,
+                      builder: (_) => _AdminLinkHistoryScreen(
+                        uid: widget.uid, studentName: widget.name, deviceName: deviceModel,
+                        deviceId: deviceId, isWeb: false, isDark: widget.isDark, baseColor: widget.baseColor,
+                        dimColor: widget.dimColor, bgColor: widget.bgColor, cardBg: widget.cardBg,
+                      ),
+                    ));
+                  },
+                );
+              },
+            );
+          },
+        );
+      },
+    );
+  }
+
+  Widget _buildProgressTab() {
+    return StudentProgressScreen(targetUid: widget.uid, embedded: true);
+  }
+
+  Widget _buildNotificationsTab() {
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseService.firestore.collection('notifications')
+          .where('uid', isEqualTo: widget.uid)
+          .where('type', isEqualTo: 'targeted')
+          .snapshots(),
+      builder: (ctx, snap) {
+        if (snap.hasError) {
+          return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 32),
+            const SizedBox(height: 8),
+            Text('Could not load notifications', style: TextStyle(color: Colors.redAccent, fontSize: 13)),
+            Padding(padding: const EdgeInsets.only(top: 4), child: Text('${snap.error}', style: TextStyle(color: widget.dimColor, fontSize: 10), textAlign: TextAlign.center)),
+          ]));
+        }
+        if (!snap.hasData) return const Center(child: ProfessionalLoader());
+        final notifications = snap.data!.docs.toList();
+        notifications.sort((a, b) {
+          final aT = (a.data() as Map<String, dynamic>)['createdAt'] as Timestamp?;
+          final bT = (b.data() as Map<String, dynamic>)['createdAt'] as Timestamp?;
+          if (aT == null && bT == null) return 0;
+          if (aT == null) return 1;
+          if (bT == null) return -1;
+          return bT.compareTo(aT);
+        });
+        if (notifications.isEmpty) {
+          return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Icon(Icons.notifications_none_rounded, size: 48, color: widget.dimColor.withValues(alpha: 0.3)),
+            const SizedBox(height: 12),
+            Text('No notifications yet', style: TextStyle(color: widget.dimColor, fontSize: 14)),
+            const SizedBox(height: 4),
+            Text('Tap the send button to notify this student', style: TextStyle(color: widget.dimColor.withValues(alpha: 0.5), fontSize: 12)),
+          ]));
+        }
+        return ListView.builder(
+          padding: const EdgeInsets.all(16),
+          itemCount: notifications.length,
+          itemBuilder: (_, i) {
+            final d = notifications[i].data() as Map<String, dynamic>;
+            final message = d['message'] as String? ?? '';
+            final createdAt = (d['createdAt'] as Timestamp?)?.toDate();
+            final timeStr = createdAt != null
+                ? '${createdAt.day}/${createdAt.month}/${createdAt.year} ${createdAt.hour}:${createdAt.minute.toString().padLeft(2, '0')}'
+                : 'N/A';
+            return Container(
+              margin: const EdgeInsets.only(bottom: 10),
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: widget.cardBg,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: widget.isDark ? Colors.white.withValues(alpha: 0.06) : Colors.black.withValues(alpha: 0.06)),
+              ),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Row(children: [
+                  Icon(Icons.notifications_rounded, color: Colors.orange, size: 16),
+                  const SizedBox(width: 6),
+                  Expanded(child: Text(message, style: TextStyle(color: widget.baseColor, fontSize: 13))),
+                ]),
+                const SizedBox(height: 6),
+                Text(timeStr, style: TextStyle(color: widget.dimColor.withValues(alpha: 0.6), fontSize: 11)),
+              ]),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _showSendNotificationDialog() {
+    final msgCtrl = TextEditingController();
+    showDialog(
+      context: context,
+      builder: (d) => AlertDialog(
+        backgroundColor: widget.bgColor,
+        title: Text('Notify ${widget.name}', style: TextStyle(color: widget.baseColor, fontSize: 16)),
+        content: TextField(
+          controller: msgCtrl, maxLines: 3,
+          style: TextStyle(color: widget.baseColor),
+          decoration: InputDecoration(
+            hintText: 'Type your notification message...', hintStyle: TextStyle(color: widget.dimColor),
+            filled: true, fillColor: isDark ? Colors.white10 : Colors.black12,
+            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(d), child: Text('Cancel', style: TextStyle(color: widget.dimColor))),
+          ElevatedButton(
+            onPressed: () async {
+              final msg = msgCtrl.text.trim();
+              if (msg.isEmpty) return;
+              await FirebaseService.addTargetedNotification(widget.uid, msg);
+              if (d.mounted) Navigator.pop(d);
+              if (context.mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Notification sent to ${widget.name}')));
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+            child: const Text('Send', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  bool get isDark => widget.isDark;
+}
+
+class _AdminLinkHistoryScreen extends StatefulWidget {
+  final String uid;
+  final String studentName;
+  final String deviceName;
+  final String deviceId;
+  final bool isWeb;
+  final bool isDark;
+  final Color baseColor, dimColor, bgColor, cardBg;
+  const _AdminLinkHistoryScreen({
+    required this.uid, required this.studentName, required this.deviceName,
+    required this.deviceId, required this.isWeb, required this.isDark,
+    required this.baseColor, required this.dimColor, required this.bgColor, required this.cardBg,
+  });
+  @override
+  State<_AdminLinkHistoryScreen> createState() => _AdminLinkHistoryScreenState();
+}
+
+class _AdminLinkHistoryScreenState extends State<_AdminLinkHistoryScreen> {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: widget.bgColor,
+      appBar: AppBar(
+        backgroundColor: widget.bgColor,
+        foregroundColor: widget.baseColor,
+        elevation: 0,
+        title: Text(widget.studentName, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.only(right: 12),
+            child: Icon(Icons.shield_rounded, color: widget.dimColor.withValues(alpha: 0.4), size: 18),
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          Container(
+            padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+            decoration: BoxDecoration(
+              color: widget.isDark ? Colors.white.withValues(alpha: 0.03) : Colors.black.withValues(alpha: 0.02),
+              border: Border(bottom: BorderSide(color: widget.isDark ? Colors.white10 : Colors.black12)),
+            ),
+            child: Row(children: [
+              Icon(widget.isWeb ? Icons.language_rounded : Icons.phone_android_rounded,
+                color: Colors.cyan, size: 18),
+              const SizedBox(width: 8),
+              Text(widget.deviceName, style: TextStyle(color: widget.baseColor, fontSize: 14, fontWeight: FontWeight.w600)),
+              const Spacer(),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: Colors.orange.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Text('Admin View', style: TextStyle(color: Colors.orange, fontSize: 10, fontWeight: FontWeight.bold)),
+              ),
+            ]),
+          ),
+          Expanded(
+            child: StreamBuilder<QuerySnapshot>(
+              stream: FirebaseService.firestore.collection('web_sessions')
+                  .where('uid', isEqualTo: widget.uid)
+                  .snapshots(),
+              builder: (ctx, snap) {
+                if (snap.hasError) {
+                  return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 32),
+                    const SizedBox(height: 8),
+                    Text('Could not load history', style: TextStyle(color: Colors.redAccent, fontSize: 13)),
+                    Padding(padding: const EdgeInsets.only(top: 4), child: Text('${snap.error}', style: TextStyle(color: widget.dimColor, fontSize: 10), textAlign: TextAlign.center)),
+                  ]));
+                }
+                if (!snap.hasData) {
+                  return const Center(child: ProfessionalLoader());
+                }
+                var sessions = snap.data!.docs.toList();
+                sessions.sort((a, b) {
+                  final aT = (a.data() as Map<String, dynamic>)['connectedAt'] as Timestamp?;
+                  final bT = (b.data() as Map<String, dynamic>)['connectedAt'] as Timestamp?;
+                  if (aT == null && bT == null) return 0;
+                  if (aT == null) return 1;
+                  if (bT == null) return -1;
+                  return bT.compareTo(aT);
+                });
+                if (sessions.isEmpty) {
+                  return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    Icon(Icons.language_rounded, size: 48, color: widget.dimColor.withValues(alpha: 0.3)),
+                    const SizedBox(height: 12),
+                    Text('No web link history', style: TextStyle(color: widget.dimColor, fontSize: 14)),
+                    const SizedBox(height: 4),
+                    Text('This student has not linked any web sessions', style: TextStyle(color: widget.dimColor.withValues(alpha: 0.5), fontSize: 12)),
+                  ]));
+                }
+                return ListView.builder(
+                  padding: const EdgeInsets.all(16),
+                  itemCount: sessions.length,
+                  itemBuilder: (_, i) {
+                    final d = sessions[i].data() as Map<String, dynamic>;
+                    final connectedAt = (d['connectedAt'] as Timestamp?)?.toDate();
+                    final disconnectedAt = (d['disconnectedAt'] as Timestamp?)?.toDate();
+                    final status = d['status'] ?? 'disconnected';
+                    final isActive = status == 'connected';
+                    final deviceInfo = d['deviceInfo'] as String? ?? 'Web Browser';
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      decoration: BoxDecoration(
+                        color: widget.cardBg,
+                        borderRadius: BorderRadius.circular(16),
+                        border: Border.all(
+                          color: isActive ? Colors.green.withValues(alpha: 0.3) : widget.isDark ? Colors.white.withValues(alpha: 0.06) : Colors.black.withValues(alpha: 0.06),
+                        ),
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(16),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(children: [
+                              Stack(
+                                children: [
+                                  Icon(Icons.language_rounded, color: isActive ? Colors.green : widget.dimColor, size: 22),
+                                  if (isActive)
+                                    Positioned(right: -2, top: -2, child: Container(
+                                      width: 10, height: 10,
+                                      decoration: BoxDecoration(color: Colors.green, shape: BoxShape.circle,
+                                        border: Border.all(color: widget.cardBg, width: 2)),
+                                    )),
+                                ],
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(deviceInfo, style: TextStyle(color: widget.baseColor, fontWeight: FontWeight.bold, fontSize: 14)),
+                                  const SizedBox(height: 2),
+                                  Text(d['sessionId']?.toString().substring(0, (d['sessionId']?.toString().length ?? 0).clamp(0, 20)) ?? '', style: TextStyle(color: widget.dimColor, fontSize: 10, fontFamily: 'monospace')),
+                                ],
+                              )),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                decoration: BoxDecoration(
+                                  color: isActive ? Colors.green.withValues(alpha: 0.12) : Colors.grey.withValues(alpha: 0.12),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Text(isActive ? 'Active' : 'Ended',
+                                  style: TextStyle(color: isActive ? Colors.green : Colors.grey, fontSize: 11, fontWeight: FontWeight.bold)),
+                              ),
+                            ]),
+                            const SizedBox(height: 12),
+                            _buildInfoRow(Icons.access_time_rounded, 'Connected',
+                              connectedAt != null ? '${connectedAt.year}-${connectedAt.month.toString().padLeft(2, '0')}-${connectedAt.day.toString().padLeft(2, '0')} ${connectedAt.hour.toString().padLeft(2, '0')}:${connectedAt.minute.toString().padLeft(2, '0')}' : 'N/A',
+                              widget.dimColor),
+                            if (disconnectedAt != null)
+                              _buildInfoRow(Icons.link_off_rounded, 'Disconnected',
+                                '${disconnectedAt.year}-${disconnectedAt.month.toString().padLeft(2, '0')}-${disconnectedAt.day.toString().padLeft(2, '0')} ${disconnectedAt.hour.toString().padLeft(2, '0')}:${disconnectedAt.minute.toString().padLeft(2, '0')}',
+                                widget.dimColor),
+                            if (!isActive && connectedAt != null) ...[
+                              const SizedBox(height: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                decoration: BoxDecoration(
+                                  color: Colors.grey.withValues(alpha: 0.08),
+                                  borderRadius: BorderRadius.circular(8),
+                                ),
+                                child: Row(children: [
+                                  Icon(Icons.timer_off_rounded, size: 14, color: widget.dimColor.withValues(alpha: 0.6)),
+                                  const SizedBox(width: 6),
+                                  Text(
+                                    'Duration: ${_formatDuration(connectedAt, disconnectedAt)}',
+                                    style: TextStyle(color: widget.dimColor.withValues(alpha: 0.7), fontSize: 11),
+                                  ),
+                                ]),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildInfoRow(IconData icon, String label, String value, Color dimColor) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(children: [
+        Icon(icon, size: 14, color: dimColor.withValues(alpha: 0.5)),
+        const SizedBox(width: 6),
+        Text('$label: ', style: TextStyle(color: dimColor.withValues(alpha: 0.5), fontSize: 12)),
+        Expanded(child: Text(value, style: TextStyle(color: dimColor, fontSize: 12))),
+      ]),
+    );
+  }
+
+  String _formatDuration(DateTime start, DateTime? end) {
+    final diff = (end ?? DateTime.now()).difference(start);
+    if (diff.inDays > 0) return '${diff.inDays}d ${diff.inHours % 24}h';
+    if (diff.inHours > 0) return '${diff.inHours}h ${diff.inMinutes % 60}m';
+    return '${diff.inMinutes}m';
   }
 }

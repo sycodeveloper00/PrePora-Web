@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+import '../../../core/widgets/professional_loader.dart';
 
 class ImageViewerScreen extends StatelessWidget {
   final String url;
@@ -24,7 +25,7 @@ class ImageViewerScreen extends StatelessWidget {
           child: CachedNetworkImage(
             imageUrl: url,
             fit: BoxFit.contain,
-            placeholder: (_, __) => const Center(child: CircularProgressIndicator(color: Colors.amber)),
+            placeholder: (_, __) => const Center(child: ProfessionalLoader()),
             errorWidget: (_, __, ___) => const Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [

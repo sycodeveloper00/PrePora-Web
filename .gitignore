@@ -47,4 +47,14 @@ app.*.map.json
 # Firebase CLI
 firebase.exe
 
+# Build artifacts
+build_log.txt
+
+# Functions dependencies
+functions/node_modules/
+
+# Cloudflare cache
+.wrangler/
+
 .vercel
+.env*

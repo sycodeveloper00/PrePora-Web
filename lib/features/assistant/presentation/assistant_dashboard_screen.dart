@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/widgets/glassmorphic_container.dart';
 import '../../../core/widgets/notification_popup_box.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/widgets/professional_loader.dart';
 
 class AssistantDashboardScreen extends StatefulWidget {
   final List<String>? folderIds;
@@ -124,8 +125,28 @@ class _AssistantDashboardScreenState extends State<AssistantDashboardScreen> {
                 ),
                 const SizedBox(width: 8),
                 IconButton(
-                  icon: Icon(Icons.logout, color: isDark ? Colors.white70 : Colors.black54, size: 22),
-                  onPressed: () async { await FirebaseService.signOut(); if (mounted) context.go('/auth/login'); },
+                  icon: Icon(Icons.link_off_rounded, color: isDark ? Colors.white70 : Colors.black54, size: 22),
+                  tooltip: 'Disconnect',
+                  onPressed: () async {
+                    try {
+                      final uid = FirebaseService.currentUser?.uid;
+                      if (uid != null) {
+                        final sessions = await FirebaseService.firestore
+                            .collection('web_sessions')
+                            .where('uid', isEqualTo: uid)
+                            .where('status', isEqualTo: 'connected')
+                            .get();
+                        for (final doc in sessions.docs) {
+                          await doc.reference.update({
+                            'status': 'disconnected',
+                            'disconnectedAt': Timestamp.fromDate(DateTime.now()),
+                          });
+                        }
+                      }
+                    } catch (_) {}
+                    await FirebaseService.signOut();
+                    if (mounted) context.go('/link-web');
+                  },
                 ),
               ]),
             ),
@@ -160,7 +181,7 @@ class _AssistantDashboardScreenState extends State<AssistantDashboardScreen> {
                         Text('Contact admin for folder access', style: TextStyle(color: isDark ? Colors.white24 : Colors.black38, fontSize: 13)),
                       ]))
                     : _loadingAccess
-                        ? const Center(child: CircularProgressIndicator())
+                        ? const Center(child: ProfessionalLoader())
                         : _buildFolderList(accessibleIds, extraFolderIds),
               ),
             ]
@@ -249,6 +270,14 @@ class _AssistantDashboardScreenState extends State<AssistantDashboardScreen> {
     );
   }
 
+  bool _isAncestorRestricted(String? contentId, Map<String, Map<String, dynamic>> contentMap, {int depth = 0}) {
+    if (contentId == null || contentId == 'root' || depth > 10) return false;
+    final data = contentMap[contentId];
+    if (data == null) return false;
+    if (data['invisible'] == true || data['locked'] == true || data['updating'] == true) return true;
+    return _isAncestorRestricted(data['parentContentId'] as String?, contentMap, depth: depth + 1);
+  }
+
   Future<void> _performSearch() async {
     if (_searching) return;
     setState(() => _searching = true);
@@ -262,7 +291,7 @@ class _AssistantDashboardScreenState extends State<AssistantDashboardScreen> {
         final folderDoc = await FirebaseService.firestore.collection('folders').doc(folderId).get();
         if (!folderDoc.exists) continue;
         final folderData = folderDoc.data() as Map<String, dynamic>;
-        if (folderData['invisible'] == true) continue;
+        if (folderData['invisible'] == true || folderData['locked'] == true || folderData['updating'] == true) continue;
         final folderName = folderData['name'] as String? ?? '';
         if (folderName.toLowerCase().contains(q)) {
           results.add({
@@ -272,9 +301,15 @@ class _AssistantDashboardScreenState extends State<AssistantDashboardScreen> {
         }
         final contentSnap = await FirebaseService.firestore
             .collection('folders').doc(folderId).collection('content').get();
+        final contentMap = <String, Map<String, dynamic>>{};
+        for (final doc in contentSnap.docs) {
+          contentMap[doc.id] = doc.data() as Map<String, dynamic>;
+        }
         for (final contentDoc in contentSnap.docs) {
           final contentData = contentDoc.data() as Map<String, dynamic>;
           if (contentData['invisible'] == true || contentData['locked'] == true || contentData['updating'] == true) continue;
+          final parentContentId = contentData['parentContentId'] as String?;
+          if (_isAncestorRestricted(parentContentId, contentMap)) continue;
           final contentName = contentData['name'] as String? ?? '';
           if (contentName.toLowerCase().contains(q)) {
             results.add({
@@ -299,7 +334,7 @@ class _AssistantDashboardScreenState extends State<AssistantDashboardScreen> {
       future: Future.wait(allIds.map((id) => FirebaseService.firestore.collection('folders').doc(id).get())),
       builder: (context, snapshot) {
         final isDark = Theme.of(context).brightness == Brightness.dark;
-        if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+        if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: ProfessionalLoader());
         if (!snapshot.hasData) return Center(child: Text('Error loading folders', style: TextStyle(color: isDark ? Colors.white38 : Colors.black54)));
         final docs = snapshot.data!.where((d) => d.exists).toList();
         final filtered = _searchQuery.isNotEmpty
@@ -333,13 +368,43 @@ class _AssistantDashboardScreenState extends State<AssistantDashboardScreen> {
                         'canEdit': true, 'canManage': true,
                         if (contentAccessSet != null) 'assistantContentAccess': contentAccessSet,
                       }),
-                child: GlassmorphicContainer(
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
                   padding: const EdgeInsets.all(16),
+                  decoration: BoxDecoration(
+                    gradient: isLocked
+                        ? null
+                        : LinearGradient(
+                            colors: [
+                              color.withValues(alpha: isDark ? 0.25 : 0.12),
+                              color.withValues(alpha: isDark ? 0.08 : 0.04),
+                            ],
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                          ),
+                    color: isLocked ? (isDark ? Colors.white.withValues(alpha: 0.03) : Colors.black.withValues(alpha: 0.02)) : null,
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: isLocked
+                          ? Colors.redAccent.withValues(alpha: 0.2)
+                          : color.withValues(alpha: isDark ? 0.3 : 0.15),
+                    ),
+                    boxShadow: isLocked ? null : [
+                      BoxShadow(
+                        color: color.withValues(alpha: isDark ? 0.12 : 0.06),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ],
+                  ),
                   child: Row(children: [
                     Container(
                       padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(color: (isLocked ? Colors.grey : color).withValues(alpha: 0.15), borderRadius: BorderRadius.circular(12)),
-                      child: Icon(Icons.folder_rounded, color: isLocked ? Colors.grey : color, size: 36),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: (isLocked ? Colors.grey : color).withValues(alpha: 0.15),
+                      ),
+                      child: Icon(Icons.folder_rounded, color: isLocked ? Colors.grey : color, size: 32),
                     ),
                     const SizedBox(width: 14),
                     Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -355,8 +420,12 @@ class _AssistantDashboardScreenState extends State<AssistantDashboardScreen> {
                     if (!isLocked)
                       Container(
                         padding: const EdgeInsets.all(6),
-                        decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(8)),
-                        child: const Icon(Icons.edit_rounded, color: Colors.green, size: 18),
+                        decoration: BoxDecoration(
+                          color: Colors.green.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(8),
+                          border: Border.all(color: Colors.green.withValues(alpha: 0.3)),
+                        ),
+                        child: const Icon(Icons.arrow_forward_ios_rounded, color: Colors.green, size: 14),
                       ),
                   ]),
                 ),

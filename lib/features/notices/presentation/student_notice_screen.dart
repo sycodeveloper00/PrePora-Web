@@ -9,6 +9,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
 import '../../../core/services/firebase_service.dart';
+import '../../../core/widgets/professional_loader.dart';
 
 class StudentNoticeScreen extends StatelessWidget {
   const StudentNoticeScreen({super.key});
@@ -179,7 +180,7 @@ class StudentNoticeScreen extends StatelessWidget {
       body: StreamBuilder<QuerySnapshot>(
         stream: FirebaseService.getNotices(),
         builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+          if (snap.connectionState == ConnectionState.waiting) return const Center(child: ProfessionalLoader());
           if (!snap.hasData || snap.data!.docs.isEmpty) return Center(child: Text('No notices', style: TextStyle(color: isDark ? Colors.white38 : Colors.black38)));
           return ListView.builder(
             padding: const EdgeInsets.all(16),

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:video_player/video_player.dart';
+import '../../../core/widgets/professional_loader.dart';
 
 class MediaPlayerScreen extends StatefulWidget {
   final String url;
@@ -280,7 +281,7 @@ class _MediaPlayerScreenState extends State<MediaPlayerScreen> {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  const CircularProgressIndicator(color: Colors.amber),
+                  const ProfessionalLoader(),
                   const SizedBox(height: 16),
                   Text(widget.isAudio ? 'Loading audio...' : 'Loading video...', style: const TextStyle(color: Colors.white54)),
                 ],

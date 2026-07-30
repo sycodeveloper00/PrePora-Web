@@ -1,5 +1,8 @@
 {
   "outputDirectory": "build/web",
   "framework": null,
-  "rewrites": [{ "source": "/(.*)", "destination": "/index.html" }]
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/(.*)", "destination": "/index.html" }
+  ]
 }

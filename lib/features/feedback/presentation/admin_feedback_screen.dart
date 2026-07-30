@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import '../../../core/services/firebase_service.dart';
 import '../../../core/services/notification_service.dart';
 import '../../../core/utils.dart';
+import '../../../core/widgets/professional_loader.dart';
 
 class AdminFeedbackScreen extends StatefulWidget {
   const AdminFeedbackScreen({super.key});
@@ -259,7 +260,7 @@ class _AdminFeedbackScreenState extends State<AdminFeedbackScreen> {
             border: Border.all(color: isUpdating ? Colors.grey : (isSelected ? color : color)),
           ),
           child: isUpdating
-              ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.grey))
+              ? const SizedBox(width: 14, height: 14, child: ProfessionalLoader())
               : Text(label, style: TextStyle(color: isSelected ? Colors.white : color, fontSize: 12, fontWeight: isSelected ? FontWeight.bold : null)),
         ),
       ),
@@ -275,7 +276,7 @@ class _AdminFeedbackScreenState extends State<AdminFeedbackScreen> {
         leading: IconButton(icon: const Icon(Icons.arrow_back_ios_new_rounded), onPressed: () => context.pop()),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: ProfessionalLoader())
           : _students == null || _students!.isEmpty
               ? Center(child: Text('No students', style: TextStyle(color: isDark ? Colors.white38 : Colors.black54)))
               : ListView.builder(

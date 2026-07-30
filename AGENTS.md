@@ -1,68 +1,74 @@
-# MEPCO OCR + .DAT Matching Tool — Project Context
+# PrePora Web + Android — Project Context
 
-## Project Goal
-Build a tool (Flutter app) that:
-1. Reads `.DAT` files (MEPCO electricity billing CSV format)
-2. Lets user upload photos from gallery
-3. Uses **on-device OCR (Google ML Kit)** to find Sr.No from photos
-4. Matches Sr.No with `Ref_No` column in .DAT file
-5. Attaches photo to correct record
-6. User reviews → Export updated `.DAT` file
+## Project Overview
+PrePora is a study platform with AI tutoring, note management, PDF viewing, and student progress tracking. Two codebases:
+- **Web:** `E:\E_Drive_Projects\PrePora Web` (Flutter web, deployed to Vercel + Cloudflare)
+- **Android:** `E:\E_Drive_Projects\Prepora` (Flutter Android, deployed via APK)
+- **Both share the same Firestore database**
 
-## APK Analysis — `MMR (GEN)_MobileApp_V87.9_09042026 For MEPCO Only.apk`
-- **Package:** `com.project.dreams.general`
-- **Developer:** Dreams
-- **Type:** Native Android (Java) — Meter Reading for MEPCO
-- **Version:** 87.9
-- **Uses:** Camera, Barcode (ZXing), GPS, .DAT import/export
-- **Sample .DAT from APK:** `users.DAT` = `UserID,UserName,UserPassword,UserGroupID` (CSV)
-- **Consumer .DAT format:** CSV with header: `Billing_Month,Ref_No,Sanction_Load,Name,...`
-- **Ref_No:** 14-digit number starting with `5680` — this is the Sr.No to match
+## Deployment
+- **Web:** Vercel `prepora-web.vercel.app` (Flutter build + `/api` serverless functions)
+- **Admin:** Cloudflare Pages `admin-prepora.pages.dev`
+- **Password Reset:** Vercel `prepora-passwordreset` (standalone HTML)
+- Deploy: `flutter build web` → `cd build/web` → `Copy-Item -Path api -Destination build\web\api -Recurse -Force` → `vercel --prod --yes`
+- `.vercel/project.json` must be copied to `build\web\.vercel\` after `flutter clean`
 
-## Tech Stack Decision
-| Component | Choice | Reason |
-|-----------|--------|--------|
-| OCR Engine | **Google ML Kit Text Recognition** | Free, offline, unlimited, no API key needed |
-| Framework | **Flutter** | Cross-platform, already have Flutter setup |
-| .DAT Parsing | **CSV parsing** (Dart `csv` package) | .DAT files are CSV format |
-| Photo Picker | `image_picker` package | Built-in gallery access |
-| Budget | **$0** | Everything runs on-device, no server/API costs |
+## Domain-Based Routing (Web)
+- `prepora-web.vercel.app` → always redirects to `/link-web` (QR only, no login)
+- `admin-prepora.pages.dev` → redirects unauthenticated to `/auth/login`, blocks non-admin roles
 
-## Alternative OCR Options Tested (for reference)
-- **Tesseract OCR** — Free, but needs separate install on Windows. pip packages installed: `pytesseract`, `Pillow`, `openpyxl`
-- **EasyOCR** — Fallback option, pure Python, no separate install
-- **Google ML Kit** — Best for mobile (Flutter) — selected for final solution
+## Key Features
+- AI Chat (BazaarLink API via Vercel proxy, word-by-word typing animation)
+- PDF.js inline viewer with annotation (draw, highlight, eraser)
+- Noto Nastaliq Urdu font for Urdu text rendering
+- LaTeX/math fraction rendering (fixLatex in ai_service.dart)
+- Student progress tracking, daily streak notifications
+- Brevo-based forgot password (email flow + standalone reset page)
+- Google Drive / OneDrive / Dropbox in-app browser with sign-in support
+- Link with Web Version (QR scan from Android → Firebase Auth custom token on web)
+- Admin panel: student activity, device history, cascade delete
 
-## BazaarLink API (from Prepora work)
-- **API Key:** `sk-bl-foHbeBqqZJM8O6gYEmmouGtftnSBdpPNqvy_aRc-BTEW7Qfr`
-- **Status:** Integrated in Prepora's `ai_service.dart` — TEMPORARY changes
-- **Warning:** Key may expire. User should sign up for own key at BazaarLink
-- **Other free APIs tried:** FreeTheAi, ZeroLimitAI (no credit card needed)
+## Session Management
+- **Web:** 12-min inactivity timeout for admin/assistant only (SessionManager); pauses on background
+- **Students:** No timeout on any platform
+- **Android:** No SessionManager — Firebase Auth persists by default
 
-## Prepora App Changes (temporary)
-- `pubspec.yaml`: Added `http` package, removed `google_generative_ai`
-- `lib/core/services/ai_service.dart`: Rewritten with BazaarLink API + Firestore content context
-- These changes are temporary — user may revert after testing
+## Admin Panel Student Activity (Latest)
+- Full screen sheet (not bottom sheet)
+- Green dot on active device (within 5 min of last login)
+- Per-device web link history (queries `web_sessions` + `login_attempts`)
+- Device click → read-only `_AdminLinkHistoryScreen` (NO QR/camera — student privacy)
+- `Icons.qr_code_scanner_rounded` used everywhere (replaced `link_rounded`)
 
-## Sample .DAT File
-- **Path:** `C:\Users\Muhammad Tanzeel\AppData\Local\Temp\06-08-15265-07.DAT`
-- **Columns:** Billing_Month, Ref_No, Sanction_Load, Name, Meter_Number_1..4, CNIC, Unique_ID, KWH readings, etc. (~80 columns)
-- **Format:** CSV with header row, comma-separated, no quotes
+## Admin Panel Security
+- `link_rounded` icon replaced with `qr_code_scanner_rounded` on all panels
+- Admin device click shows read-only history only — no QR scanner/camera options
+- Student privacy: admin cannot see QR codes or link devices
 
-## Connected Devices
-- **Phone:** Samsung SM-A065F (Galaxy A06) — connected via ADB
-- **ADB available** on this PC
-- Phone's WhatsApp internal storage accessible at:
-  `/storage/emulated/0/Android/media/com.whatsapp/WhatsApp/Media/WhatsApp Documents/`
+## Firebase Auth Persistence
+- Android: persists by default (survives app updates)
+- Uninstall: data wiped by OS (unavoidable)
+- Web: custom token via `/api/generate-token` endpoint
 
-## Next Steps (Pending User Input)
-1. Confirm whether to build Flutter app (new project) or Python PC script
-2. Share sample photo(s) showing Sr.No location for OCR testing
-3. Define exact workflow: batch upload vs single, review UI design
-4. Build MVP: .DAT reader → OCR engine → matching logic → export
+## Service Account
+- Path: `E:\ddd\prepora-c2d23-firebase-adminsdk-fbsvc-abc12817e597a7acb56f9fe44dbedc6344004992.json`
+- Stored as Vercel env var `FIREBASE_SA_BASE64` (base64-encoded)
+- Used by `send-reset-email.js` and `reset-password.js`
+
+## Brevo Email
+- API key in env var, sender: `prepora@hotmail.com`
+- Free plan: 300 emails/day
+- Password reset email with green gradient button, professional template
+
+## AI Configuration
+- BazaarLink API via Vercel serverless proxy (`api/proxy.js`)
+- `enable_thinking: false`, `max_tokens: 4096`
+- Language matching: English→English, Roman Urdu→Roman Urdu, Urdu→Urdu
+- Step-by-step math solutions required
+- Identity protection: never reveal API provider/model names
 
 ## Important Notes
-- Photos contain many numbers — OCR needs to identify which number is the Sr.No
-- Sr.No printed in laser/dot matrix style (not handwritten)
-- Final export should produce .DAT file that MMR app can consume
-- Results should be exportable back to .DAT format (same CSV structure)
+- `flutter analyze` shows warnings/info but no errors
+- `api/` directory not included in `flutter build web` — must copy manually
+- `workmanager` package removed from Android (incompatible with Flutter/Kotlin setup)
+- `SessionManager` auto-logout is web-only, admin/assistant-only

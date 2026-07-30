@@ -3,6 +3,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/services/firebase_service.dart';
 import '../../../core/utils.dart';
+import '../../../core/widgets/professional_loader.dart';
 
 class StudentFeedbackScreen extends StatefulWidget {
   const StudentFeedbackScreen({super.key});
@@ -46,7 +47,7 @@ class _StudentFeedbackScreenState extends State<StudentFeedbackScreen> {
       body: _uid == null
           ? Center(child: Text('Not logged in', style: TextStyle(color: isDark ? Colors.white38 : Colors.black54)))
           : _loading
-              ? const Center(child: CircularProgressIndicator())
+              ? const Center(child: ProfessionalLoader())
               : _feedbacks == null || _feedbacks!.isEmpty
                   ? Center(child: Text('No feedbacks', style: TextStyle(color: isDark ? Colors.white38 : Colors.black54)))
                   : ListView.builder(

@@ -1,10 +1,13 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:youtube_player_flutter/youtube_player_flutter.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/services/firebase_service.dart';
 import '../../notepad/presentation/notepad_view.dart';
+import 'dart:js' as js;
 
 class VideoPlayerScreen extends StatefulWidget {
   final String videoId;
@@ -52,16 +55,32 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   }
 
   void _onFullScreenChange(bool isFullScreen) {
-    if (isFullScreen) {
-      SystemChrome.setPreferredOrientations([
-        DeviceOrientation.landscapeLeft,
-        DeviceOrientation.landscapeRight,
-      ]);
+    if (kIsWeb) {
+      if (isFullScreen) {
+        try {
+          js.context.callMethod('eval', [
+            '(function(){ try { screen.orientation.lock("landscape-primary"); } catch(e){} })()'
+          ]);
+        } catch (_) {}
+      } else {
+        try {
+          js.context.callMethod('eval', [
+            '(function(){ try { screen.orientation.unlock(); } catch(e){} })()'
+          ]);
+        } catch (_) {}
+      }
     } else {
-      SystemChrome.setPreferredOrientations([
-        DeviceOrientation.portraitUp,
-        DeviceOrientation.portraitDown,
-      ]);
+      if (isFullScreen) {
+        SystemChrome.setPreferredOrientations([
+          DeviceOrientation.landscapeLeft,
+          DeviceOrientation.landscapeRight,
+        ]);
+      } else {
+        SystemChrome.setPreferredOrientations([
+          DeviceOrientation.portraitUp,
+          DeviceOrientation.portraitDown,
+        ]);
+      }
     }
   }
 
@@ -110,12 +129,25 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
               child: Column(
                 children: [
                 // ─── Video Player ───────────────────────────────────────
-                AspectRatio(
-                  aspectRatio: 16 / 9,
-                  child: YoutubePlayer(
-                    controller: _controller,
-                    aspectRatio: 16 / 9,
-                  ),
+                LayoutBuilder(
+                  builder: (context, constraints) {
+                    final videoWidth = constraints.maxWidth;
+                    final videoHeight = videoWidth * 9 / 16;
+                    final bool isMobile = kIsWeb && MediaQuery.of(context).size.width < 600;
+                    final cappedHeight = isMobile
+                        ? videoHeight
+                        : videoHeight.clamp(180.0, 280.0);
+                    return Center(
+                      child: SizedBox(
+                        width: videoWidth,
+                        height: cappedHeight,
+                        child: YoutubePlayer(
+                          controller: _controller,
+                          aspectRatio: 16 / 9,
+                        ),
+                      ),
+                    );
+                  },
                 ),
 
                 // ─── Info & Action Buttons ──────────────────────────────
@@ -140,7 +172,12 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
                                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
                                 ),
                           onPressed: () {
-                            context.push('/webview', extra: {'url': 'https://www.youtube.com/watch?v=${widget.videoId}', 'title': widget.lectureName});
+                            final url = 'https://www.youtube.com/watch?v=${widget.videoId}';
+                            if (kIsWeb) {
+                              launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+                            } else {
+                              context.push('/webview', extra: {'url': url, 'title': widget.lectureName});
+                            }
                           },
                               ),
                             ),

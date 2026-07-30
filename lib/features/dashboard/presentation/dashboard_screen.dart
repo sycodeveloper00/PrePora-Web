@@ -11,6 +11,7 @@ import '../../../core/services/firebase_service.dart';
 import '../../../core/services/widget_service.dart';
 import '../../../core/theme/theme_provider.dart';
 import '../../../core/widgets/notification_popup_box.dart';
+import '../../../core/widgets/professional_loader.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -209,143 +210,208 @@ class _DashboardScreenState extends State<DashboardScreen>
   ];
 
   Widget _buildIntroScreen() {
-    return Stack(
-      children: [
-        Container(
-          decoration: const BoxDecoration(
-            gradient: LinearGradient(
-              colors: [Color(0xFF060D1F), Color(0xFF0D0D2E), Color(0xFF1A0533)],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-          ),
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isCompact = screenWidth < 800;
+
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Color(0xFF0A0118), Color(0xFF0D0D2E), Color(0xFF0A0118)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
         ),
-        ...List.generate(15, (i) => Positioned(
-          top: (i * 67.0) % 800,
-          left: (i * 43.0) % 400,
-          child: AnimatedBuilder(
-            animation: _floatController,
-            builder: (_, __) => Container(
-              width: (i % 5 + 2).toDouble(),
-              height: (i % 5 + 2).toDouble(),
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: [
-                  const Color(0xFF00E5FF),
-                  Colors.purple,
-                  Colors.blueAccent,
-                ][i % 3].withValues(alpha: 0.15 + (i % 4) * 0.04),
-              ),
+      ),
+      child: isCompact ? _buildIntroMobile() : _buildIntroDesktop(),
+    );
+  }
+
+  Widget _buildIntroDesktop() {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          _buildEducationAnimation(),
+          const SizedBox(height: 36),
+          const Text(
+            'PrePora',
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 32,
+              fontWeight: FontWeight.bold,
+              decoration: TextDecoration.none,
             ),
           ),
-        )),
-        SafeArea(
-          child: Column(
+          const SizedBox(height: 10),
+          Text(
+            'Study Smarter with AI',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.5),
+              fontSize: 14,
+              fontWeight: FontWeight.w300,
+              decoration: TextDecoration.none,
+              letterSpacing: 1.2,
+            ),
+          ),
+          const SizedBox(height: 28),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Spacer(flex: 2),
-              Expanded(
-                flex: 5,
-                child: _buildEducationAnimation(),
-              ),
-              const Spacer(flex: 1),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 28),
-                child: Column(
-                  children: [
-                    const Text(
-                      'PREPORA',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 28,
-                        fontWeight: FontWeight.w900,
-                        letterSpacing: 1.0,
-                        decoration: TextDecoration.none,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      'Your Gateway to Academic Excellence',
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.85),
-                        fontSize: 18,
-                        fontWeight: FontWeight.w400,
-                        decoration: TextDecoration.none,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      'Study Smarter with AI',
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.5),
-                        fontSize: 13,
-                        fontWeight: FontWeight.w300,
-                        decoration: TextDecoration.none,
-                        letterSpacing: 1.2,
-                      ),
-                    ),
-                    const SizedBox(height: 28),
-                    Row(
-                      children: [
-                        Text(
-                          'Prepare for ',
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.9),
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                            decoration: TextDecoration.none,
-                          ),
-                        ),
-                        Flexible(
-                          child: Text(
-                            _currentText,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 15,
-                              fontWeight: FontWeight.w700,
-                              decoration: TextDecoration.none,
-                            ),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                        ),
-                        _buildCursor(),
-                      ],
-                    ),
-                    const SizedBox(height: 14),
-                    AnimatedOpacity(
-                      opacity: _currentText.isNotEmpty ? 1.0 : 0.0,
-                      duration: const Duration(milliseconds: 400),
-                      child: AnimatedSwitcher(
-                        duration: const Duration(milliseconds: 300),
-                        child: Container(
-                          key: ValueKey(_currentText),
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withValues(alpha: 0.05),
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: Text(
-                            _getCategoryFor(_currentText),
-                            style: TextStyle(
-                              color: Colors.white.withValues(alpha: 0.4),
-                              fontSize: 11,
-                              fontWeight: FontWeight.w600,
-                              letterSpacing: 1.5,
-                              decoration: TextDecoration.none,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
+              Text(
+                'Prepare for ',
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.9),
+                  fontSize: 15,
+                  fontWeight: FontWeight.w700,
+                  decoration: TextDecoration.none,
                 ),
               ),
-              const Spacer(flex: 2),
-              _buildArrowButton(),
-              const SizedBox(height: 32),
+              Flexible(
+                child: Text(
+                  _currentText,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    decoration: TextDecoration.none,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              _buildCursor(),
             ],
           ),
-        ),
-      ],
+          const SizedBox(height: 14),
+          AnimatedOpacity(
+            opacity: _currentText.isNotEmpty ? 1.0 : 0.0,
+            duration: const Duration(milliseconds: 400),
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 300),
+              child: Container(
+                key: ValueKey(_currentText),
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF00E5FF).withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Text(
+                  _getCategoryFor(_currentText),
+                  style: const TextStyle(
+                    color: Color(0xFF00E5FF),
+                    fontSize: 11,
+                    fontWeight: FontWeight.w600,
+                    letterSpacing: 1.5,
+                    decoration: TextDecoration.none,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 40),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 32),
+            child: _buildArrowButton(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildIntroMobile() {
+    return SafeArea(
+      child: Column(
+        children: [
+          const Spacer(flex: 2),
+          Expanded(
+            flex: 5,
+            child: _buildEducationAnimation(),
+          ),
+          const Spacer(flex: 1),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 28),
+            child: Column(
+              children: [
+                const Text(
+                  'PrePora',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 28,
+                    fontWeight: FontWeight.w900,
+                    decoration: TextDecoration.none,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Study Smarter with AI',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.5),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w300,
+                    decoration: TextDecoration.none,
+                    letterSpacing: 1.2,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      'Prepare for ',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.9),
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        decoration: TextDecoration.none,
+                      ),
+                    ),
+                    Flexible(
+                      child: Text(
+                        _currentText,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 15,
+                          fontWeight: FontWeight.w700,
+                          decoration: TextDecoration.none,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    _buildCursor(),
+                  ],
+                ),
+                const SizedBox(height: 14),
+                AnimatedOpacity(
+                  opacity: _currentText.isNotEmpty ? 1.0 : 0.0,
+                  duration: const Duration(milliseconds: 400),
+                  child: AnimatedSwitcher(
+                    duration: const Duration(milliseconds: 300),
+                    child: Container(
+                      key: ValueKey(_currentText),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF00E5FF).withValues(alpha: 0.08),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Text(
+                        _getCategoryFor(_currentText),
+                        style: const TextStyle(
+                          color: Color(0xFF00E5FF),
+                          fontSize: 11,
+                          fontWeight: FontWeight.w600,
+                          letterSpacing: 1.5,
+                          decoration: TextDecoration.none,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Spacer(flex: 2),
+          _buildArrowButton(),
+          const SizedBox(height: 32),
+        ],
+      ),
     );
   }
 
@@ -389,12 +455,12 @@ class _DashboardScreenState extends State<DashboardScreen>
             padding: const EdgeInsets.symmetric(vertical: 16),
             decoration: BoxDecoration(
               gradient: const LinearGradient(
-                colors: [Color(0xFF4A148C), Color(0xFF00B8D4)],
+                colors: [Color(0xFF00E5FF), Color(0xFFFF4081)],
               ),
               borderRadius: BorderRadius.circular(40),
               boxShadow: [
                 BoxShadow(
-                  color: const Color(0xFF00B8D4).withValues(alpha: 0.25 + (_floatAnim.value.abs() / 40) * 0.3),
+                  color: const Color(0xFF00E5FF).withValues(alpha: 0.25 + (_floatAnim.value.abs() / 40) * 0.3),
                   blurRadius: 16 + _floatAnim.value.abs(),
                   spreadRadius: 1,
                   offset: const Offset(0, 6),
@@ -402,11 +468,10 @@ class _DashboardScreenState extends State<DashboardScreen>
               ],
             ),
             child: Row(
-              mainAxisAlignment: MainAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const SizedBox(width: 24),
-                Text("Let's Continue",
-                    style: const TextStyle(
+                const Text("Let's Continue",
+                    style: TextStyle(
                       color: Colors.white,
                       fontSize: 16,
                       fontWeight: FontWeight.bold,
@@ -446,7 +511,15 @@ class _DashboardScreenState extends State<DashboardScreen>
         children: [
           Image.asset('assets/logo.png', height: 30, width: 30),
           const SizedBox(width: 10),
-          const Text('PrePora', style: TextStyle(fontWeight: FontWeight.bold)),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('PrePora', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+              if (_userName.isNotEmpty)
+                Text(_userName, style: TextStyle(fontSize: 11, color: Theme.of(context).brightness == Brightness.dark ? Colors.white54 : Colors.black45)),
+            ],
+          ),
         ],
       ),
       actions: [
@@ -502,8 +575,6 @@ class _DashboardScreenState extends State<DashboardScreen>
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               itemBuilder: (_) => showFullMenu
                   ? [
-                      PopupMenuItem(value: 'settings', child: Row(children: [Icon(Icons.settings_outlined, size: 18, color: Theme.of(context).brightness == Brightness.dark ? Colors.white70 : Colors.black87), SizedBox(width: 10), Text('Settings', style: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87))])),
-                      PopupMenuItem(value: 'notes', child: Row(children: [Icon(Icons.note_rounded, size: 18, color: Color(0xFF00B8D4)), SizedBox(width: 10), Text('Notes', style: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87))])),
                       PopupMenuItem(value: 'notices', child: Row(children: [
                         const Icon(Icons.campaign_rounded, size: 18, color: Colors.amber),
                         const SizedBox(width: 10),
@@ -517,28 +588,44 @@ class _DashboardScreenState extends State<DashboardScreen>
                           ),
                         ],
                       ])),
-                      PopupMenuItem(value: 'rate_app', child: Row(children: [const Icon(Icons.star_rounded, size: 18, color: Colors.amber), SizedBox(width: 10), Text('Rate the App', style: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87))])),
-                      PopupMenuItem(value: 'contact_support', child: Row(children: [Icon(Icons.support_agent_rounded, size: 18, color: Colors.orange), SizedBox(width: 10), Text('Contact Support', style: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87))])),
-                      PopupMenuItem(value: 'logout', child: Row(children: [Icon(Icons.logout, size: 18, color: Colors.redAccent), SizedBox(width: 10), Text('Logout', style: TextStyle(color: Colors.redAccent))])),
+                      PopupMenuItem(value: 'notes', child: Row(children: [Icon(Icons.note_rounded, size: 18, color: Color(0xFF00B8D4)), SizedBox(width: 10), Text('Notes', style: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87))])),
+                      PopupMenuItem(value: 'progress', child: Row(children: [Icon(Icons.insights_rounded, size: 18, color: Color(0xFF4A148C)), SizedBox(width: 10), Text('Progress', style: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87))])),
+                      PopupMenuItem(value: 'settings', child: Row(children: [Icon(Icons.settings_outlined, size: 18, color: Theme.of(context).brightness == Brightness.dark ? Colors.white70 : Colors.black87), SizedBox(width: 10), Text('Settings', style: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87))])),
                     ]
                   : [
                       PopupMenuItem(value: 'contact_support', child: Row(children: [Icon(Icons.support_agent_rounded, size: 18, color: Colors.orange), SizedBox(width: 10), Text('Contact Support', style: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87))])),
-                      const PopupMenuItem(value: 'logout', child: Row(children: [Icon(Icons.logout, size: 18, color: Colors.redAccent), SizedBox(width: 10), Text('Logout', style: TextStyle(color: Colors.redAccent))])),
+                      PopupMenuItem(value: 'disconnect', child: Row(children: [const Icon(Icons.link_off_rounded, size: 18, color: Colors.redAccent), SizedBox(width: 10), const Text('Disconnect', style: TextStyle(color: Colors.redAccent))])),
                     ],
               onSelected: (val) async {
                 if (val == 'settings') {
                   context.push('/settings');
                 } else if (val == 'notes') {
                   context.push('/notes');
+                } else if (val == 'progress') {
+                  context.push('/student/progress');
                 } else if (val == 'notices') {
                   context.push('/student/notices');
-                } else if (val == 'rate_app') {
-                  _rateApp(context);
                 } else if (val == 'contact_support') {
                   _handleFeedback(context);
-                } else if (val == 'logout') {
+                } else if (val == 'disconnect') {
+                  try {
+                    final uid = FirebaseService.currentUser?.uid;
+                    if (uid != null) {
+                      final sessions = await FirebaseService.firestore
+                          .collection('web_sessions')
+                          .where('uid', isEqualTo: uid)
+                          .where('status', isEqualTo: 'connected')
+                          .get();
+                      for (final doc in sessions.docs) {
+                        await doc.reference.update({
+                          'status': 'disconnected',
+                          'disconnectedAt': Timestamp.fromDate(DateTime.now()),
+                        });
+                      }
+                    }
+                  } catch (_) {}
                   await FirebaseService.signOut();
-                  if (context.mounted) context.go('/auth/login');
+                  if (context.mounted) context.go('/link-web');
                 }
               },
             );
@@ -596,22 +683,36 @@ class _DashboardScreenState extends State<DashboardScreen>
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.fromLTRB(14, 8, 14, 0),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: isDark
-              ? [const Color(0xFF4A148C).withValues(alpha: 0.3), const Color(0xFFFF6F00).withValues(alpha: 0.2)]
+              ? [const Color(0xFF4A148C).withValues(alpha: 0.4), const Color(0xFFFF6F00).withValues(alpha: 0.3)]
               : [const Color(0xFF4A148C).withValues(alpha: 0.08), const Color(0xFFFF6F00).withValues(alpha: 0.06)],
           begin: Alignment.centerLeft,
           end: Alignment.centerRight,
         ),
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(color: isDark ? Colors.white12 : Colors.black.withValues(alpha: 0.06)),
+        boxShadow: [
+          BoxShadow(
+            color: const Color(0xFFFF6F00).withValues(alpha: isDark ? 0.08 : 0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
+          ),
+        ],
       ),
       child: Row(
         children: [
-          const Icon(Icons.local_fire_department_rounded, color: Colors.orange, size: 28),
-          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.orange.withValues(alpha: 0.2),
+            ),
+            child: const Icon(Icons.local_fire_department_rounded, color: Colors.orange, size: 22),
+          ),
+          const SizedBox(width: 10),
           Text('$_streakCount', style: TextStyle(
             color: isDark ? Colors.white : Colors.black87,
             fontWeight: FontWeight.bold, fontSize: 18,
@@ -652,10 +753,18 @@ class _DashboardScreenState extends State<DashboardScreen>
               : null,
           filled: true,
           fillColor: fillColor,
-          contentPadding: const EdgeInsets.symmetric(vertical: 0, horizontal: 12),
+          contentPadding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
           border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(12),
-            borderSide: BorderSide.none,
+            borderRadius: BorderRadius.circular(16),
+            borderSide: BorderSide(color: (isDark ? Colors.white : Colors.black87).withValues(alpha: 0.08)),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(16),
+            borderSide: BorderSide(color: (isDark ? Colors.white : Colors.black87).withValues(alpha: 0.08)),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(16),
+            borderSide: const BorderSide(color: Color(0xFF00B8D4), width: 1.5),
           ),
         ),
         onChanged: (val) {
@@ -674,6 +783,14 @@ class _DashboardScreenState extends State<DashboardScreen>
     );
   }
 
+  bool _isAncestorRestricted(String? contentId, Map<String, Map<String, dynamic>> contentMap, {int depth = 0}) {
+    if (contentId == null || contentId == 'root' || depth > 10) return false;
+    final data = contentMap[contentId];
+    if (data == null) return false;
+    if (data['invisible'] == true || data['locked'] == true || data['updating'] == true) return true;
+    return _isAncestorRestricted(data['parentContentId'] as String?, contentMap, depth: depth + 1);
+  }
+
   Future<void> _performSearch(String query) async {
     if (query.length < 2) {
       if (mounted) setState(() { _searchResults = []; _isSearching = false; });
@@ -685,7 +802,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     final foldersSnap = await FirebaseService.firestore.collection('folders').get();
     for (final folderDoc in foldersSnap.docs) {
       final folderData = folderDoc.data() as Map<String, dynamic>;
-      if (folderData['invisible'] == true) continue;
+      if (folderData['invisible'] == true || folderData['locked'] == true || folderData['updating'] == true) continue;
       final folderName = folderData['name'] as String? ?? '';
       final folderId = folderDoc.id;
       if (folderName.toLowerCase().contains(q)) {
@@ -696,14 +813,19 @@ class _DashboardScreenState extends State<DashboardScreen>
       final contentsSnap = await FirebaseService.firestore
           .collection('folders').doc(folderId)
           .collection('contents').get();
+      final contentMap = <String, Map<String, dynamic>>{};
+      for (final doc in contentsSnap.docs) {
+        contentMap[doc.id] = doc.data() as Map<String, dynamic>;
+      }
       for (final contentDoc in contentsSnap.docs) {
         final contentData = contentDoc.data() as Map<String, dynamic>;
         final contentName = contentData['name'] as String? ?? contentData['title'] as String? ?? '';
         if (contentName.toLowerCase().contains(q)) {
           if (contentData['invisible'] == true || contentData['locked'] == true || contentData['updating'] == true) continue;
+          final parentContentId = contentData['parentContentId'] as String?;
+          if (_isAncestorRestricted(parentContentId, contentMap)) continue;
           final docType = contentData['type'] as String?;
           final isSubfolder = docType == 'subfolder' || (docType == null && contentData['url'] == null);
-          final contentParentId = contentData['parentContentId'] as String?;
           results.add(_SearchResult(
             title: contentName,
             folderId: folderId,
@@ -711,7 +833,7 @@ class _DashboardScreenState extends State<DashboardScreen>
             contentId: contentDoc.id,
             isFolder: false,
             isSubfolder: isSubfolder,
-            parentContentId: contentParentId,
+            parentContentId: parentContentId,
           ));
         }
       }
@@ -725,7 +847,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     final dimColor = isDark ? Colors.white38 : Colors.black54;
     final mutedColor = isDark ? Colors.white54 : Colors.black54;
     if (_isSearching) {
-      return const Center(child: CircularProgressIndicator());
+      return const Center(child: ProfessionalLoader());
     }
     if (_searchResults.isEmpty) {
       return Center(
@@ -962,7 +1084,7 @@ class _DashboardScreenState extends State<DashboardScreen>
               child: OutlinedButton.icon(
                 onPressed: () async {
                   await FirebaseService.signOut();
-                  if (context.mounted) context.go('/auth/login');
+                  if (context.mounted) context.go('/link-web');
                 },
                 icon: const Icon(Icons.logout_rounded, color: Colors.redAccent, size: 20),
                 label: const Text('Logout', style: TextStyle(color: Colors.redAccent, fontWeight: FontWeight.bold)),
@@ -1094,11 +1216,27 @@ class _DashboardScreenState extends State<DashboardScreen>
               ),
             ),
             const SizedBox(height: 20),
-            // Logout at bottom
+            // Disconnect at bottom
             GestureDetector(
               onTap: () async {
+                try {
+                  final uid = FirebaseService.currentUser?.uid;
+                  if (uid != null) {
+                    final sessions = await FirebaseService.firestore
+                        .collection('web_sessions')
+                        .where('uid', isEqualTo: uid)
+                        .where('status', isEqualTo: 'connected')
+                        .get();
+                    for (final doc in sessions.docs) {
+                      await doc.reference.update({
+                        'status': 'disconnected',
+                        'disconnectedAt': Timestamp.fromDate(DateTime.now()),
+                      });
+                    }
+                  }
+                } catch (_) {}
                 await FirebaseService.signOut();
-                if (context.mounted) context.go('/auth/login');
+                if (context.mounted) context.go('/link-web');
               },
               child: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
@@ -1107,9 +1245,9 @@ class _DashboardScreenState extends State<DashboardScreen>
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(Icons.logout_rounded, color: Colors.redAccent.shade200, size: 18),
+                  Icon(Icons.link_off_rounded, color: Colors.redAccent.shade200, size: 18),
                   const SizedBox(width: 8),
-                  Text('Logout', style: TextStyle(color: Colors.redAccent.shade200, fontSize: 14)),
+                  Text('Disconnect', style: TextStyle(color: Colors.redAccent.shade200, fontSize: 14)),
                 ]),
               ),
             ),
@@ -1123,7 +1261,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   void _handleFeedback(BuildContext ctx) async {
     final uid = FirebaseService.currentUser?.uid;
     if (uid == null) return;
-    showDialog(context: context, builder: (_) => const Center(child: CircularProgressIndicator()), barrierDismissible: false);
+    showDialog(context: context, builder: (_) => const Center(child: ProfessionalLoader()), barrierDismissible: false);
     try {
       final isVerified = await FirebaseService.isStudentVerified(uid);
       if (!mounted) return;
@@ -1157,6 +1295,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     final bgColor = isDark ? const Color(0xFF1A0533) : Colors.white;
     final nameCtrl = TextEditingController();
     final emailCtrl = TextEditingController();
+    final contactCtrl = TextEditingController();
     final ownerCtrl = TextEditingController();
     final accNoCtrl = TextEditingController();
     final bankCtrl = TextEditingController();
@@ -1187,6 +1326,11 @@ class _DashboardScreenState extends State<DashboardScreen>
               TextField(controller: emailCtrl, style: TextStyle(color: baseColor),
                 onChanged: (_) { setDState(() => errorMsg = null); },
                 decoration: InputDecoration(labelText: 'Your Email *', labelStyle: TextStyle(color: labelColor),
+                  filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
+              const SizedBox(height: 10),
+              TextField(controller: contactCtrl, style: TextStyle(color: baseColor),
+                keyboardType: TextInputType.phone,
+                decoration: InputDecoration(labelText: 'Contact No *', labelStyle: TextStyle(color: labelColor),
                   filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
               const SizedBox(height: 10),
               TextField(controller: ownerCtrl, style: TextStyle(color: baseColor),
@@ -1660,7 +1804,7 @@ class _DashboardGridState extends State<_DashboardGrid> {
       stream: _folderStream,
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
+          return const Center(child: ProfessionalLoader());
         }
         if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
           final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -1683,11 +1827,11 @@ class _DashboardGridState extends State<_DashboardGrid> {
         }).toList();
         final colors = [Colors.purple, Colors.teal, Colors.blue, Colors.orange, Colors.pink, Colors.indigo, Colors.green, Colors.amber];
         final screenWidth = MediaQuery.of(context).size.width;
-        final crossAxisCount = screenWidth > 900 ? 4 : (screenWidth > 600 ? 3 : 2);
+        final crossAxisCount = screenWidth > 1200 ? 4 : (screenWidth > 800 ? 3 : 2);
         return GridView.builder(
           padding: const EdgeInsets.all(14),
           gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: crossAxisCount, crossAxisSpacing: 14, mainAxisSpacing: 14, childAspectRatio: screenWidth > 600 ? 1.1 : 0.95,
+            crossAxisCount: crossAxisCount, crossAxisSpacing: 14, mainAxisSpacing: 14, childAspectRatio: screenWidth > 800 ? 1.05 : 0.9,
           ),
           itemCount: docs.length,
           itemBuilder: (context, index) {
@@ -1700,41 +1844,71 @@ class _DashboardGridState extends State<_DashboardGrid> {
             final dimColor = isDark ? Colors.white38 : Colors.black54;
             return GestureDetector(
               onTap: isLocked ? null : () => context.push('/folders/$folderId'),
-              child: Stack(
-                children: [
-                  GlassmorphicContainer(
-                    padding: const EdgeInsets.all(16),
-                    child: Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Center(child: Icon(
-                          Icons.folder_rounded,
-                          size: 48, color: isLocked ? Colors.grey : color,
-                        )),
-                        const SizedBox(height: 6),
-                        Text(
-                          data['name'] ?? 'Folder',
-                          style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: isLocked ? dimColor : baseColor),
-                          textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis,
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeOut,
+                decoration: BoxDecoration(
+                  gradient: isLocked
+                      ? null
+                      : LinearGradient(
+                          colors: [
+                            color.withValues(alpha: isDark ? 0.25 : 0.12),
+                            color.withValues(alpha: isDark ? 0.08 : 0.04),
+                          ],
+                          begin: Alignment.topLeft,
+                          end: Alignment.bottomRight,
                         ),
-                        const SizedBox(height: 4),
-                        if (isLocked)
-                          Center(child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                            decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(8)),
-                            child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                              Icon(Icons.lock_rounded, color: Colors.redAccent, size: 12),
-                              SizedBox(width: 4),
-                              Text('Locked', style: TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold)),
-                            ]),
-                          ))
-                        else
-                          Text('${data['itemCount'] ?? 0} items', style: TextStyle(color: dimColor, fontSize: 12), textAlign: TextAlign.center),
-                      ],
-                    ),
+                  color: isLocked ? (isDark ? Colors.white.withValues(alpha: 0.03) : Colors.black.withValues(alpha: 0.02)) : null,
+                  borderRadius: BorderRadius.circular(20),
+                  border: Border.all(
+                    color: isLocked
+                        ? Colors.redAccent.withValues(alpha: 0.2)
+                        : color.withValues(alpha: isDark ? 0.3 : 0.15),
+                    width: 1,
                   ),
-                ],
+                  boxShadow: isLocked ? null : [
+                    BoxShadow(
+                      color: color.withValues(alpha: isDark ? 0.15 : 0.08),
+                      blurRadius: 12,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                padding: const EdgeInsets.all(16),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Container(
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: (isLocked ? Colors.grey : color).withValues(alpha: 0.15),
+                      ),
+                      child: Icon(
+                        Icons.folder_rounded,
+                        size: 40, color: isLocked ? Colors.grey : color,
+                      ),
+                    ),
+                    const SizedBox(height: 10),
+                    Text(
+                      data['name'] ?? 'Folder',
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14, color: isLocked ? dimColor : baseColor),
+                      textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 6),
+                    if (isLocked)
+                      Center(child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        decoration: BoxDecoration(color: Colors.red.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.redAccent.withValues(alpha: 0.3))),
+                        child: const Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.lock_rounded, color: Colors.redAccent, size: 12),
+                          SizedBox(width: 4),
+                          Text('Locked', style: TextStyle(color: Colors.redAccent, fontSize: 11, fontWeight: FontWeight.bold)),
+                        ]),
+                      )),
+                  ],
+                ),
               ),
             );
           },

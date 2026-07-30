@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:firebase_core/firebase_core.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/router/app_router.dart';
+import '../../../core/widgets/professional_loader.dart';
 
 class SplashScreen extends StatefulWidget {
   const SplashScreen({super.key});
@@ -39,6 +41,7 @@ class _SplashScreenState extends State<SplashScreen> {
         if (role != null) FirebaseService.cacheUserRole(uid, role);
       }
       FirebaseService.cachedRole = role;
+      AuthGuard.setUserRole(role);
       if (!mounted) return;
       if (role == 'admin') {
         context.go('/admin');
@@ -78,10 +81,7 @@ class _SplashScreenState extends State<SplashScreen> {
             const SizedBox(height: 40),
             const SizedBox(
               width: 24, height: 24,
-              child: CircularProgressIndicator(
-                strokeWidth: 2,
-                color: Color(0xFFB388FF),
-              ),
+              child: ProfessionalLoader(size: 24),
             ),
           ],
         ),

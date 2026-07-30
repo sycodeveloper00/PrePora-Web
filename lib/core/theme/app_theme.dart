@@ -38,9 +38,50 @@ class AppTheme {
       appBarTheme: const AppBarTheme(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        centerTitle: true,
+        centerTitle: false,
         iconTheme: IconThemeData(color: Colors.white),
         titleTextStyle: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w600),
+      ),
+      cardTheme: const CardThemeData(
+        color: Color(0xFF1E1E1E),
+        surfaceTintColor: Colors.transparent,
+        elevation: 2,
+        margin: EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+      ),
+      bottomSheetTheme: const BottomSheetThemeData(
+        backgroundColor: Color(0xFF1A0533),
+        surfaceTintColor: Colors.transparent,
+        modalBackgroundColor: Color(0xFF1A0533),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: Colors.white10,
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: Colors.white12)),
+        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: Color(0xFFB388FF), width: 2)),
+        hintStyle: const TextStyle(color: Colors.white38),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+      ),
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: const Color(0xFF7C5CBF),
+          foregroundColor: Colors.white,
+          elevation: 2,
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          textStyle: const TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600, fontSize: 14),
+        ),
+      ),
+      switchTheme: SwitchThemeData(
+        thumbColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) return const Color(0xFFB388FF);
+          return Colors.grey;
+        }),
+        trackColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) return const Color(0xFFB388FF).withValues(alpha: 0.3);
+          return Colors.grey.withValues(alpha: 0.2);
+        }),
       ),
     );
   }
@@ -68,7 +109,7 @@ class AppTheme {
       appBarTheme: const AppBarTheme(
         backgroundColor: Color(0xFFF0E6FF),
         elevation: 0,
-        centerTitle: true,
+        centerTitle: false,
         surfaceTintColor: Colors.transparent,
         iconTheme: IconThemeData(color: Color(0xFF1A0533)),
         titleTextStyle: TextStyle(color: Color(0xFF1A0533), fontSize: 20, fontWeight: FontWeight.w600),
@@ -80,22 +121,39 @@ class AppTheme {
       cardTheme: const CardThemeData(
         color: Colors.white,
         surfaceTintColor: Colors.transparent,
+        elevation: 1,
+        margin: EdgeInsets.symmetric(horizontal: 16, vertical: 6),
       ),
       bottomSheetTheme: const BottomSheetThemeData(
         backgroundColor: Colors.white,
         surfaceTintColor: Colors.transparent,
         modalBackgroundColor: Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
       ),
       popupMenuTheme: PopupMenuThemeData(
         color: Colors.white,
         surfaceTintColor: Colors.transparent,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: const Color(0xFFF0E6FF),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+        border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide(color: Colors.black12)),
+        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: const BorderSide(color: primary, width: 2)),
         hintStyle: TextStyle(color: Colors.black38),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 16),
+      ),
+      elevatedButtonTheme: ElevatedButtonThemeData(
+        style: ElevatedButton.styleFrom(
+          backgroundColor: primary,
+          foregroundColor: Colors.white,
+          elevation: 2,
+          shadowColor: primary.withValues(alpha: 0.3),
+          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          textStyle: const TextStyle(fontFamily: 'Outfit', fontWeight: FontWeight.w600, fontSize: 14),
+        ),
       ),
       switchTheme: SwitchThemeData(
         thumbColor: WidgetStateProperty.resolveWith((states) {

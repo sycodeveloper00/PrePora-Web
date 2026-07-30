@@ -3,6 +3,7 @@ import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/widgets/glassmorphic_container.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/widgets/professional_loader.dart';
 
 class SignupScreen extends StatefulWidget {
   const SignupScreen({super.key});
@@ -18,6 +19,7 @@ class _SignupScreenState extends State<SignupScreen> {
   bool _obscurePassword = true;
   bool _isLoading = false;
   String? _errorMessage;
+  String _selectedGender = '';
 
   @override
   void dispose() {
@@ -39,6 +41,10 @@ class _SignupScreenState extends State<SignupScreen> {
       setState(() => _errorMessage = 'Please fill all fields.');
       return;
     }
+    if (_selectedGender.isEmpty) {
+      setState(() => _errorMessage = 'Please select your gender.');
+      return;
+    }
     setState(() { _isLoading = true; _errorMessage = null; });
     try {
       final cred = await FirebaseService.signUp(
@@ -46,6 +52,7 @@ class _SignupScreenState extends State<SignupScreen> {
         _emailController.text.trim(),
         _passwordController.text,
         role: 'student',
+        gender: _selectedGender,
       );
       if (cred?.user != null) FirebaseService.cacheUserRole(cred!.user!.uid, 'student');
       if (mounted) {
@@ -85,6 +92,38 @@ class _SignupScreenState extends State<SignupScreen> {
     ).then((_) {
       setState(() => _isLoading = false);
     });
+  }
+
+  Widget _genderOption(String value, IconData icon, String label, Color color) {
+    final isSelected = _selectedGender == value;
+    return Expanded(
+      child: GestureDetector(
+        onTap: () => setState(() => _selectedGender = value),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.symmetric(vertical: 14),
+          decoration: BoxDecoration(
+            color: isSelected ? color.withValues(alpha: 0.2) : Colors.white10,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: isSelected ? color : Colors.white24,
+              width: isSelected ? 2 : 1,
+            ),
+          ),
+          child: Column(
+            children: [
+              Icon(icon, color: isSelected ? color : Colors.white54, size: 28),
+              const SizedBox(height: 4),
+              Text(label, style: TextStyle(
+                color: isSelected ? color : Colors.white54,
+                fontSize: 12,
+                fontWeight: isSelected ? FontWeight.bold : FontWeight.normal,
+              )),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -185,6 +224,19 @@ class _SignupScreenState extends State<SignupScreen> {
                       border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
                     ),
                   ),
+                  const SizedBox(height: 16),
+                  // Gender Selection
+                  const Text('Gender', style: TextStyle(color: Colors.white70, fontSize: 13)),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      _genderOption('male', Icons.male_rounded, 'Male', const Color(0xFF2196F3)),
+                      const SizedBox(width: 12),
+                      _genderOption('female', Icons.female_rounded, 'Female', const Color(0xFFE91E63)),
+                      const SizedBox(width: 12),
+                      _genderOption('other', Icons.transgender_rounded, 'Other', const Color(0xFF9C27B0)),
+                    ],
+                  ),
                   const SizedBox(height: 24),
                   ElevatedButton(
                     onPressed: _isLoading ? null : _signup,
@@ -194,7 +246,7 @@ class _SignupScreenState extends State<SignupScreen> {
                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     ),
                     child: _isLoading
-                        ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                        ? const SizedBox(height: 20, width: 20, child: ProfessionalLoader(size: 20))
                         : const Text('Create Account', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
                   ),
                   const SizedBox(height: 24),

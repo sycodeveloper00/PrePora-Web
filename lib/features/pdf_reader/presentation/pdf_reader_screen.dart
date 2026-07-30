@@ -6,6 +6,7 @@ import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
 import '../../../core/services/firebase_service.dart';
+import '../../../core/widgets/professional_loader.dart';
 import '../../../core/helpers/blob_helper_stub.dart'
     if (dart.library.html) '../../../core/helpers/blob_helper.dart';
 
@@ -219,7 +220,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           if (_annotating) _buildInlineToolbar(isDark),
           Expanded(
             child: _isLoading
-                ? const Center(child: CircularProgressIndicator())
+                ? const Center(child: ProfessionalLoader())
                 : _error != null
                     ? _buildErrorView()
                     : kIsWeb

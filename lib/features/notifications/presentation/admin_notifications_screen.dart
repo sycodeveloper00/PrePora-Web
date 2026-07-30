@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/widgets/professional_loader.dart';
 
 class AdminNotificationsScreen extends StatefulWidget {
   const AdminNotificationsScreen({super.key});
@@ -55,7 +56,7 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
         stream: FirebaseService.getAdminNotifications(),
         builder: (context, snap) {
           if (snap.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
+            return const Center(child: ProfessionalLoader());
           }
           final docs = snap.data?.docs ?? [];
           if (docs.isEmpty) {

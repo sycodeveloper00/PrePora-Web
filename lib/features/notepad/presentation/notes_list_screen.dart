@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/widgets/professional_loader.dart';
 
 class NotesListScreen extends StatefulWidget {
   const NotesListScreen({super.key});
@@ -58,7 +59,7 @@ class _NotesListScreenState extends State<NotesListScreen> {
         leading: IconButton(icon: const Icon(Icons.arrow_back_ios_new_rounded), onPressed: () => context.pop()),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: ProfessionalLoader())
           : _notes == null || _notes!.isEmpty
               ? Center(child: Text('No notes yet', style: TextStyle(color: isDark ? Colors.white38 : Colors.black38)))
               : ListView.builder(

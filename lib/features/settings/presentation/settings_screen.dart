@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/services/firebase_service.dart';
 import '../../../core/theme/theme_provider.dart';
 
@@ -86,9 +87,25 @@ class SettingsScreen extends StatelessWidget {
               ListTile(
                 leading: const Icon(Icons.logout_rounded, color: Colors.redAccent),
                 title: const Text('Logout', style: TextStyle(color: Colors.redAccent)),
-                onTap: () {
-                  FirebaseService.signOut();
-                  context.go('/auth/login');
+                onTap: () async {
+                  final uid = FirebaseService.currentUser?.uid;
+                  if (uid != null) {
+                    try {
+                      final sessions = await FirebaseService.firestore
+                          .collection('web_sessions')
+                          .where('uid', isEqualTo: uid)
+                          .where('status', isEqualTo: 'connected')
+                          .get();
+                      for (final doc in sessions.docs) {
+                        await doc.reference.update({
+                          'status': 'disconnected',
+                          'disconnectedAt': Timestamp.fromDate(DateTime.now()),
+                        });
+                      }
+                    } catch (_) {}
+                  }
+                  await FirebaseService.signOut();
+                  if (context.mounted) context.go('/link-web');
                 },
               ),
             ]),

@@ -1,5 +1,6 @@
 ﻿import 'package:flutter/material.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/widgets/professional_loader.dart';
 
 class DrawPoint {
   final Offset position;
@@ -110,7 +111,7 @@ class _NotepadViewState extends State<NotepadView> {
             ),
           ),
           if (_isSaving)
-            const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.blue))
+            const SizedBox(height: 18, width: 18, child: ProfessionalLoader(size: 18))
           else
             IconButton(
               icon: const Icon(Icons.save_rounded, color: Colors.blue, size: 20),

@@ -43,10 +43,11 @@ class _AppLifecycle extends StatefulWidget {
   State<_AppLifecycle> createState() => _AppLifecycleState();
 }
 
-class _AppLifecycleState extends State<_AppLifecycle> {
+class _AppLifecycleState extends State<_AppLifecycle> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       NotificationService.initialize();
       NotificationService.checkAndNotify();
@@ -55,6 +56,21 @@ class _AppLifecycleState extends State<_AppLifecycle> {
       }
       _startSessionIfAdminOrAssistant();
     });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      SessionManager.pause();
+    } else if (state == AppLifecycleState.resumed) {
+      SessionManager.resume();
+    }
   }
 
   Future<void> _startSessionIfAdminOrAssistant() async {

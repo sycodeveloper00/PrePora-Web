@@ -3,6 +3,7 @@ import 'dart:html' as html;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import '../../../core/widgets/professional_loader.dart';
 
 class WebViewWebWidget extends StatefulWidget {
   final String? url;
@@ -79,6 +80,21 @@ class _WebViewWebWidgetState extends State<WebViewWebWidget> {
       return;
     }
 
+    final isGoogleDrive = url.contains('drive.google.com') || url.contains('docs.google.com') || url.contains('googleapis.com/drive');
+    final isOneDrive = url.contains('onedrive.live.com') || url.contains('1drv.ms') || url.contains('sharepoint.com');
+    final isDropbox = url.contains('dropbox.com');
+
+    if (isGoogleDrive || isOneDrive || isDropbox) {
+      html.window.open(url, '_blank');
+      if (mounted) {
+        setState(() {
+          _src = '';
+          _loading = false;
+        });
+      }
+      return;
+    }
+
     final mime = _guessMime(url);
     final ext = url.split('?').first.split('#').first.split('.').last.toLowerCase();
 
@@ -103,8 +119,9 @@ class _WebViewWebWidgetState extends State<WebViewWebWidget> {
     }
 
     if (mounted) {
+      html.window.open(url, '_blank');
       setState(() {
-        _error = url;
+        _error = null;
         _loading = false;
       });
     }
@@ -112,7 +129,7 @@ class _WebViewWebWidgetState extends State<WebViewWebWidget> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return const Center(child: CircularProgressIndicator(color: Color(0xFF4A148C)));
+    if (_loading) return const Center(child: ProfessionalLoader());
     if (_src != null && _src!.isNotEmpty) {
       return HtmlElementView.fromTagName(
         tagName: 'iframe',

@@ -12,6 +12,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
 import '../../../core/services/firebase_service.dart';
 import '../../../core/utils.dart';
+import '../../../core/widgets/professional_loader.dart';
 
 class AdminNoticeScreen extends StatefulWidget {
   const AdminNoticeScreen({super.key});
@@ -215,7 +216,7 @@ class _AdminNoticeScreenState extends State<AdminNoticeScreen> {
             stream: FirebaseService.getNotices(),
             builder: (context, snap) {
               final listDark = Theme.of(context).brightness == Brightness.dark;
-              if (snap.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+              if (snap.connectionState == ConnectionState.waiting) return const Center(child: ProfessionalLoader());
               if (!snap.hasData || snap.data!.docs.isEmpty) return Center(child: Text('No notices', style: TextStyle(color: listDark ? Colors.white38 : Colors.black54)));
               final now = DateTime.now();
               return ListView.builder(

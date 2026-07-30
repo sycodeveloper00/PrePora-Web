@@ -5,6 +5,7 @@ import 'package:package_info_plus/package_info_plus.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/services/firebase_service.dart';
 import '../../../core/theme/theme_provider.dart';
+import '../../../core/widgets/professional_loader.dart';
 
 class AdminSettingsScreen extends StatefulWidget {
   const AdminSettingsScreen({super.key});
@@ -54,7 +55,7 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
         leading: IconButton(icon: const Icon(Icons.arrow_back_ios_new_rounded), onPressed: () => context.pop()),
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? const Center(child: ProfessionalLoader())
           : ListView(
               padding: const EdgeInsets.all(16),
               children: [
@@ -122,7 +123,7 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
           future: FirebaseService.getAllStudents(),
           builder: (ctx, snap) {
             if (!snap.hasData) {
-              return Padding(padding: const EdgeInsets.all(40), child: Center(child: CircularProgressIndicator(color: isDarkLocal ? Colors.white : Colors.black87)));
+              return Padding(padding: const EdgeInsets.all(40), child: Center(child: ProfessionalLoader()));
             }
             final students = snap.data!;
             return Padding(

@@ -24,11 +24,11 @@ class NotificationPopupBox extends StatelessWidget {
     VoidCallback? onDismiss,
     VoidCallback? onRead,
   }) {
-    if (panelType == NotificationPanelType.student) {
-      final uid = FirebaseService.currentUser?.uid ?? '';
-      FirebaseService.markStudentNotificationsRead(uid);
-    } else if (panelType == NotificationPanelType.admin) {
+    if (panelType == NotificationPanelType.admin) {
       FirebaseService.markAdminNotificationsRead();
+    } else {
+      final uid = FirebaseService.currentUser?.uid ?? '';
+      if (uid.isNotEmpty) FirebaseService.markStudentNotificationsRead(uid);
     }
     onRead?.call();
 

@@ -12,6 +12,7 @@ import '../../../core/theme/theme_provider.dart';
 import '../../../core/widgets/notification_popup_box.dart';
 import '../../folders/presentation/folder_details_screen.dart' show GroupLinkDialog;
 import '../../../core/utils.dart';
+import '../../../core/widgets/professional_loader.dart';
 
 class AdminDashboardScreen extends StatefulWidget {
   final String? studentUid;
@@ -162,7 +163,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             child: StreamBuilder<QuerySnapshot>(
               stream: FirebaseService.getAllAssistant(),
               builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+                if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: ProfessionalLoader());
                 if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
                   return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                     Icon(Icons.person_off_rounded, size: 50, color: isDark ? Colors.white12 : Colors.black12),
@@ -248,7 +249,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       builder: (ctx) => FutureBuilder<List<Map<String, dynamic>>>(
         future: FirebaseService.getAllStudents(),
         builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) return SizedBox(height: 300, child: Center(child: CircularProgressIndicator(color: isDark ? Colors.white : Colors.black87)));
+          if (snap.connectionState == ConnectionState.waiting) return SizedBox(height: 300, child: Center(child: ProfessionalLoader()));
           final students = snap.data ?? [];
           return StatefulBuilder(builder: (ctx, setLocal) {
             if (students.isEmpty) return SizedBox(height: 200, child: Center(child: Text('No students registered', style: TextStyle(color: dimColor))));
@@ -375,7 +376,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             ]),
             const SizedBox(height: 16),
             if (loading)
-              const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator()))
+              const Center(child: Padding(padding: EdgeInsets.all(20), child: ProfessionalLoader()))
             else
               Expanded(
                 child: ListView(children: [
@@ -430,7 +431,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       builder: (ctx) => FutureBuilder<List<Map<String, dynamic>>>(
         future: FirebaseService.getAllStudents(),
         builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) return SizedBox(height: 300, child: Center(child: CircularProgressIndicator(color: isDark ? Colors.white : Colors.black87)));
+          if (snap.connectionState == ConnectionState.waiting) return SizedBox(height: 300, child: Center(child: ProfessionalLoader()));
           final students = snap.data ?? [];
           return StatefulBuilder(builder: (ctx, setLocal) {
             if (students.isEmpty) return SizedBox(height: 200, child: Center(child: Text('No students registered', style: TextStyle(color: dimColor))));
@@ -483,14 +484,21 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     final baseColor = isDark ? Colors.white : Colors.black87;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Padding(
-        padding: const EdgeInsets.only(left: 4, bottom: 6),
-        child: Text(title, style: TextStyle(color: baseColor.withValues(alpha: 0.5), fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.5)),
+        padding: const EdgeInsets.only(left: 4, bottom: 8),
+        child: Text(title, style: TextStyle(color: baseColor.withValues(alpha: 0.5), fontSize: 11, fontWeight: FontWeight.w700, letterSpacing: 0.8)),
       ),
       Container(
         decoration: BoxDecoration(
           color: (isDark ? Colors.white : Colors.black87).withValues(alpha: isDark ? 0.05 : 0.03),
           borderRadius: BorderRadius.circular(16),
           border: Border.all(color: (isDark ? Colors.white : Colors.black87).withValues(alpha: isDark ? 0.08 : 0.06)),
+          boxShadow: [
+            BoxShadow(
+              color: (isDark ? Colors.black : Colors.grey).withValues(alpha: 0.04),
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
         ),
         child: Column(children: tiles),
       ),
@@ -502,7 +510,14 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     final baseColor = isDark ? Colors.white : Colors.black87;
     final dimColor = isDark ? Colors.white38 : Colors.black54;
     return ListTile(
-      leading: Icon(icon, color: iconColor, size: 22),
+      leading: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: iconColor.withValues(alpha: isDark ? 0.2 : 0.1),
+          borderRadius: BorderRadius.circular(10),
+        ),
+        child: Icon(icon, color: iconColor, size: 20),
+      ),
       title: Text(title, style: TextStyle(color: baseColor, fontWeight: FontWeight.w600, fontSize: 14)),
       subtitle: Text(subtitle, style: TextStyle(color: dimColor, fontSize: 11)),
       trailing: trailing ?? Icon(Icons.chevron_right, color: dimColor, size: 18),
@@ -523,7 +538,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       builder: (ctx) => FutureBuilder<List<Map<String, dynamic>>>(
         future: FirebaseService.getAllStudents(),
         builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) return SizedBox(height: 300, child: Center(child: CircularProgressIndicator(color: isDark ? Colors.white : Colors.black87)));
+          if (snap.connectionState == ConnectionState.waiting) return SizedBox(height: 300, child: Center(child: ProfessionalLoader()));
           final students = snap.data ?? [];
           return StatefulBuilder(builder: (ctx, setLocal) {
             if (students.isEmpty) return SizedBox(height: 200, child: Center(child: Text('No students registered', style: TextStyle(color: dimColor))));
@@ -855,7 +870,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             child: StreamBuilder<QuerySnapshot>(
               stream: FirebaseService.getAssistantLoginsForFolder(folderId),
               builder: (context, snapshot) {
-                if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+                if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: ProfessionalLoader());
                 if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
                   return const Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                     Icon(Icons.vpn_key_off_rounded, size: 50, color: Colors.white12),
@@ -959,7 +974,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               const Divider(color: Colors.white12, height: 1),
               Expanded(
                 child: loading
-                    ? const Center(child: CircularProgressIndicator())
+                    ? const Center(child: ProfessionalLoader())
                     : assistants.isEmpty
                         ? Center(
                             child: Column(
@@ -1167,7 +1182,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   title: Text(folderName, style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontWeight: FontWeight.bold)),
                   subtitle: Text('Folder match', style: TextStyle(color: isDark ? Colors.white38 : Colors.black54, fontSize: 12)),
                   trailing: const Icon(Icons.chevron_right, color: Colors.grey),
-                  onTap: () => context.push('/folders/$folderId', extra: {'canEdit': true, 'canManage': true, 'isAdmin': true}),
+                  onTap: () => context.push('/folders/$folderId', extra: {'canEdit': true, 'canManage': true, 'isAdmin': true, if (widget.studentUid != null) 'targetStudentUid': widget.studentUid}),
                 ),
               );
             } else {
@@ -1399,13 +1414,21 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     );
   }
 
+  Future<void> _sendScopedNotification(String message, {String? folderId, String? parentContentId, Map<String, dynamic>? contentData}) async {
+    if (widget.studentUid != null) {
+      await FirebaseService.addTargetedNotification(widget.studentUid!, message, folderId: folderId, parentContentId: parentContentId, contentData: contentData);
+    } else {
+      await FirebaseService.addNotification(message, folderId: folderId, parentContentId: parentContentId, contentData: contentData);
+    }
+  }
+
   void _pickFileFromStorage(String folderId) async {
     try {
       final result = await FilePicker.platform.pickFiles(type: FileType.any, allowMultiple: false);
       if (result != null && result.files.isNotEmpty) {
         final file = result.files.first;
         await FirebaseService.addFolderContent(folderId, {'type': 'file', 'name': file.name, 'url': file.path ?? '', 'source': 'internal_storage'});
-        await FirebaseService.addNotification('Uploaded file: ${file.name}', folderId: folderId);
+        await _sendScopedNotification('Uploaded file: ${file.name}', folderId: folderId);
       }
     } catch (e) {
       if (mounted) {
@@ -1439,7 +1462,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               if (nameCtrl.text.trim().isEmpty) return;
               Navigator.pop(d);
               await FirebaseService.addFolderContent(folderId, {'type': 'file', 'name': nameCtrl.text.trim(), 'url': urlCtrl.text.trim(), 'source': 'google_drive'});
-              await FirebaseService.addNotification('Uploaded from Drive: ${nameCtrl.text.trim()}', folderId: folderId);
+              await _sendScopedNotification('Uploaded from Drive: ${nameCtrl.text.trim()}', folderId: folderId);
             },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.amber.shade800),
             child: const Text('Save', style: TextStyle(color: Colors.white)),
@@ -1474,7 +1497,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               if (nameCtrl.text.trim().isEmpty) return;
               Navigator.pop(d);
               await FirebaseService.addFolderContent(folderId, {'type': 'file', 'name': nameCtrl.text.trim(), 'url': linkCtrl.text.trim(), 'source': 'url'});
-              await FirebaseService.addNotification('Uploaded file: ${nameCtrl.text.trim()}', folderId: folderId);
+              await _sendScopedNotification('Uploaded file: ${nameCtrl.text.trim()}', folderId: folderId);
             },
             style: ElevatedButton.styleFrom(backgroundColor: Colors.teal.shade700),
             child: const Text('Save', style: TextStyle(color: Colors.white)),
@@ -1654,12 +1677,28 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           ]),
         ),
         _buildAdminSearchBar(),
+        if (widget.studentUid != null)
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            color: const Color(0xFF00B8D4).withValues(alpha: 0.15),
+            child: Row(
+              children: [
+                const Icon(Icons.person_pin_rounded, color: Color(0xFF00B8D4), size: 16),
+                const SizedBox(width: 8),
+                Text(
+                  'Controlling: ${widget.studentName ?? 'Student'} — changes are scoped to this student only',
+                  style: const TextStyle(color: Color(0xFF00B8D4), fontSize: 12, fontWeight: FontWeight.w600),
+                ),
+              ],
+            ),
+          ),
         const Divider(height: 1, color: Colors.white12),
         Expanded(
           child: StreamBuilder<QuerySnapshot>(
             stream: _folderStream,
             builder: (context, snapshot) {
-              if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: CircularProgressIndicator());
+              if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: ProfessionalLoader());
               if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
                 return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                   Icon(Icons.folder_open_rounded, size: 80, color: Colors.white12),
@@ -1722,7 +1761,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   final color = colors[index % colors.length];
                   return AnimatedPressable(
                     key: ValueKey(folderId),
-                    onTap: () => context.push('/folders/$folderId', extra: {'canEdit': true, 'canManage': true, 'isAdmin': true}),
+                  onTap: () => context.push('/folders/$folderId', extra: {'canEdit': true, 'canManage': true, 'isAdmin': true, if (widget.studentUid != null) 'targetStudentUid': widget.studentUid}),
                     child: GestureDetector(
                       onLongPress: () {
                         showModalBottomSheet(
@@ -1771,7 +1810,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                               _actionBtn(Icons.people_alt_rounded, Colors.orange, 'Assistant', () => _showGrantAccessDialog(folderId, folderName)),
                               _actionBtn(Icons.lock_outline_rounded, Colors.amber, 'Lock', () => _showFolderLockSheet(folderId, folderName, locked, updating, invisible)),
                               _actionBtn(Icons.groups_rounded, Colors.green, 'Group', () => _groupLinkForFolder(context, folderId)),
-                              _actionBtn(Icons.open_in_new_rounded, Colors.blue, 'Open', () => context.push('/folders/$folderId', extra: {'canEdit': true, 'canManage': true, 'isAdmin': true})),
+                              _actionBtn(Icons.open_in_new_rounded, Colors.blue, 'Open', () => context.push('/folders/$folderId', extra: {'canEdit': true, 'canManage': true, 'isAdmin': true, if (widget.studentUid != null) 'targetStudentUid': widget.studentUid})),
                               const Spacer(),
                               IconButton(icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent), onPressed: () => _confirmDelete(folderId, folderName), tooltip: 'Delete'),
                             ]),
@@ -1841,7 +1880,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             Divider(color: isDark ? Colors.white12 : Colors.black12),
             const SizedBox(height: 8),
             if (loadingSettings)
-              const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator()))
+              const Center(child: Padding(padding: EdgeInsets.all(20), child: ProfessionalLoader()))
             else ...[
               Divider(color: isDark ? Colors.white12 : Colors.black12, height: 24),
             ],
@@ -1923,7 +1962,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             if (!snap.hasData) {
               return Padding(
                 padding: const EdgeInsets.all(40),
-                child: Center(child: CircularProgressIndicator(color: isDark ? Colors.white : Colors.black87)),
+                child: Center(child: ProfessionalLoader()),
               );
             }
             final students = snap.data!;

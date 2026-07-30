@@ -111,6 +111,7 @@ class FirebaseService {
     String email,
     String password, {
     String role = 'student',
+    String gender = '',
   }) async {
     try {
       final cred = await fb_auth.FirebaseAuth.instance.createUserWithEmailAndPassword(
@@ -125,6 +126,7 @@ class FirebaseService {
         'name': name,
         'email': email.trim(),
         'role': role,
+        'gender': gender,
         'blocked': false,
         'verified': role == 'admin',
         'createdAt': FieldValue.serverTimestamp(),
@@ -346,11 +348,17 @@ class FirebaseService {
   }
 
   static Future<void> deleteRootFolder(String folderId) async {
-    final contents = await firestore.collection('folders').doc(folderId).collection('contents').get();
-    for (final c in contents.docs) {
-      await c.reference.delete();
-    }
+    // Delete ALL contents recursively (including nested subfolders)
+    await _deleteAllContentsRecursive(folderId, 'contents');
+    await _deleteAllContentsRecursive(folderId, 'content');
     await firestore.collection('folders').doc(folderId).delete();
+  }
+
+  static Future<void> _deleteAllContentsRecursive(String folderId, String subcollection) async {
+    final snap = await firestore.collection('folders').doc(folderId).collection(subcollection).get();
+    for (final doc in snap.docs) {
+      await doc.reference.delete();
+    }
   }
 
   static Future<void> deleteFolder(String folderId) async {
@@ -517,8 +525,29 @@ class FirebaseService {
   }
 
   static Future<void> deleteFolderContent(String folderId, String contentId) async {
+    // Check if it's a subfolder — delete all children recursively
+    final contentDoc = await firestore.collection('folders').doc(folderId).collection('contents').doc(contentId).get();
+    if (contentDoc.exists) {
+      final data = contentDoc.data() as Map<String, dynamic>?;
+      if (data != null && data['type'] == 'subfolder') {
+        await _deleteSubfolderChildrenRecursive(folderId, contentId, 'contents');
+        await _deleteSubfolderChildrenRecursive(folderId, contentId, 'content');
+      }
+    }
     await firestore.collection('folders').doc(folderId).collection('contents').doc(contentId).delete();
     await firestore.collection('folders').doc(folderId).update({'item_count': FieldValue.increment(-1)});
+  }
+
+  static Future<void> _deleteSubfolderChildrenRecursive(String folderId, String parentContentId, String subcollection) async {
+    final snap = await firestore.collection('folders').doc(folderId).collection(subcollection)
+        .where('parentContentId', isEqualTo: parentContentId).get();
+    for (final doc in snap.docs) {
+      final data = doc.data() as Map<String, dynamic>;
+      if (data['type'] == 'subfolder') {
+        await _deleteSubfolderChildrenRecursive(folderId, doc.id, subcollection);
+      }
+      await doc.reference.delete();
+    }
   }
 
   static Future<void> updateContentField(String folderId, String contentId, String field, dynamic value) async {
@@ -692,7 +721,7 @@ class FirebaseService {
     final totalAttempts = recent.length;
     final uniqueDevices = recent.map((d) => d.data()['deviceId'] as String? ?? 'unknown').toSet().toList();
     final isMultiDevice = uniqueDevices.length > 1;
-    final shouldBlock = (isMultiDevice && totalAttempts > 3) || (!isMultiDevice && totalAttempts > 6);
+    final shouldBlock = isMultiDevice && totalAttempts >= 3;
     if (!shouldBlock) return;
     final userData = userDoc.data() as Map<String, dynamic>?;
     if (userData?['verified'] != true) {
@@ -745,12 +774,31 @@ class FirebaseService {
     }
   }
 
-  static Future<String?> addNotification(String message, {String? folderId, Map<String, dynamic>? contentData}) async {
+  static Future<bool> _isAnyAncestorRestricted(String folderId, String? contentId) async {
+    if (contentId == null) return false;
+    try {
+      final doc = await firestore.collection('folders').doc(folderId).collection('contents').doc(contentId).get();
+      if (!doc.exists) return false;
+      final data = doc.data() as Map<String, dynamic>?;
+      if (data == null) return false;
+      final locked = data['locked'] as bool? ?? false;
+      final invisible = data['invisible'] as bool? ?? false;
+      final updating = data['updating'] as bool? ?? false;
+      if (locked || invisible || updating) return true;
+      final parentContentId = data['parentContentId'] as String?;
+      if (parentContentId != null) {
+        return _isAnyAncestorRestricted(folderId, parentContentId);
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  static Future<bool> _isNotificationBlocked(String? folderId, String? parentContentId, Map<String, dynamic>? contentData) async {
     if (contentData != null) {
       final locked = contentData['locked'] as bool? ?? false;
       final updating = contentData['updating'] as bool? ?? false;
       final invisible = contentData['invisible'] as bool? ?? false;
-      if (locked || updating || invisible) return null;
+      if (locked || updating || invisible) return true;
     }
     if (folderId != null) {
       final folderDoc = await firestore.collection('folders').doc(folderId).get();
@@ -759,10 +807,19 @@ class FirebaseService {
         if (folderData != null) {
           final folderLocked = folderData['locked'] as bool? ?? false;
           final folderInvisible = folderData['invisible'] as bool? ?? false;
-          if (folderLocked || folderInvisible) return null;
+          final folderUpdating = folderData['updating'] as bool? ?? false;
+          if (folderLocked || folderInvisible || folderUpdating) return true;
         }
       }
+      if (parentContentId != null) {
+        if (await _isAnyAncestorRestricted(folderId, parentContentId)) return true;
+      }
     }
+    return false;
+  }
+
+  static Future<String?> addNotification(String message, {String? folderId, String? parentContentId, Map<String, dynamic>? contentData}) async {
+    if (await _isNotificationBlocked(folderId, parentContentId, contentData)) return null;
     final users = await firestore.collection('users').get();
     final batch = firestore.batch();
     for (final u in users.docs) {
@@ -780,7 +837,8 @@ class FirebaseService {
     return 'batch';
   }
 
-  static Future<String?> addTargetedNotification(String uid, String message) async {
+  static Future<String?> addTargetedNotification(String uid, String message, {String? folderId, String? parentContentId, Map<String, dynamic>? contentData}) async {
+    if (await _isNotificationBlocked(folderId, parentContentId, contentData)) return null;
     final doc = await firestore.collection('notifications').add({
       'uid': uid,
       'message': message,
@@ -789,6 +847,60 @@ class FirebaseService {
       'type': 'targeted',
     });
     return doc.id;
+  }
+
+  // ─── Student Activity Tracking ───────────────────────────────────────────────
+
+  static Future<String> logActivity({
+    required String uid,
+    required String name,
+    required String type,
+    required String folderPath,
+  }) async {
+    final doc = await firestore.collection('student_activities').add({
+      'uid': uid,
+      'name': name,
+      'type': type,
+      'folderPath': folderPath,
+      'startedAt': FieldValue.serverTimestamp(),
+    });
+    return doc.id;
+  }
+
+  static Future<void> endActivity(String activityId) async {
+    try {
+      await firestore.collection('student_activities').doc(activityId).update({
+        'endedAt': FieldValue.serverTimestamp(),
+      });
+    } catch (_) {}
+  }
+
+  static Stream<QuerySnapshot> getStudentActivities(String uid) {
+    return firestore
+        .collection('student_activities')
+        .where('uid', isEqualTo: uid)
+        .snapshots();
+  }
+
+  static Future<Map<String, dynamic>?> getUserData(String uid) async {
+    try {
+      final doc = await firestore.collection('users').doc(uid).get();
+      return doc.exists ? doc.data() : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<List<Map<String, dynamic>>> getStudentFeedbacks(String uid) async {
+    try {
+      final snap = await firestore.collection('feedbacks')
+          .where('uid', isEqualTo: uid)
+          .orderBy('createdAt', descending: true)
+          .get();
+      return snap.docs.map((d) => d.data()..['id'] = d.id).toList();
+    } catch (_) {
+      return [];
+    }
   }
 
   // ─── Feedback ──────────────────────────────────────────────────────────────────
@@ -1082,16 +1194,47 @@ class _SupabaseStorageReference {
     await putData(bytes);
   }
 
-  Future<_SupabaseStorageReference> putData(Uint8List data, {fb_storage.SettableMetadata? metadata}) async {
+  Future<_SupabaseStorageReference> putData(Uint8List data, {fb_storage.SettableMetadata? metadata, void Function(double progress)? onProgress}) async {
     final uri = Uri.parse('${FirebaseService.supabaseUrl}/storage/v1/object/$_bucket/$_objectPath');
-    final request = http.MultipartRequest('POST', uri)
-      ..headers['Authorization'] = 'Bearer ${FirebaseService.serviceRoleKey}'
-      ..files.add(http.MultipartFile.fromBytes('file', data, filename: _objectPath.split('/').last));
+    final boundary = '----PrePora${DateTime.now().millisecondsSinceEpoch}';
+    final filename = _objectPath.split('/').last;
+
+    final bodyParts = <List<int>>[];
+    bodyParts.add(utf8.encode('--$boundary\r\n'));
+    bodyParts.add(utf8.encode('Content-Disposition: form-data; name="file"; filename="$filename"\r\n'));
+    bodyParts.add(utf8.encode('Content-Type: application/octet-stream\r\n\r\n'));
+    bodyParts.add(data);
+    bodyParts.add(utf8.encode('\r\n--$boundary--\r\n'));
     if (metadata?.contentDisposition != null) {
-      request.fields['metadata'] = jsonEncode({'Content-Disposition': metadata!.contentDisposition});
+      bodyParts.insertAll(0, [
+        utf8.encode('--$boundary\r\n'),
+        utf8.encode('Content-Disposition: form-data; name="metadata"\r\n\r\n'),
+        utf8.encode(jsonEncode({'Content-Disposition': metadata!.contentDisposition})),
+        utf8.encode('\r\n'),
+      ]);
     }
+
+    final totalBytes = bodyParts.fold<int>(0, (sum, p) => sum + p.length);
+
+    final request = http.StreamedRequest('POST', uri)
+      ..headers['Authorization'] = 'Bearer ${FirebaseService.serviceRoleKey}'
+      ..headers['Content-Type'] = 'multipart/form-data; boundary=$boundary'
+      ..contentLength = totalBytes;
+
+    const chunkSize = 64 * 1024;
     final client = http.Client();
     try {
+      final allBody = Uint8List.fromList(bodyParts.expand((p) => p).toList());
+      var offset = 0;
+      while (offset < allBody.length) {
+        final end = (offset + chunkSize).clamp(0, allBody.length);
+        request.sink.add(allBody.sublist(offset, end));
+        offset = end;
+        onProgress?.call(offset / allBody.length);
+        await Future.delayed(Duration.zero);
+      }
+      request.sink.close();
+
       final response = await client.send(request).timeout(const Duration(minutes: 5));
       if (response.statusCode >= 400) {
         final body = await response.stream.bytesToString();
@@ -1116,16 +1259,18 @@ class _SupabaseStorageReference {
 }
 
 class SessionManager {
-  static const Duration _timeout = Duration(minutes: 30);
+  static const Duration _timeout = Duration(minutes: 12);
   static Timer? _timer;
   static DateTime? _lastActivity;
   static VoidCallback? onExpired;
+  static bool _isPaused = false;
 
   static DateTime? get lastActivity => _lastActivity;
 
   static void start({VoidCallback? onExpiredCallback}) {
     onExpired = onExpiredCallback;
     _lastActivity = DateTime.now();
+    _isPaused = false;
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 30), (_) => _check());
   }
@@ -1138,10 +1283,30 @@ class SessionManager {
     _timer?.cancel();
     _timer = null;
     _lastActivity = null;
+    _isPaused = false;
+  }
+
+  static void pause() {
+    _isPaused = true;
+    _timer?.cancel();
+    _timer = null;
+  }
+
+  static void resume() {
+    if (_lastActivity == null || onExpired == null) return;
+    final elapsed = DateTime.now().difference(_lastActivity!);
+    if (elapsed >= _timeout) {
+      stop();
+      onExpired?.call();
+      return;
+    }
+    _isPaused = false;
+    _timer?.cancel();
+    _timer = Timer.periodic(const Duration(seconds: 30), (_) => _check());
   }
 
   static void _check() {
-    if (_lastActivity == null) return;
+    if (_lastActivity == null || _isPaused) return;
     if (DateTime.now().difference(_lastActivity!) >= _timeout) {
       stop();
       onExpired?.call();

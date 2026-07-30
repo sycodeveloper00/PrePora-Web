@@ -4,7 +4,6 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
-import 'package:go_router/go_router.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:connectivity_plus/connectivity_plus.dart';
@@ -12,6 +11,7 @@ import '../../../core/services/ai_service.dart';
 import '../../../core/services/firebase_service.dart';
 import '../../../core/services/web_scraper_service.dart';
 import '../../../core/services/file_reader_service.dart';
+import '../../../core/widgets/professional_loader.dart';
 
 class AiChatScreen extends StatefulWidget {
   final String? folderContext;
@@ -82,6 +82,7 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
 
   @override
   void dispose() {
+    _typingTimer?.cancel();
     _pulseController.dispose();
     _controller.dispose();
     _scrollController.dispose();
@@ -89,6 +90,10 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
     _connectivitySubscription?.cancel();
     super.dispose();
   }
+
+  Timer? _typingTimer;
+  String _pendingTyping = '';
+  _Message? _typingMsg;
 
   Future<void> _sendMessage([String? quickPrompt]) async {
     final text = quickPrompt ?? _controller.text.trim();
@@ -132,22 +137,20 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
       }
 
       final aiMsg = _Message(text: '', isUser: false);
+      _typingMsg = aiMsg;
       if (mounted) setState(() => _messages.add(aiMsg));
 
       bool hasContent = false;
       await for (final chunk in _aiService.sendMessageStream(messageToSend)) {
         if (!mounted) break;
-        setState(() {
-          aiMsg.text += chunk;
-          hasContent = true;
-        });
-        _scrollToBottom();
+        _pendingTyping += chunk;
+        hasContent = true;
       }
 
-      if (mounted) {
+      if (hasContent && mounted) {
+        _startTypingAnimation(aiMsg);
+      } else if (mounted) {
         setState(() => _isLoading = false);
-        if (hasContent) _saveMessageToHistory(aiMsg.text, 'ai');
-        _scrollToBottom();
       }
     } catch (e) {
       if (mounted) {
@@ -159,6 +162,40 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
         });
       }
     }
+  }
+
+  void _startTypingAnimation(_Message aiMsg) {
+    _pendingTyping = aiMsg.text.isEmpty ? _pendingTyping : _pendingTyping;
+    final fullText = _pendingTyping;
+    _pendingTyping = '';
+    int charIndex = 0;
+    const charsPerTick = 3;
+    const tickDuration = Duration(milliseconds: 20);
+
+    _typingTimer?.cancel();
+    _typingTimer = Timer.periodic(tickDuration, (timer) {
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+      charIndex += charsPerTick;
+      if (charIndex >= fullText.length) {
+        charIndex = fullText.length;
+        timer.cancel();
+        setState(() {
+          aiMsg.text = fullText;
+          _isLoading = false;
+          _typingMsg = null;
+        });
+        if (_failedText == null) _saveMessageToHistory(fullText, 'ai');
+        _scrollToBottom();
+      } else {
+        setState(() {
+          aiMsg.text = fullText.substring(0, charIndex);
+        });
+        _scrollToBottom();
+      }
+    });
   }
 
   Future<void> _pickAttachFile() async {
@@ -404,7 +441,7 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
                   itemCount: _messages.length + (_isLoading ? 1 : 0),
                   itemBuilder: (context, index) {
                     if (index == _messages.length) return _buildTypingIndicator();
-                    return _buildMessage(_messages[index], isDark);
+                    return _buildMessage(_messages[index], isDark, isStreaming: _isLoading && index == _messages.length - 1);
                   },
                 ),
               ),
@@ -473,6 +510,13 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
                 color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(28),
                 border: Border.all(color: isDark ? Colors.white.withValues(alpha: 0.1) : Colors.black12),
+                boxShadow: [
+                  BoxShadow(
+                    color: (isDark ? Colors.black : Colors.grey).withValues(alpha: 0.08),
+                    blurRadius: 8,
+                    offset: const Offset(0, -2),
+                  ),
+                ],
               ),
               child: Padding(
                 padding: const EdgeInsets.all(4),
@@ -492,15 +536,15 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
                         child: TextField(
                           controller: _controller,
                           focusNode: _focusNode,
-                          style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 14),
+                          style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 14, fontFamilyFallback: const ['Noto Nastaliq Urdu']),
                           maxLines: 6,
                           minLines: 1,
                           scrollPhysics: const BouncingScrollPhysics(),
                           keyboardType: TextInputType.multiline,
                           textInputAction: TextInputAction.newline,
                           decoration: InputDecoration(
-                            hintText: 'Ask anything... (Enter to send, Shift+Enter for new line, 6 lines max)',
-                            hintStyle: TextStyle(color: isDark ? Colors.white38 : Colors.black45),
+                            hintText: 'Ask anything...',
+                            hintStyle: TextStyle(color: isDark ? Colors.white38 : Colors.black45, fontFamilyFallback: const ['Noto Nastaliq Urdu']),
                             filled: false,
                             border: InputBorder.none,
                             contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
@@ -616,7 +660,7 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
     );
   }
 
-  Widget _buildMessage(_Message msg, bool isDark) {
+  Widget _buildMessage(_Message msg, bool isDark, {bool isStreaming = false}) {
     final isUser = msg.isUser;
     final isError = msg.isError;
 
@@ -684,11 +728,12 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
                     color: msg.isError ? Colors.redAccent : Colors.white,
                     fontSize: 14,
                     height: 1.5,
+                    fontFamilyFallback: const ['Noto Nastaliq Urdu'],
                   ),
                 )
               else
                 MarkdownBody(
-                    data: msg.text,
+                    data: AiService.fixLatex(msg.text),
                     selectable: true,
                     inlineSyntaxes: [
                       MathBlockSyntax(),
@@ -698,13 +743,14 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
                       'mathBlock': MathBlockBuilder(),
                       'mathInline': MathInlineBuilder(),
                       'code': CodeBlockBuilder(isDark: isDark),
+                      'table': ScrollableTableBuilder(isDark: isDark),
                     },
                     styleSheet: MarkdownStyleSheet(
                       textScaleFactor: 1.0,
-                      p: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 14, height: 1.6),
-                      h1: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 18, fontWeight: FontWeight.bold),
-                      h2: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 16, fontWeight: FontWeight.bold),
-                      h3: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 15, fontWeight: FontWeight.w600),
+                      p: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 14, height: 1.6, fontFamilyFallback: const ['Noto Nastaliq Urdu']),
+                      h1: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 18, fontWeight: FontWeight.bold, fontFamilyFallback: const ['Noto Nastaliq Urdu']),
+                      h2: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 16, fontWeight: FontWeight.bold, fontFamilyFallback: const ['Noto Nastaliq Urdu']),
+                      h3: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 15, fontWeight: FontWeight.w600, fontFamilyFallback: const ['Noto Nastaliq Urdu']),
                       code: TextStyle(
                         color: const Color(0xFF00E5FF),
                         backgroundColor: isDark ? Colors.white.withValues(alpha: 0.08) : Colors.grey.withValues(alpha: 0.15),
@@ -720,7 +766,7 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
                         border: Border(left: BorderSide(color: const Color(0xFFCE93D8), width: 3)),
                         color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.1),
                       ),
-                      listBullet: const TextStyle(color: Color(0xFFCE93D8)),
+                      listBullet: const TextStyle(color: Color(0xFFCE93D8), fontFamilyFallback: ['Noto Nastaliq Urdu']),
                       tableBorder: TableBorder.all(color: isDark ? Colors.white24 : Colors.black26),
                       tableHead: TextStyle(fontWeight: FontWeight.bold, color: isDark ? Colors.white : Colors.black87),
                       tableColumnWidth: const IntrinsicColumnWidth(),
@@ -736,7 +782,7 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
                       ),
                     ),
                   ),
-              if (!isUser)
+              if (!isUser && !isStreaming)
                 Padding(
                   padding: const EdgeInsets.only(top: 8),
                   child: Row(
@@ -816,7 +862,7 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
           const SizedBox(width: 8),
           SizedBox(
             width: 16, height: 16,
-            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.amber),
+            child: ProfessionalLoader(size: 16),
           ),
         ],
       ),
@@ -880,37 +926,21 @@ class MathInlineBuilder extends MarkdownElementBuilder {
   Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
     final text = element.attributes['raw'] ?? element.textContent;
     if (text.isEmpty) return const SizedBox.shrink();
-    try {
-      return FittedBox(
-        fit: BoxFit.scaleDown,
-        child: Math.tex(
-          text,
-          textStyle: const TextStyle(
-            color: Color(0xFF00E5FF),
-            fontSize: 16,
-          ),
-          onErrorFallback: (_) => Text(
-            text,
-            style: const TextStyle(
-              color: Color(0xFF00E5FF),
-              fontFamily: 'monospace',
-              fontSize: 13,
-              fontStyle: FontStyle.italic,
-            ),
-          ),
-        ),
-      );
-    } catch (_) {
-      return Text(
+    return Math.tex(
+      text,
+      textStyle: const TextStyle(
+        color: Color(0xFF00E5FF),
+        fontSize: 16,
+      ),
+      onErrorFallback: (e) => Text(
         text,
         style: const TextStyle(
           color: Color(0xFF00E5FF),
-          fontFamily: 'monospace',
-          fontSize: 13,
+          fontSize: 15,
           fontStyle: FontStyle.italic,
         ),
-      );
-    }
+      ),
+    );
   }
 }
 
@@ -974,6 +1004,89 @@ class MathBlockBuilder extends MarkdownElementBuilder {
         ),
       );
     }
+  }
+}
+
+class ScrollableTableBuilder extends MarkdownElementBuilder {
+  final bool isDark;
+  ScrollableTableBuilder({this.isDark = true});
+
+  @override
+  Widget? visitElementAfter(md.Element element, TextStyle? preferredStyle) {
+    final rows = <TableRow>[];
+    int maxCols = 0;
+
+    for (final section in element.children?.whereType<md.Element>() ?? <md.Element>[]) {
+      final isHeader = section.tag == 'thead';
+      for (final tr in section.children?.whereType<md.Element>().where((e) => e.tag == 'tr') ?? <md.Element>[]) {
+        final cells = <TableCell>[];
+        int colIdx = 0;
+        for (final cell in tr.children?.whereType<md.Element>().where((e) => e.tag == 'td' || e.tag == 'th') ?? <md.Element>[]) {
+          final align = cell.attributes['align'];
+          TextAlign textAlign = TextAlign.left;
+          if (align == 'center') textAlign = TextAlign.center;
+          else if (align == 'right') textAlign = TextAlign.right;
+
+          cells.add(TableCell(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+              decoration: BoxDecoration(
+                border: Border(
+                  right: BorderSide(color: isDark ? Colors.white12 : Colors.black12, width: 0.5),
+                  bottom: BorderSide(color: isDark ? Colors.white12 : Colors.black12, width: 0.5),
+                ),
+              ),
+              child: Text(
+                cell.textContent.trim(),
+                style: TextStyle(
+                  color: isDark ? Colors.white : Colors.black87,
+                  fontSize: 13,
+                  fontWeight: isHeader ? FontWeight.bold : FontWeight.normal,
+                ),
+                textAlign: textAlign,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ));
+          colIdx++;
+        }
+        if (colIdx > maxCols) maxCols = colIdx;
+
+        rows.add(TableRow(
+          decoration: isHeader
+              ? BoxDecoration(
+                  color: isDark
+                      ? const Color(0xFF1A1040).withValues(alpha: 0.8)
+                      : Colors.grey.withValues(alpha: 0.2),
+                )
+              : null,
+          children: cells,
+        ));
+      }
+    }
+
+    if (rows.isEmpty) return null;
+
+    return Container(
+      margin: const EdgeInsets.symmetric(vertical: 6),
+      decoration: BoxDecoration(
+        border: Border.all(color: isDark ? Colors.white24 : Colors.black26),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(minWidth: maxCols * 120.0),
+          child: Table(
+            defaultVerticalAlignment: TableCellVerticalAlignment.middle,
+            columnWidths: {for (int i = 0; i < maxCols; i++) i: const IntrinsicColumnWidth()},
+            children: rows,
+          ),
+        ),
+      ),
+    );
   }
 }
 
