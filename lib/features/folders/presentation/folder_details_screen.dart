@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
@@ -11,6 +12,9 @@ import 'package:firebase_storage/firebase_storage.dart';
 import '../../../core/widgets/glassmorphic_container.dart';
 import '../../../core/widgets/professional_loader.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/services/admin_clipboard_service.dart';
+import '../../../core/widgets/admin_context_menu.dart';
+import '../../../core/widgets/shortcuts_help_dialog.dart';
 import 'folder_browser_screen.dart';
 
 class FolderDetailsScreen extends StatefulWidget {
@@ -51,6 +55,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   Set<String> _selectedIds = {};
   bool _isSelectMode = false;
   String? _groupLink;
+  final FocusNode _focusNode = FocusNode();
+  List<String> _allVisibleDocIds = [];
   final Map<String, double> _uploadProgress = {};
 
   // ─── Cached futures & streams to prevent blinking rebuild loops ───
@@ -73,6 +79,15 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     _checkStatus();
     _loadSubfolderName();
     _loadGroupLink();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _focusNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
   }
 
   void _loadSubfolderName() async {
@@ -1123,13 +1138,342 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     }
   }
 
+  // ─── Keyboard Shortcuts & Context Menu ─────────────────────────────────────
+
+  void _handleKeyEvent(KeyEvent event) {
+    if (!widget.isAdmin) return;
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return;
+
+    final ctrl = HardwareKeyboard.instance.isControlPressed || HardwareKeyboard.instance.isMetaPressed;
+    final shift = HardwareKeyboard.instance.isShiftPressed;
+    final key = event.logicalKey;
+
+    if (ctrl && key == LogicalKeyboardKey.slash) {
+      ShortcutsHelpDialog.show(context);
+      return;
+    }
+
+    if (ctrl && !shift && key == LogicalKeyboardKey.keyC && _selectedIds.isNotEmpty) {
+      _copySelected();
+      return;
+    }
+
+    if (ctrl && !shift && key == LogicalKeyboardKey.keyX && _selectedIds.isNotEmpty) {
+      _cutSelected();
+      return;
+    }
+
+    if (ctrl && !shift && key == LogicalKeyboardKey.keyV) {
+      _pasteItems();
+      return;
+    }
+
+    if (ctrl && !shift && key == LogicalKeyboardKey.keyD && _selectedIds.isNotEmpty) {
+      _duplicateSelected();
+      return;
+    }
+
+    if (ctrl && !shift && key == LogicalKeyboardKey.keyE && _selectedIds.length == 1) {
+      _editFirstSelected();
+      return;
+    }
+
+    if (key == LogicalKeyboardKey.f2 && _selectedIds.length == 1) {
+      _renameFirstSelected();
+      return;
+    }
+
+    if (key == LogicalKeyboardKey.delete && _selectedIds.isNotEmpty) {
+      _confirmDeleteSelected();
+      return;
+    }
+
+    if (ctrl && !shift && key == LogicalKeyboardKey.keyN) {
+      _createSubFolder();
+      return;
+    }
+
+    if (ctrl && !shift && key == LogicalKeyboardKey.keyL && _selectedIds.length == 1) {
+      _toggleLockFirstSelected();
+      return;
+    }
+
+    if (ctrl && shift && key == LogicalKeyboardKey.keyV && _selectedIds.length == 1) {
+      _toggleVisibilityFirstSelected();
+      return;
+    }
+
+    if (key == LogicalKeyboardKey.escape) {
+      _clearSelection();
+      return;
+    }
+
+    if (ctrl && !shift && key == LogicalKeyboardKey.keyA) {
+      _selectAll();
+      return;
+    }
+  }
+
+  void _copySelected() {
+    if (_selectedIds.isEmpty) return;
+    final id = _selectedIds.first;
+    AdminClipboardService.instance.copy(id, id, 'content', parentFolderId: widget.folderId);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Copied ${_selectedIds.length} item(s)'), backgroundColor: const Color(0xFF7C4DFF), duration: const Duration(seconds: 1)),
+    );
+  }
+
+  void _cutSelected() {
+    if (_selectedIds.isEmpty) return;
+    final id = _selectedIds.first;
+    AdminClipboardService.instance.cut(id, id, 'content', parentFolderId: widget.folderId);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Cut ${_selectedIds.length} item(s)'), backgroundColor: Colors.orange, duration: const Duration(seconds: 1)),
+    );
+  }
+
+  void _pasteItems() {
+    final clipboard = AdminClipboardService.instance;
+    if (!clipboard.hasItem) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Nothing to paste'), backgroundColor: Colors.orange),
+      );
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Pasted successfully'), backgroundColor: Colors.green),
+    );
+  }
+
+  void _duplicateSelected() async {
+    if (_selectedIds.isEmpty) return;
+    for (final id in _selectedIds) {
+      final doc = await FirebaseService.firestore
+          .collection('folders').doc(widget.folderId)
+          .collection('contents').doc(id).get();
+      if (!doc.exists) continue;
+      final data = Map<String, dynamic>.from(doc.data() as Map<String, dynamic>);
+      final originalName = data['name'] as String? ?? 'Untitled';
+      data['name'] = AdminClipboardService.instance.getDuplicateName(originalName);
+      data.remove('createdAt');
+      data.remove('order');
+      await FirebaseService.addFolderContent(widget.folderId, data);
+    }
+    _clearSelection();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Duplicated ${_selectedIds.length} item(s)'), backgroundColor: Colors.green),
+    );
+  }
+
+  void _editFirstSelected() {
+    if (_selectedIds.length != 1) return;
+    final id = _selectedIds.first;
+    FirebaseService.firestore
+        .collection('folders').doc(widget.folderId)
+        .collection('contents').doc(id).get().then((doc) {
+      if (doc.exists) {
+        final data = doc.data() as Map<String, dynamic>;
+        final name = data['name'] as String? ?? '';
+        final type = data['type'] as String? ?? 'file';
+        _showEditContentDialog(id, name, type, data);
+      }
+    });
+    _clearSelection();
+  }
+
+  void _renameFirstSelected() {
+    if (_selectedIds.length != 1) return;
+    final id = _selectedIds.first;
+    FirebaseService.firestore
+        .collection('folders').doc(widget.folderId)
+        .collection('contents').doc(id).get().then((doc) {
+      if (doc.exists) {
+        final data = doc.data() as Map<String, dynamic>;
+        final name = data['name'] as String? ?? '';
+        _showRenameContentDialog(id, name);
+      }
+    });
+    _clearSelection();
+  }
+
+  void _toggleLockFirstSelected() {
+    if (_selectedIds.length != 1) return;
+    final id = _selectedIds.first;
+    FirebaseService.firestore
+        .collection('folders').doc(widget.folderId)
+        .collection('contents').doc(id).get().then((doc) {
+      if (doc.exists) {
+        final data = doc.data() as Map<String, dynamic>;
+        final locked = data['locked'] as bool? ?? false;
+        FirebaseService.firestore
+            .collection('folders').doc(widget.folderId)
+            .collection('contents').doc(id).update({'locked': !locked});
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(locked ? 'Unlocked' : 'Locked'), backgroundColor: const Color(0xFF7C4DFF)),
+        );
+      }
+    });
+    _clearSelection();
+  }
+
+  void _toggleVisibilityFirstSelected() {
+    if (_selectedIds.length != 1) return;
+    final id = _selectedIds.first;
+    FirebaseService.firestore
+        .collection('folders').doc(widget.folderId)
+        .collection('contents').doc(id).get().then((doc) {
+      if (doc.exists) {
+        final data = doc.data() as Map<String, dynamic>;
+        final invisible = data['invisible'] as bool? ?? false;
+        FirebaseService.firestore
+            .collection('folders').doc(widget.folderId)
+            .collection('contents').doc(id).update({'invisible': !invisible});
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(invisible ? 'Now visible' : 'Now hidden'), backgroundColor: const Color(0xFF7C4DFF)),
+        );
+      }
+    });
+    _clearSelection();
+  }
+
+  void _selectAll() {
+    if (_allVisibleDocIds.isEmpty) return;
+    setState(() {
+      _isSelectMode = true;
+      _selectedIds = Set<String>.from(_allVisibleDocIds);
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Selected all ${_allVisibleDocIds.length} items'), backgroundColor: const Color(0xFF7C4DFF), duration: const Duration(seconds: 1)),
+    );
+  }
+
+  void _createSubFolder() {
+    _addSubFolder(context);
+  }
+
+  void _showContextMenu(Offset position) {
+    if (!widget.isAdmin) return;
+    showAdminContextMenu(
+      context,
+      position,
+      onOpen: () {},
+      onCopy: _copySelected,
+      onCut: _cutSelected,
+      onPaste: _pasteItems,
+      onRename: _renameFirstSelected,
+      onEdit: _editFirstSelected,
+      onDelete: _confirmDeleteSelected,
+      canPaste: AdminClipboardService.instance.hasItem,
+      canEdit: _selectedIds.length == 1,
+    );
+  }
+
+  void _showItemContextMenu(Offset position, String id, Map<String, dynamic> data) {
+    if (!widget.isAdmin) return;
+    final name = data['name'] as String? ?? '';
+    final type = data['type'] as String? ?? 'file';
+    AdminContextMenu.show(
+      context,
+      position,
+      [
+        ContextMenuItem(
+          icon: Icons.folder_open_rounded,
+          label: 'Open',
+          shortcut: 'Enter',
+          onTap: () => _openContent(data),
+        ),
+        ContextMenuItem(
+          icon: Icons.copy_rounded,
+          label: 'Copy',
+          shortcut: 'Ctrl+C',
+          onTap: () {
+            AdminClipboardService.instance.copy(id, name, type, parentFolderId: widget.folderId, data: data);
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Copied "$name"'), backgroundColor: const Color(0xFF7C4DFF), duration: const Duration(seconds: 1)),
+            );
+          },
+        ),
+        ContextMenuItem(
+          icon: Icons.cut_rounded,
+          label: 'Cut',
+          shortcut: 'Ctrl+X',
+          onTap: () {
+            AdminClipboardService.instance.cut(id, name, type, parentFolderId: widget.folderId, data: data);
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Cut "$name"'), backgroundColor: Colors.orange, duration: const Duration(seconds: 1)),
+            );
+          },
+        ),
+        ContextMenuItem(
+          icon: Icons.paste_rounded,
+          label: 'Paste',
+          shortcut: 'Ctrl+V',
+          onTap: AdminClipboardService.instance.hasItem ? _pasteItems : null,
+        ),
+        const ContextMenuItem(icon: Icons.circle, label: '', isDivider: true),
+        ContextMenuItem(
+          icon: Icons.drive_file_rename_outline_rounded,
+          label: 'Rename',
+          shortcut: 'F2',
+          onTap: () => _showRenameContentDialog(id, name),
+        ),
+        ContextMenuItem(
+          icon: Icons.edit_note_rounded,
+          label: 'Edit',
+          shortcut: 'Ctrl+E',
+          onTap: () => _showEditContentDialog(id, name, type, data),
+        ),
+        ContextMenuItem(
+          icon: Icons.content_copy_rounded,
+          label: 'Duplicate',
+          shortcut: 'Ctrl+D',
+          onTap: () async {
+            final doc = await FirebaseService.firestore
+                .collection('folders').doc(widget.folderId)
+                .collection('contents').doc(id).get();
+            if (!doc.exists) return;
+            final docData = Map<String, dynamic>.from(doc.data() as Map<String, dynamic>);
+            docData['name'] = AdminClipboardService.instance.getDuplicateName(name);
+            docData.remove('createdAt');
+            docData.remove('order');
+            await FirebaseService.addFolderContent(widget.folderId, docData);
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                SnackBar(content: Text('Duplicated "$name"'), backgroundColor: Colors.green),
+              );
+            }
+          },
+        ),
+        const ContextMenuItem(icon: Icons.circle, label: '', isDivider: true),
+        ContextMenuItem(
+          icon: Icons.delete_rounded,
+          label: 'Delete',
+          shortcut: 'Del',
+          onTap: () => _confirmDeleteContent(id, name, data),
+          isDestructive: true,
+        ),
+      ],
+    );
+  }
+
   // ─── Build ───────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<DocumentSnapshot>(
-      future: _folderFuture,
-      builder: (context, folderSnap) {
+    return Focus(
+      focusNode: _focusNode,
+      autofocus: true,
+      onKeyEvent: (node, event) {
+        _handleKeyEvent(event);
+        return KeyEventResult.handled;
+      },
+      child: GestureDetector(
+        onSecondaryTapUp: widget.isAdmin ? (details) {
+          _showContextMenu(details.globalPosition);
+        } : null,
+        child: FutureBuilder<DocumentSnapshot>(
+          future: _folderFuture,
+          builder: (context, folderSnap) {
         if (folderSnap.hasData && folderSnap.data!.exists) {
           _folderName = (folderSnap.data!.data() as Map<String, dynamic>)['name'] as String? ?? 'Folder';
         }
@@ -1213,6 +1557,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                             final d = doc.data() as Map<String, dynamic>;
                             return d['invisible'] != true;
                           }).toList();
+
+                    _allVisibleDocIds = visibleDocs.map((d) => d.id).toList();
 
                     // If local order has missing or extra IDs vs stream, reset local order
                     if (_hasLocalOrder && _searchQuery.isEmpty) {
@@ -1357,6 +1703,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                     ),
         );
       },
+        ),
+      ),
     );
   }
 
@@ -1602,6 +1950,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     final disabled = _isDisabled(data, id);
     return GestureDetector(
       onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
+      onDoubleTap: disabled ? null : () => _openContent(data),
+      onSecondaryTapUp: widget.isAdmin ? (details) => _showItemContextMenu(details.globalPosition, id, data) : null,
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         child: GlassmorphicContainer(
@@ -1689,6 +2039,15 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     final disabled = _isDisabled(data, id);
     return GestureDetector(
       onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
+      onDoubleTap: disabled ? null : () {
+        context.push('/folders/${widget.folderId}/sub/$id', extra: {
+          'canEdit': widget.canEdit, 'canManage': widget.canManage,
+          'isAdmin': widget.isAdmin,
+          if (widget.targetStudentUid != null) 'targetStudentUid': widget.targetStudentUid,
+          if (widget.assistantContentAccess != null) 'assistantContentAccess': widget.assistantContentAccess!.toList(),
+        });
+      },
+      onSecondaryTapUp: widget.isAdmin ? (details) => _showItemContextMenu(details.globalPosition, id, data) : null,
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         child: GlassmorphicContainer(
@@ -1787,6 +2146,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     final disabled = _isDisabled(data, id);
     return GestureDetector(
       onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
+      onDoubleTap: disabled ? null : () => _openContent(data),
+      onSecondaryTapUp: widget.isAdmin ? (details) => _showItemContextMenu(details.globalPosition, id, data) : null,
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         child: GlassmorphicContainer(
@@ -1874,6 +2235,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     final disabled = _isDisabled(data, id);
     return GestureDetector(
       onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
+      onDoubleTap: disabled ? null : () => _openContent(data),
+      onSecondaryTapUp: widget.isAdmin ? (details) => _showItemContextMenu(details.globalPosition, id, data) : null,
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         child: GlassmorphicContainer(
@@ -1961,6 +2324,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     final disabled = _isDisabled(data, id);
     return GestureDetector(
       onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
+      onDoubleTap: disabled ? null : () => _openContent(data),
+      onSecondaryTapUp: widget.isAdmin ? (details) => _showItemContextMenu(details.globalPosition, id, data) : null,
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         child: GlassmorphicContainer(

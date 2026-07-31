@@ -1,3 +1,5 @@
-String createBlobUrl(List<int> bytes, String mimeType) {
-  throw UnsupportedError('Cannot create blob URLs on this platform');
+import 'dart:typed_data';
+
+String createBlobUrl(Uint8List bytes, String mimeType) {
+  return '';
 }

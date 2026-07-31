@@ -69,7 +69,14 @@ class _AppLifecycleState extends State<_AppLifecycle> with WidgetsBindingObserve
     if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
       SessionManager.pause();
     } else if (state == AppLifecycleState.resumed) {
-      SessionManager.resume();
+      if (kIsWeb) {
+        final user = FirebaseService.currentUser;
+        if (user == null) return;
+        SessionManager.reset();
+        SessionManager.resume();
+      } else {
+        SessionManager.resume();
+      }
     }
   }
 
@@ -100,13 +107,20 @@ class PrePoraApp extends ConsumerWidget {
       child: Listener(
         onPointerDown: (_) => SessionManager.reset(),
         onPointerMove: (_) => SessionManager.reset(),
-        child: MaterialApp.router(
-          title: 'PrePora',
-          debugShowCheckedModeBanner: false,
-          theme: AppTheme.lightTheme,
-          darkTheme: AppTheme.darkTheme,
-          themeMode: themeMode,
-          routerConfig: AppRouter.router,
+        child: Focus(
+          autofocus: true,
+          onKey: (node, event) {
+            SessionManager.reset();
+            return KeyEventResult.ignored;
+          },
+          child: MaterialApp.router(
+            title: 'PrePora',
+            debugShowCheckedModeBanner: false,
+            theme: AppTheme.lightTheme,
+            darkTheme: AppTheme.darkTheme,
+            themeMode: themeMode,
+            routerConfig: AppRouter.router,
+          ),
         ),
       ),
     );

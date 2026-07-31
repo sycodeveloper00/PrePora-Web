@@ -34,13 +34,14 @@ import '../../features/notifications/presentation/admin_notifications_screen.dar
 import '../../features/student/presentation/student_progress_screen.dart';
 import '../../features/link_web/presentation/link_web_screen.dart';
 
-enum WebDomain { preporaWeb, adminPrepora, unknown }
+enum WebDomain { preporaWeb, adminPrepora, assistantPrepora, unknown }
 
 WebDomain _detectDomain() {
   if (!kIsWeb) return WebDomain.unknown;
   try {
     final host = Uri.base.host;
     if (host.contains('admin-prepora')) return WebDomain.adminPrepora;
+    if (host.contains('assistant-prepora')) return WebDomain.assistantPrepora;
     if (host.contains('prepora-web')) return WebDomain.preporaWeb;
   } catch (_) {}
   return WebDomain.unknown;
@@ -89,6 +90,24 @@ class AuthGuard {
       return null;
     }
 
+    if (_currentDomain == WebDomain.assistantPrepora) {
+      if (path == '/auth/login' || path == '/auth/forgot-password' || path == '/auth/reset-password') return null;
+
+      try {
+        final user = FirebaseService.currentUser;
+        if (user == null) return '/auth/login';
+
+        final role = _cachedUserRole ?? FirebaseService.cachedRole;
+        if (role == null) return '/auth/login';
+        if (role != 'Assistant') return '/auth/login';
+      } catch (_) {
+        return '/auth/login';
+      }
+
+      if (path == '/auth/signup') return '/assistant';
+      return null;
+    }
+
     if (path == '/link-web' || path == '/splash' || path == '/auth/login' || path == '/auth/signup' || path == '/auth/forgot-password' || path == '/auth/reset-password' || path == '/terms') return null;
 
     try {
@@ -110,6 +129,7 @@ class AuthGuard {
 class AppRouter {
   static String get _initialLocation {
     if (_currentDomain == WebDomain.adminPrepora) return '/auth/login';
+    if (_currentDomain == WebDomain.assistantPrepora) return '/auth/login';
     if (_currentDomain == WebDomain.preporaWeb) return '/link-web';
     return '/link-web';
   }

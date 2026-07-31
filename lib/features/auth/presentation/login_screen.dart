@@ -59,6 +59,21 @@ class _LoginScreenState extends State<LoginScreen> {
             _showUnderDevelopmentDialog();
             return;
           }
+          if (kIsWeb) {
+            final host = Uri.base.host;
+            if (host.contains('admin-prepora') && role != 'admin') {
+              setState(() => _isLoading = false);
+              await FirebaseService.signOut();
+              _showWrongRoleDialog('admin');
+              return;
+            }
+            if (host.contains('assistant-prepora') && role != 'Assistant') {
+              setState(() => _isLoading = false);
+              await FirebaseService.signOut();
+              _showWrongRoleDialog('assistant');
+              return;
+            }
+          }
           if (role == 'admin') {
             context.go('/admin');
           } else if (role == 'Assistant') {
@@ -103,6 +118,36 @@ class _LoginScreenState extends State<LoginScreen> {
           ElevatedButton(
             onPressed: () => Navigator.pop(ctx),
             style: ElevatedButton.styleFrom(backgroundColor: Colors.orange.shade800),
+            child: const Text('OK', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    ).then((_) {
+      setState(() => _isLoading = false);
+    });
+  }
+
+  void _showWrongRoleDialog(String requiredRole) {
+    final title = requiredRole == 'admin' ? 'Admin Access Required' : 'Assistant Access Required';
+    final msg = requiredRole == 'admin'
+        ? 'This portal is for admin users only. Please use the correct portal for your role.'
+        : 'This portal is for assistant users only. Please use the correct portal for your role.';
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A0533),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Row(children: [
+          Icon(requiredRole == 'admin' ? Icons.admin_panel_settings : Icons.person, color: Colors.red, size: 24),
+          const SizedBox(width: 10),
+          Text(title, style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+        ]),
+        content: Text(msg, style: const TextStyle(color: Colors.white70, fontSize: 14, height: 1.5)),
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade800),
             child: const Text('OK', style: TextStyle(color: Colors.white)),
           ),
         ],

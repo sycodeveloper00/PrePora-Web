@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/services/firebase_service.dart';
 import '../../../core/utils.dart';
+import '../../../core/widgets/admin_context_menu.dart';
 import '../../../core/widgets/professional_loader.dart';
+import '../../../core/widgets/shortcuts_help_dialog.dart';
 
 class BrowseNode {
   final String id;
@@ -40,6 +43,7 @@ class FolderBrowserScreen extends StatefulWidget {
 }
 
 class _FolderBrowserScreenState extends State<FolderBrowserScreen> {
+  final FocusNode _focusNode = FocusNode();
   bool _loading = true;
 
   // Tree structure: top-level folders (root level)
@@ -55,6 +59,15 @@ class _FolderBrowserScreenState extends State<FolderBrowserScreen> {
   void initState() {
     super.initState();
     _loadAll();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _focusNode.requestFocus();
+    });
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
   }
 
   Future<void> _loadAll() async {
@@ -135,6 +148,43 @@ class _FolderBrowserScreenState extends State<FolderBrowserScreen> {
     setState(() {
       _path.removeLast();
     });
+  }
+
+  void _handleKeyEvent(KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return;
+
+    final ctrl = HardwareKeyboard.instance.isControlPressed || HardwareKeyboard.instance.isMetaPressed;
+    final shift = HardwareKeyboard.instance.isShiftPressed;
+    final key = event.logicalKey;
+
+    if (ctrl && key == LogicalKeyboardKey.slash) {
+      ShortcutsHelpDialog.show(context);
+      return;
+    }
+
+    if (key == LogicalKeyboardKey.enter && _path.isNotEmpty) {
+      _enter(_path.last);
+      return;
+    }
+
+    if (key == LogicalKeyboardKey.backspace) {
+      _goBack();
+      return;
+    }
+
+    if (key == LogicalKeyboardKey.escape) {
+      if (_path.isNotEmpty) {
+        _goBack();
+      } else {
+        context.pop();
+      }
+      return;
+    }
+
+    if (ctrl && !shift && key == LogicalKeyboardKey.keyN) {
+      _createNewFolder();
+      return;
+    }
   }
 
   List<BrowseNode> get _currentNodes {
@@ -317,8 +367,31 @@ class _FolderBrowserScreenState extends State<FolderBrowserScreen> {
     final dimColor = isDark ? Colors.white54 : Colors.black45;
     final isAtRoot = _path.isEmpty;
 
-    return Scaffold(
-      backgroundColor: isDark ? const Color(0xFF0D0D2E) : Colors.white,
+    return Focus(
+      focusNode: _focusNode,
+      autofocus: true,
+      onKeyEvent: (node, event) {
+        _handleKeyEvent(event);
+        return KeyEventResult.handled;
+      },
+      child: GestureDetector(
+        onSecondaryTapUp: (details) {
+          showAdminContextMenu(
+            context,
+            details.globalPosition,
+            onOpen: () {},
+            onCopy: () {},
+            onCut: () {},
+            onPaste: _pasteHere,
+            onRename: () {},
+            onEdit: () {},
+            onDelete: () {},
+            canPaste: false,
+            canEdit: false,
+          );
+        },
+        child: Scaffold(
+          backgroundColor: isDark ? const Color(0xFF0D0D2E) : Colors.white,
       appBar: AppBar(
         backgroundColor: isDark ? const Color(0xFF1A0533) : Colors.white,
         leading: IconButton(icon: const Icon(Icons.close_rounded), onPressed: () => context.pop()),
@@ -396,18 +469,35 @@ class _FolderBrowserScreenState extends State<FolderBrowserScreen> {
                         separatorBuilder: (_, __) => Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
                         itemBuilder: (_, i) {
                           final node = _currentNodes[i];
-                          return ListTile(
-                            leading: Icon(
-                              node.isTopLevel ? Icons.folder_rounded : Icons.subdirectory_arrow_right_rounded,
-                              color: Colors.amber,
-                              size: 28,
+                          return GestureDetector(
+                            onSecondaryTapUp: (details) {
+                              showAdminContextMenu(
+                                context,
+                                details.globalPosition,
+                                onOpen: () => _enter(node),
+                                onCopy: () {},
+                                onCut: () {},
+                                onPaste: () {},
+                                onRename: () {},
+                                onEdit: () {},
+                                onDelete: () {},
+                                canPaste: false,
+                                canEdit: false,
+                              );
+                            },
+                            child: ListTile(
+                              leading: Icon(
+                                node.isTopLevel ? Icons.folder_rounded : Icons.subdirectory_arrow_right_rounded,
+                                color: Colors.amber,
+                                size: 28,
+                              ),
+                              title: Text(node.name, style: TextStyle(
+                                color: textColor,
+                                fontWeight: FontWeight.bold, fontSize: 14,
+                              )),
+                              trailing: const Icon(Icons.chevron_right, size: 18),
+                              onTap: () => _enter(node),
                             ),
-                            title: Text(node.name, style: TextStyle(
-                              color: textColor,
-                              fontWeight: FontWeight.bold, fontSize: 14,
-                            )),
-                            trailing: const Icon(Icons.chevron_right, size: 18),
-                            onTap: () => _enter(node),
                           );
                         },
                       ),
@@ -433,6 +523,8 @@ class _FolderBrowserScreenState extends State<FolderBrowserScreen> {
             ),
           ),
         ],
+      ),
+    ),
       ),
     );
   }
