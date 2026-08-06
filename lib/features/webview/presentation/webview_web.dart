@@ -3,6 +3,7 @@ import 'dart:html' as html;
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
+import '../../../core/helpers/katex_injector.dart';
 import '../../../core/widgets/professional_loader.dart';
 
 class WebViewWebWidget extends StatefulWidget {
@@ -69,7 +70,7 @@ class _WebViewWebWidgetState extends State<WebViewWebWidget> {
   Future<void> _loadSrc() async {
     if (widget.html != null && widget.html!.isNotEmpty) {
       setState(() {
-        _src = 'data:text/html;charset=utf-8,${Uri.encodeComponent(widget.html!)}';
+        _src = 'data:text/html;charset=utf-8,${Uri.encodeComponent(KaTeXInjector.inject(widget.html!))}';
         _loading = false;
       });
       return;
