@@ -2,19 +2,16 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:firebase_storage/firebase_storage.dart';
+import 'package:http/http.dart' as http;
 import '../../../core/widgets/glassmorphic_container.dart';
 import '../../../core/widgets/professional_loader.dart';
 import '../../../core/services/firebase_service.dart';
-import '../../../core/services/admin_clipboard_service.dart';
-import '../../../core/widgets/admin_context_menu.dart';
-import '../../../core/widgets/shortcuts_help_dialog.dart';
 import 'folder_browser_screen.dart';
 
 class FolderDetailsScreen extends StatefulWidget {
@@ -55,8 +52,6 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   Set<String> _selectedIds = {};
   bool _isSelectMode = false;
   String? _groupLink;
-  final FocusNode _focusNode = FocusNode();
-  List<String> _allVisibleDocIds = [];
   final Map<String, double> _uploadProgress = {};
 
   // ─── Cached futures & streams to prevent blinking rebuild loops ───
@@ -79,15 +74,6 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     _checkStatus();
     _loadSubfolderName();
     _loadGroupLink();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _focusNode.requestFocus();
-    });
-  }
-
-  @override
-  void dispose() {
-    _focusNode.dispose();
-    super.dispose();
   }
 
   void _loadSubfolderName() async {
@@ -747,6 +733,103 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     );
   }
 
+  void _addMockTestFile(BuildContext ctx) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final baseColor = isDark ? Colors.white : Colors.black87;
+    final dimColor = isDark ? Colors.white38 : Colors.black38;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: isDark ? const Color(0xFF1A0533) : Colors.white,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(mainAxisSize: MainAxisSize.min, children: [
+          Text('Upload Mock Test File', style: TextStyle(color: dimColor, fontWeight: FontWeight.bold, fontSize: 15)),
+          const SizedBox(height: 20),
+          ListTile(
+            leading: const Icon(Icons.html, color: Colors.orange),
+            title: Text('HTML', style: TextStyle(color: baseColor)),
+            subtitle: Text('Upload .html or .htm file', style: TextStyle(color: dimColor, fontSize: 12)),
+            onTap: () { Navigator.pop(context); _pickMockTestFile(ctx, fileType: 'html'); },
+          ),
+          Divider(color: isDark ? Colors.white12 : Colors.black12),
+          ListTile(
+            leading: const Icon(Icons.picture_as_pdf_rounded, color: Colors.orange),
+            title: Text('PDF', style: TextStyle(color: baseColor)),
+            subtitle: Text('Upload .pdf file', style: TextStyle(color: dimColor, fontSize: 12)),
+            onTap: () { Navigator.pop(context); _pickMockTestFile(ctx, fileType: 'pdf'); },
+          ),
+          const SizedBox(height: 8),
+        ]),
+      ),
+    );
+  }
+
+  void _pickMockTestFile(BuildContext ctx, {required String fileType}) async {
+    try {
+      final allowedExtensions = fileType == 'html' ? ['html', 'htm'] : ['pdf'];
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: allowedExtensions,
+        allowMultiple: false,
+        withData: true,
+      );
+      if (result != null && result.files.isNotEmpty) {
+        final file = result.files.first;
+        final bytes = file.bytes ?? (!kIsWeb && file.path != null ? File(file.path!).readAsBytesSync() : null);
+        if (bytes == null) return;
+        if (bytes.length > 50 * 1024 * 1024) {
+          if (ctx.mounted) {
+            ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+              content: Text('${file.name} too large (${(bytes.length / 1024 / 1024).toStringAsFixed(1)}MB). Max: 50MB'),
+              backgroundColor: Colors.redAccent,
+            ));
+          }
+          return;
+        }
+
+        final displayName = file.name.contains('.')
+            ? file.name.substring(0, file.name.lastIndexOf('.'))
+            : file.name;
+
+        if (mounted) setState(() => _uploadProgress[file.name] = 0);
+
+        try {
+          final storageName = '${DateTime.now().millisecondsSinceEpoch}_${file.name}';
+          final ref = FirebaseService.storage.ref('folder_files/$storageName');
+          await ref.putData(bytes, metadata: SettableMetadata(contentDisposition: 'inline; filename="${file.name}"'), onProgress: (p) {
+            if (mounted) setState(() => _uploadProgress[file.name] = p);
+          });
+          if (mounted) setState(() => _uploadProgress.remove(file.name));
+
+          final downloadUrl = await ref.getDownloadURL();
+          final data = <String, dynamic>{
+            'type': 'mocktest_file',
+            'name': displayName,
+            'url': downloadUrl,
+            'fileType': fileType,
+            'source': 'supabase_storage',
+          };
+          if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
+          final newId = await FirebaseService.addFolderContent(widget.folderId, data);
+          if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
+          await _sendScopedNotification('Uploaded mock test file: $displayName', parentContentId: widget.parentContentId);
+          _refreshAssistantAccess();
+          if (ctx.mounted) {
+            ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Mock test file uploaded!'), backgroundColor: Colors.green));
+          }
+        } catch (e) {
+          if (mounted) setState(() => _uploadProgress.remove(file.name));
+          rethrow;
+        }
+      }
+    } catch (e) {
+      if (ctx.mounted) {
+        ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Upload failed: $e'), backgroundColor: Colors.redAccent, duration: const Duration(seconds: 5)));
+      }
+    }
+  }
+
   Future<void> _loadGroupLink() async {
     final link = await FirebaseService.getGroupLinkForLevel(widget.folderId, parentContentId: widget.parentContentId ?? 'root');
     if (mounted) setState(() => _groupLink = link);
@@ -862,7 +945,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               await FirebaseService.renameFolderContent(widget.folderId, contentId, nameCtrl.text.trim());
               if (type == 'lecture') {
                 await FirebaseService.updateContentField(widget.folderId, contentId, 'youtubeUrl', urlCtrl.text.trim());
-              } else if (type == 'mocktest_url' || type == 'file') {
+              } else if (type == 'mocktest_url' || type == 'file' || type == 'mocktest_file') {
                 await FirebaseService.updateContentField(widget.folderId, contentId, 'url', urlCtrl.text.trim());
               } else if (type == 'mocktest_code') {
                 await FirebaseService.updateContentField(widget.folderId, contentId, 'code', urlCtrl.text.trim());
@@ -1002,7 +1085,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     return '';
   }
 
-  void _openContent(Map<String, dynamic> data, {String? folderName}) {
+  Future<void> _openContent(Map<String, dynamic> data, {String? folderName}) async {
     folderName ??= _folderName;
     final type = data['type'] as String? ?? 'file';
     final name = data['name'] as String? ?? '';
@@ -1057,6 +1140,33 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
           context.push('/webview', extra: {'html': code, 'title': name, 'folderId': widget.folderId, 'parentContentId': widget.parentContentId, 'isMockTest': true}).then((_) {
             if (activityId != null) FirebaseService.endActivity(activityId!);
           });
+        }
+        break;
+      case 'mocktest_file':
+        final url = data['url'] as String? ?? '';
+        final fileType = data['fileType'] as String? ?? 'pdf';
+        if (url.isNotEmpty) {
+          if (fileType == 'pdf') {
+            context.push('/pdf_reader/view', extra: {'url': url, 'folderId': widget.folderId, 'parentContentId': widget.parentContentId}).then((_) {
+              if (activityId != null) FirebaseService.endActivity(activityId!);
+            });
+          } else {
+            try {
+              final response = await http.get(Uri.parse(url));
+              if (response.statusCode == 200) {
+                final htmlContent = response.body;
+                if (context.mounted) {
+                  context.push('/webview', extra: {'html': htmlContent, 'title': name, 'folderId': widget.folderId, 'parentContentId': widget.parentContentId, 'isMockTest': true}).then((_) {
+                    if (activityId != null) FirebaseService.endActivity(activityId!);
+                  });
+                }
+              }
+            } catch (_) {
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to load mock test file'), backgroundColor: Colors.redAccent));
+              }
+            }
+          }
         }
         break;
       case 'file':
@@ -1138,342 +1248,13 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     }
   }
 
-  // ─── Keyboard Shortcuts & Context Menu ─────────────────────────────────────
-
-  void _handleKeyEvent(KeyEvent event) {
-    if (!widget.isAdmin) return;
-    if (event is! KeyDownEvent && event is! KeyRepeatEvent) return;
-
-    final ctrl = HardwareKeyboard.instance.isControlPressed || HardwareKeyboard.instance.isMetaPressed;
-    final shift = HardwareKeyboard.instance.isShiftPressed;
-    final key = event.logicalKey;
-
-    if (ctrl && key == LogicalKeyboardKey.slash) {
-      ShortcutsHelpDialog.show(context);
-      return;
-    }
-
-    if (ctrl && !shift && key == LogicalKeyboardKey.keyC && _selectedIds.isNotEmpty) {
-      _copySelected();
-      return;
-    }
-
-    if (ctrl && !shift && key == LogicalKeyboardKey.keyX && _selectedIds.isNotEmpty) {
-      _cutSelected();
-      return;
-    }
-
-    if (ctrl && !shift && key == LogicalKeyboardKey.keyV) {
-      _pasteItems();
-      return;
-    }
-
-    if (ctrl && !shift && key == LogicalKeyboardKey.keyD && _selectedIds.isNotEmpty) {
-      _duplicateSelected();
-      return;
-    }
-
-    if (ctrl && !shift && key == LogicalKeyboardKey.keyE && _selectedIds.length == 1) {
-      _editFirstSelected();
-      return;
-    }
-
-    if (key == LogicalKeyboardKey.f2 && _selectedIds.length == 1) {
-      _renameFirstSelected();
-      return;
-    }
-
-    if (key == LogicalKeyboardKey.delete && _selectedIds.isNotEmpty) {
-      _confirmDeleteSelected();
-      return;
-    }
-
-    if (ctrl && !shift && key == LogicalKeyboardKey.keyN) {
-      _createSubFolder();
-      return;
-    }
-
-    if (ctrl && !shift && key == LogicalKeyboardKey.keyL && _selectedIds.length == 1) {
-      _toggleLockFirstSelected();
-      return;
-    }
-
-    if (ctrl && shift && key == LogicalKeyboardKey.keyV && _selectedIds.length == 1) {
-      _toggleVisibilityFirstSelected();
-      return;
-    }
-
-    if (key == LogicalKeyboardKey.escape) {
-      _clearSelection();
-      return;
-    }
-
-    if (ctrl && !shift && key == LogicalKeyboardKey.keyA) {
-      _selectAll();
-      return;
-    }
-  }
-
-  void _copySelected() {
-    if (_selectedIds.isEmpty) return;
-    final id = _selectedIds.first;
-    AdminClipboardService.instance.copy(id, id, 'content', parentFolderId: widget.folderId);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Copied ${_selectedIds.length} item(s)'), backgroundColor: const Color(0xFF7C4DFF), duration: const Duration(seconds: 1)),
-    );
-  }
-
-  void _cutSelected() {
-    if (_selectedIds.isEmpty) return;
-    final id = _selectedIds.first;
-    AdminClipboardService.instance.cut(id, id, 'content', parentFolderId: widget.folderId);
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Cut ${_selectedIds.length} item(s)'), backgroundColor: Colors.orange, duration: const Duration(seconds: 1)),
-    );
-  }
-
-  void _pasteItems() {
-    final clipboard = AdminClipboardService.instance;
-    if (!clipboard.hasItem) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Nothing to paste'), backgroundColor: Colors.orange),
-      );
-      return;
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Pasted successfully'), backgroundColor: Colors.green),
-    );
-  }
-
-  void _duplicateSelected() async {
-    if (_selectedIds.isEmpty) return;
-    for (final id in _selectedIds) {
-      final doc = await FirebaseService.firestore
-          .collection('folders').doc(widget.folderId)
-          .collection('contents').doc(id).get();
-      if (!doc.exists) continue;
-      final data = Map<String, dynamic>.from(doc.data() as Map<String, dynamic>);
-      final originalName = data['name'] as String? ?? 'Untitled';
-      data['name'] = AdminClipboardService.instance.getDuplicateName(originalName);
-      data.remove('createdAt');
-      data.remove('order');
-      await FirebaseService.addFolderContent(widget.folderId, data);
-    }
-    _clearSelection();
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Duplicated ${_selectedIds.length} item(s)'), backgroundColor: Colors.green),
-    );
-  }
-
-  void _editFirstSelected() {
-    if (_selectedIds.length != 1) return;
-    final id = _selectedIds.first;
-    FirebaseService.firestore
-        .collection('folders').doc(widget.folderId)
-        .collection('contents').doc(id).get().then((doc) {
-      if (doc.exists) {
-        final data = doc.data() as Map<String, dynamic>;
-        final name = data['name'] as String? ?? '';
-        final type = data['type'] as String? ?? 'file';
-        _showEditContentDialog(id, name, type, data);
-      }
-    });
-    _clearSelection();
-  }
-
-  void _renameFirstSelected() {
-    if (_selectedIds.length != 1) return;
-    final id = _selectedIds.first;
-    FirebaseService.firestore
-        .collection('folders').doc(widget.folderId)
-        .collection('contents').doc(id).get().then((doc) {
-      if (doc.exists) {
-        final data = doc.data() as Map<String, dynamic>;
-        final name = data['name'] as String? ?? '';
-        _showRenameContentDialog(id, name);
-      }
-    });
-    _clearSelection();
-  }
-
-  void _toggleLockFirstSelected() {
-    if (_selectedIds.length != 1) return;
-    final id = _selectedIds.first;
-    FirebaseService.firestore
-        .collection('folders').doc(widget.folderId)
-        .collection('contents').doc(id).get().then((doc) {
-      if (doc.exists) {
-        final data = doc.data() as Map<String, dynamic>;
-        final locked = data['locked'] as bool? ?? false;
-        FirebaseService.firestore
-            .collection('folders').doc(widget.folderId)
-            .collection('contents').doc(id).update({'locked': !locked});
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(locked ? 'Unlocked' : 'Locked'), backgroundColor: const Color(0xFF7C4DFF)),
-        );
-      }
-    });
-    _clearSelection();
-  }
-
-  void _toggleVisibilityFirstSelected() {
-    if (_selectedIds.length != 1) return;
-    final id = _selectedIds.first;
-    FirebaseService.firestore
-        .collection('folders').doc(widget.folderId)
-        .collection('contents').doc(id).get().then((doc) {
-      if (doc.exists) {
-        final data = doc.data() as Map<String, dynamic>;
-        final invisible = data['invisible'] as bool? ?? false;
-        FirebaseService.firestore
-            .collection('folders').doc(widget.folderId)
-            .collection('contents').doc(id).update({'invisible': !invisible});
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(invisible ? 'Now visible' : 'Now hidden'), backgroundColor: const Color(0xFF7C4DFF)),
-        );
-      }
-    });
-    _clearSelection();
-  }
-
-  void _selectAll() {
-    if (_allVisibleDocIds.isEmpty) return;
-    setState(() {
-      _isSelectMode = true;
-      _selectedIds = Set<String>.from(_allVisibleDocIds);
-    });
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('Selected all ${_allVisibleDocIds.length} items'), backgroundColor: const Color(0xFF7C4DFF), duration: const Duration(seconds: 1)),
-    );
-  }
-
-  void _createSubFolder() {
-    _addSubFolder(context);
-  }
-
-  void _showContextMenu(Offset position) {
-    if (!widget.isAdmin) return;
-    showAdminContextMenu(
-      context,
-      position,
-      onOpen: () {},
-      onCopy: _copySelected,
-      onCut: _cutSelected,
-      onPaste: _pasteItems,
-      onRename: _renameFirstSelected,
-      onEdit: _editFirstSelected,
-      onDelete: _confirmDeleteSelected,
-      canPaste: AdminClipboardService.instance.hasItem,
-      canEdit: _selectedIds.length == 1,
-    );
-  }
-
-  void _showItemContextMenu(Offset position, String id, Map<String, dynamic> data) {
-    if (!widget.isAdmin) return;
-    final name = data['name'] as String? ?? '';
-    final type = data['type'] as String? ?? 'file';
-    AdminContextMenu.show(
-      context,
-      position,
-      [
-        ContextMenuItem(
-          icon: Icons.folder_open_rounded,
-          label: 'Open',
-          shortcut: 'Enter',
-          onTap: () => _openContent(data),
-        ),
-        ContextMenuItem(
-          icon: Icons.copy_rounded,
-          label: 'Copy',
-          shortcut: 'Ctrl+C',
-          onTap: () {
-            AdminClipboardService.instance.copy(id, name, type, parentFolderId: widget.folderId, data: data);
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Copied "$name"'), backgroundColor: const Color(0xFF7C4DFF), duration: const Duration(seconds: 1)),
-            );
-          },
-        ),
-        ContextMenuItem(
-          icon: Icons.cut_rounded,
-          label: 'Cut',
-          shortcut: 'Ctrl+X',
-          onTap: () {
-            AdminClipboardService.instance.cut(id, name, type, parentFolderId: widget.folderId, data: data);
-            ScaffoldMessenger.of(context).showSnackBar(
-              SnackBar(content: Text('Cut "$name"'), backgroundColor: Colors.orange, duration: const Duration(seconds: 1)),
-            );
-          },
-        ),
-        ContextMenuItem(
-          icon: Icons.paste_rounded,
-          label: 'Paste',
-          shortcut: 'Ctrl+V',
-          onTap: AdminClipboardService.instance.hasItem ? _pasteItems : null,
-        ),
-        const ContextMenuItem(icon: Icons.circle, label: '', isDivider: true),
-        ContextMenuItem(
-          icon: Icons.drive_file_rename_outline_rounded,
-          label: 'Rename',
-          shortcut: 'F2',
-          onTap: () => _showRenameContentDialog(id, name),
-        ),
-        ContextMenuItem(
-          icon: Icons.edit_note_rounded,
-          label: 'Edit',
-          shortcut: 'Ctrl+E',
-          onTap: () => _showEditContentDialog(id, name, type, data),
-        ),
-        ContextMenuItem(
-          icon: Icons.content_copy_rounded,
-          label: 'Duplicate',
-          shortcut: 'Ctrl+D',
-          onTap: () async {
-            final doc = await FirebaseService.firestore
-                .collection('folders').doc(widget.folderId)
-                .collection('contents').doc(id).get();
-            if (!doc.exists) return;
-            final docData = Map<String, dynamic>.from(doc.data() as Map<String, dynamic>);
-            docData['name'] = AdminClipboardService.instance.getDuplicateName(name);
-            docData.remove('createdAt');
-            docData.remove('order');
-            await FirebaseService.addFolderContent(widget.folderId, docData);
-            if (mounted) {
-              ScaffoldMessenger.of(context).showSnackBar(
-                SnackBar(content: Text('Duplicated "$name"'), backgroundColor: Colors.green),
-              );
-            }
-          },
-        ),
-        const ContextMenuItem(icon: Icons.circle, label: '', isDivider: true),
-        ContextMenuItem(
-          icon: Icons.delete_rounded,
-          label: 'Delete',
-          shortcut: 'Del',
-          onTap: () => _confirmDeleteContent(id, name, data),
-          isDestructive: true,
-        ),
-      ],
-    );
-  }
-
   // ─── Build ───────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    return Focus(
-      focusNode: _focusNode,
-      autofocus: true,
-      onKeyEvent: (node, event) {
-        _handleKeyEvent(event);
-        return KeyEventResult.handled;
-      },
-      child: GestureDetector(
-        onSecondaryTapUp: widget.isAdmin ? (details) {
-          _showContextMenu(details.globalPosition);
-        } : null,
-        child: FutureBuilder<DocumentSnapshot>(
-          future: _folderFuture,
-          builder: (context, folderSnap) {
+    return FutureBuilder<DocumentSnapshot>(
+      future: _folderFuture,
+      builder: (context, folderSnap) {
         if (folderSnap.hasData && folderSnap.data!.exists) {
           _folderName = (folderSnap.data!.data() as Map<String, dynamic>)['name'] as String? ?? 'Folder';
         }
@@ -1557,8 +1338,6 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                             final d = doc.data() as Map<String, dynamic>;
                             return d['invisible'] != true;
                           }).toList();
-
-                    _allVisibleDocIds = visibleDocs.map((d) => d.id).toList();
 
                     // If local order has missing or extra IDs vs stream, reset local order
                     if (_hasLocalOrder && _searchQuery.isEmpty) {
@@ -1703,8 +1482,6 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                     ),
         );
       },
-        ),
-      ),
     );
   }
 
@@ -1752,6 +1529,10 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
       } else if (type == 'mocktest_code') {
         final code = data['code'] as String?;
         if (code != null && code.isNotEmpty) buffer.write(' — Code: $code');
+      } else if (type == 'mocktest_file') {
+        final url = data['url'] as String?;
+        final fileType = data['fileType'] as String? ?? 'pdf';
+        if (url != null && url.isNotEmpty) buffer.write(' — File ($fileType): $url');
       }
 
       buffer.write('\n');
@@ -1909,6 +1690,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
       case 'subfolder': card = _buildSubFolderCard(context, id, data, locked, updating, invisible, index);
       case 'mocktest_url': card = _buildMockTestUrlCard(context, id, data, locked, updating, invisible, index);
       case 'mocktest_code': card = _buildMockTestCodeCard(context, id, data, locked, updating, invisible, index);
+      case 'mocktest_file': card = _buildMockTestFileCard(context, id, data, locked, updating, invisible, index);
       default: card = _buildFileCard(context, id, data, locked, updating, invisible, index);
     }
     final selected = _selectedIds.contains(id);
@@ -1950,8 +1732,6 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     final disabled = _isDisabled(data, id);
     return GestureDetector(
       onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
-      onDoubleTap: disabled ? null : () => _openContent(data),
-      onSecondaryTapUp: widget.isAdmin ? (details) => _showItemContextMenu(details.globalPosition, id, data) : null,
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         child: GlassmorphicContainer(
@@ -2039,15 +1819,6 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     final disabled = _isDisabled(data, id);
     return GestureDetector(
       onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
-      onDoubleTap: disabled ? null : () {
-        context.push('/folders/${widget.folderId}/sub/$id', extra: {
-          'canEdit': widget.canEdit, 'canManage': widget.canManage,
-          'isAdmin': widget.isAdmin,
-          if (widget.targetStudentUid != null) 'targetStudentUid': widget.targetStudentUid,
-          if (widget.assistantContentAccess != null) 'assistantContentAccess': widget.assistantContentAccess!.toList(),
-        });
-      },
-      onSecondaryTapUp: widget.isAdmin ? (details) => _showItemContextMenu(details.globalPosition, id, data) : null,
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         child: GlassmorphicContainer(
@@ -2146,8 +1917,6 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     final disabled = _isDisabled(data, id);
     return GestureDetector(
       onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
-      onDoubleTap: disabled ? null : () => _openContent(data),
-      onSecondaryTapUp: widget.isAdmin ? (details) => _showItemContextMenu(details.globalPosition, id, data) : null,
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         child: GlassmorphicContainer(
@@ -2235,8 +2004,6 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     final disabled = _isDisabled(data, id);
     return GestureDetector(
       onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
-      onDoubleTap: disabled ? null : () => _openContent(data),
-      onSecondaryTapUp: widget.isAdmin ? (details) => _showItemContextMenu(details.globalPosition, id, data) : null,
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         child: GlassmorphicContainer(
@@ -2317,6 +2084,95 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     );
   }
 
+  // ─── Mock Test File Card ──────────────────────────────────────────────────────
+
+  Widget _buildMockTestFileCard(BuildContext context, String id, Map<String, dynamic> data, bool locked, bool updating, bool invisible, int index) {
+    final name = data['name'] as String? ?? 'Mock Test';
+    final fileType = data['fileType'] as String? ?? 'pdf';
+    final disabled = _isDisabled(data, id);
+    return GestureDetector(
+      onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        child: GlassmorphicContainer(
+          padding: const EdgeInsets.all(16),
+          child: InkWell(
+            borderRadius: BorderRadius.circular(16),
+            onTap: disabled ? null : () {
+              if (_isSelectMode) { _onContentSelect(id); return; }
+              _openContent(data);
+            },
+            child: Row(children: [
+              if (widget.isAdmin)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: ReorderableDragStartListener(
+                    index: index,
+                    child: Icon(Icons.drag_indicator, size: 20, color: Theme.of(context).brightness == Brightness.dark ? Colors.white24 : Colors.black26),
+                  ),
+                ),
+              Icon(Icons.assignment_rounded, color: disabled ? Colors.grey : Colors.orange, size: 36),
+              const SizedBox(width: 14),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(name, style: TextStyle(color: disabled ? Colors.grey : null, fontWeight: FontWeight.bold, fontSize: 14)),
+                Row(children: [
+                  Icon(fileType == 'html' ? Icons.html : Icons.picture_as_pdf_rounded, color: Colors.orange, size: 12),
+                  const SizedBox(width: 4),
+                  Text(fileType.toUpperCase(), style: const TextStyle(color: Colors.orange, fontSize: 11, fontWeight: FontWeight.w600)),
+                ]),
+                if (updating)
+                  const Row(children: [Icon(Icons.update_rounded, color: Colors.orange, size: 12), SizedBox(width: 4), Text('Updating...', style: TextStyle(color: Colors.orange, fontSize: 11))]),
+                if (locked && !updating)
+                  const Row(children: [Icon(Icons.lock_rounded, color: Colors.redAccent, size: 12), SizedBox(width: 4), Text('Locked', style: TextStyle(color: Colors.redAccent, fontSize: 11))]),
+                if (invisible)
+                  const Row(children: [Icon(Icons.visibility_off_rounded, color: Colors.purple, size: 12), SizedBox(width: 4), Text('Hidden', style: TextStyle(color: Colors.purple, fontSize: 11))]),
+              ])),
+              if (widget.isAdmin || widget.canEdit) ...[
+                PopupMenuButton<String>(
+                  icon: Icon(Icons.more_vert, size: 20, color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87),
+                  color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF2D2D2D) : Colors.white,
+                  onSelected: (value) {
+                    switch (value) {
+                      case 'lock':
+                        _showContentLockSheet(id, name, locked, updating, invisible);
+                      case 'Assistant':
+                        _showContentAssistantSheet(id, name);
+                      case 'edit':
+                        _showEditContentDialog(id, name, 'mocktest_file', data);
+                      case 'rename':
+                        _showRenameContentDialog(id, name);
+                      case 'delete':
+                        _confirmDeleteContent(id, name, data);
+                    }
+                  },
+                  itemBuilder: (context) => [
+                    if (widget.isAdmin) ...[
+                      PopupMenuItem(
+                        value: 'lock',
+                        child: ListTile(
+                          leading: Icon(locked ? Icons.lock_rounded : Icons.lock_open_rounded, color: Colors.redAccent),
+                          title: Text(locked ? 'Unlock' : 'Lock'),
+                        ),
+                      ),
+                      const PopupMenuItem(
+                        value: 'Assistant',
+                        child: ListTile(leading: Icon(Icons.people_alt_rounded, color: Colors.orange), title: Text('Assistant Access')),
+                      ),
+                    ],
+                    const PopupMenuItem(value: 'edit', child: ListTile(leading: Icon(Icons.edit, color: Colors.green), title: Text('Edit'))),
+                    const PopupMenuItem(value: 'rename', child: ListTile(leading: Icon(Icons.drive_file_rename_outline, color: Colors.blue), title: Text('Rename'))),
+                    const PopupMenuItem(value: 'delete', child: ListTile(leading: Icon(Icons.delete, color: Colors.red), title: Text('Delete', style: TextStyle(color: Colors.red)))),
+                  ],
+                ),
+              ] else if (!disabled)
+                const Icon(Icons.chevron_right, color: Colors.orange, size: 20),
+            ]),
+          ),
+        ),
+      ),
+    );
+  }
+
   // ─── File Card ───────────────────────────────────────────────────────────────
 
   Widget _buildFileCard(BuildContext context, String id, Map<String, dynamic> data, bool locked, bool updating, bool invisible, int index) {
@@ -2324,8 +2180,6 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     final disabled = _isDisabled(data, id);
     return GestureDetector(
       onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
-      onDoubleTap: disabled ? null : () => _openContent(data),
-      onSecondaryTapUp: widget.isAdmin ? (details) => _showItemContextMenu(details.globalPosition, id, data) : null,
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         child: GlassmorphicContainer(
@@ -2481,6 +2335,10 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                   Divider(color: isDark ? Colors.white12 : Colors.black12),
                   ListTile(leading: const Icon(Icons.code, color: Colors.orange), title: Text('Paste a Code', style: TextStyle(color: baseColor)),
                     onTap: () { Navigator.pop(ctx); _addMockTestCode(context); }),
+                  Divider(color: isDark ? Colors.white12 : Colors.black12),
+                  ListTile(leading: const Icon(Icons.upload_file_rounded, color: Colors.orange), title: Text('Upload Mock Test File', style: TextStyle(color: baseColor)),
+                    subtitle: Text('Upload HTML or PDF file', style: TextStyle(color: dimColor, fontSize: 12)),
+                    onTap: () { Navigator.pop(ctx); _addMockTestFile(context); }),
                 ]))));
             }),
           ListTile(leading: const Icon(Icons.upload_file_rounded, color: Colors.teal), title: Text('Upload File', style: TextStyle(color: baseColor)), subtitle: Text('Internal Storage / Drive / URL', style: TextStyle(color: dimColor, fontSize: 12)),

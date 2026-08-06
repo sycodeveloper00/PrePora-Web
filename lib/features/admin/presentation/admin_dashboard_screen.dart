@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import '../../../core/widgets/glassmorphic_container.dart';
 import '../../../core/widgets/animated_pressable.dart';
 import '../../../core/services/firebase_service.dart';
@@ -1315,6 +1316,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           ListTile(leading: const Icon(Icons.link, color: Colors.orange), title: Text('Add URL', style: TextStyle(color: isDark ? Colors.white : Colors.black87)), onTap: () { Navigator.pop(ctx); _addMockTestUrl(folderId); }),
           const Divider(color: Colors.white12),
           ListTile(leading: const Icon(Icons.code, color: Colors.orange), title: Text('Paste a Code', style: TextStyle(color: isDark ? Colors.white : Colors.black87)), onTap: () { Navigator.pop(ctx); _addMockTestCode(folderId); }),
+          const Divider(color: Colors.white12),
+          ListTile(leading: const Icon(Icons.upload_file_rounded, color: Colors.orange), title: Text('Upload Mock Test File', style: TextStyle(color: isDark ? Colors.white : Colors.black87)),
+            subtitle: Text('Upload HTML or PDF file', style: TextStyle(color: isDark ? Colors.white38 : Colors.black54, fontSize: 12)),
+            onTap: () { Navigator.pop(ctx); _addMockTestFile(folderId); }),
         ])),
       ),
     );
@@ -1372,6 +1377,88 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         }, style: ElevatedButton.styleFrom(backgroundColor: Colors.orange.shade800), child: const Text('Save', style: TextStyle(color: Colors.white))),
       ],
     ));
+  }
+
+  void _addMockTestFile(String folderId) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: isDark ? const Color(0xFF1A0533) : Colors.white,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (_) => SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text('Upload Mock Test File', style: TextStyle(color: isDark ? Colors.white70 : Colors.black87, fontWeight: FontWeight.bold, fontSize: 15)),
+            const SizedBox(height: 20),
+            ListTile(
+              leading: const Icon(Icons.html, color: Colors.orange),
+              title: Text('HTML', style: TextStyle(color: isDark ? Colors.white : Colors.black87)),
+              subtitle: Text('Upload .html or .htm file', style: TextStyle(color: isDark ? Colors.white38 : Colors.black54, fontSize: 12)),
+              onTap: () { Navigator.pop(context); _pickMockTestFile(folderId, fileType: 'html'); },
+            ),
+            Divider(color: isDark ? Colors.white12 : Colors.black12),
+            ListTile(
+              leading: const Icon(Icons.picture_as_pdf_rounded, color: Colors.orange),
+              title: Text('PDF', style: TextStyle(color: isDark ? Colors.white : Colors.black87)),
+              subtitle: Text('Upload .pdf file', style: TextStyle(color: isDark ? Colors.white38 : Colors.black54, fontSize: 12)),
+              onTap: () { Navigator.pop(context); _pickMockTestFile(folderId, fileType: 'pdf'); },
+            ),
+            const SizedBox(height: 8),
+          ]),
+        ),
+      ),
+    );
+  }
+
+  void _pickMockTestFile(String folderId, {required String fileType}) async {
+    try {
+      final allowedExtensions = fileType == 'html' ? ['html', 'htm'] : ['pdf'];
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: allowedExtensions,
+        allowMultiple: false,
+        withData: true,
+      );
+      if (result != null && result.files.isNotEmpty) {
+        final file = result.files.first;
+        final bytes = file.bytes;
+        if (bytes == null) return;
+        if (bytes.length > 50 * 1024 * 1024) {
+          if (mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+              content: Text('${file.name} too large (${(bytes.length / 1024 / 1024).toStringAsFixed(1)}MB). Max: 50MB'),
+              backgroundColor: Colors.redAccent,
+            ));
+          }
+          return;
+        }
+
+        final displayName = file.name.contains('.')
+            ? file.name.substring(0, file.name.lastIndexOf('.'))
+            : file.name;
+
+        final storageName = '${DateTime.now().millisecondsSinceEpoch}_${file.name}';
+        final ref = FirebaseService.storage.ref('folder_files/$storageName');
+        await ref.putData(bytes, metadata: SettableMetadata(contentDisposition: 'inline; filename="${file.name}"'));
+
+        final downloadUrl = await ref.getDownloadURL();
+        await FirebaseService.addFolderContent(folderId, {
+          'type': 'mocktest_file',
+          'name': displayName,
+          'url': downloadUrl,
+          'fileType': fileType,
+          'source': 'supabase_storage',
+        });
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Mock test file uploaded!'), backgroundColor: Colors.green));
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Upload failed: $e'), backgroundColor: Colors.redAccent, duration: const Duration(seconds: 5)));
+      }
+    }
   }
 
   void _addUploadFile(BuildContext ctx, String folderId) {
