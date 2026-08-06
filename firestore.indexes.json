@@ -39,6 +39,14 @@
         { "fieldPath": "uid", "order": "ASCENDING" },
         { "fieldPath": "folderId", "order": "ASCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "web_sessions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "uid", "order": "ASCENDING" },
+        { "fieldPath": "connectedAt", "order": "DESCENDING" }
+      ]
     }
   ]
 }

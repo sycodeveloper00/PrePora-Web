@@ -123,8 +123,12 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
                 if (customToken != null) {
                   await fb_auth.FirebaseAuth.instance.signInWithCustomToken(customToken);
                 }
+              } else {
+                print('[generate-token restore] Failed: ${response.statusCode}');
               }
-            } catch (_) {}
+            } catch (e) {
+              print('[generate-token restore] Error: $e');
+            }
             _sessionSub = FirebaseFirestore.instance
                 .collection('web_sessions')
                 .doc(sessionId)
@@ -201,7 +205,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
       }
     });
 
-    _refreshTimer = Timer(const Duration(seconds: 60), () {
+    _refreshTimer = Timer(const Duration(minutes: 2), () {
       if (_status == 'waiting' && mounted) {
         _cleanupSession();
         _generateSession();
@@ -247,8 +251,12 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
         if (customToken != null) {
           await fb_auth.FirebaseAuth.instance.signInWithCustomToken(customToken);
         }
+      } else {
+        print('[generate-token] Failed: ${response.statusCode} ${response.body}');
       }
-    } catch (_) {}
+    } catch (e) {
+      print('[generate-token] Error: $e');
+    }
 
     html.window.localStorage[_sessionKey] = json.encode({'sessionId': _sessionId});
     _startActivityTracking();
