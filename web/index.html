@@ -17,7 +17,7 @@
   <base href="$FLUTTER_BASE_HREF">
 
   <!-- Google Search Console Verification -->
-  <meta name="google-site-verification" content="L3LglO2-A7e92reah8Rgl2_ZtfJzamsVZSc3xvnRGLs" />
+  <meta name="google-site-verification" content="google8be58ecd231b540a" />
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
@@ -29,6 +29,36 @@
   <meta name="author" content="PrePora">
   <meta name="robots" content="index, follow, max-snippet:-1, max-image-preview:large, max-video-preview:-1">
   <link rel="canonical" href="https://prepora-web.vercel.app/">
+
+  <!-- Block indexing for admin/assistant panels -->
+  <script>
+    (function() {
+      var host = window.location.hostname;
+      if (host.indexOf('admin-') !== -1 || host.indexOf('assistant-') !== -1) {
+        var meta = document.createElement('meta');
+        meta.name = 'robots';
+        meta.content = 'noindex, nofollow';
+        document.head.appendChild(meta);
+      }
+    })();
+  </script>
+
+  <!-- Structured Data for Google -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    "name": "PrePora",
+    "alternateName": "PrePora Web",
+    "url": "https://prepora-web.vercel.app/",
+    "description": "Pakistan's #1 free study platform with notes, past papers, AI tutor & MCQs",
+    "publisher": {
+      "@type": "Organization",
+      "name": "PrePora",
+      "url": "https://prepora-web.vercel.app/"
+    }
+  }
+  </script>
 
   <!-- Open Graph / Facebook -->
   <meta property="og:type" content="website">
@@ -165,6 +195,7 @@
     var _currentScale = 1.0;
     var _baseScale = 1.0;
     var _currentContainerId = null;
+    var _totalPdfPages = 0;
 
     function renderPdfToCanvas(blobUrl, containerId, maxWidth) {
       var container = document.getElementById(containerId);
@@ -176,42 +207,76 @@
       _currentScale = 1.0;
 
       var toolbar = document.createElement('div');
-      toolbar.style.cssText = 'position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:center;gap:8px;padding:8px 12px;background:#1E1E2E;border-bottom:1px solid #333;';
-      var btnStyle = 'padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600;display:flex;align-items:center;gap:4px;';
+      toolbar.style.cssText = 'position:sticky;top:0;z-index:10;display:flex;align-items:center;justify-content:center;gap:6px;padding:6px 12px;background:linear-gradient(135deg,#1A0533,#140326);border-bottom:1px solid rgba(255,255,255,0.08);flex-wrap:wrap;';
+      var btnStyle = 'padding:5px 12px;border:none;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600;display:flex;align-items:center;gap:3px;transition:all 0.2s;';
+      var btnDefault = btnStyle + 'background:rgba(255,255,255,0.08);color:rgba(255,255,255,0.7);';
+      var btnActive = btnStyle + 'background:#4A148C;color:white;';
+
+      var prevBtn = document.createElement('button');
+      prevBtn.innerHTML = '&#9664;';
+      prevBtn.style.cssText = btnDefault;
+      prevBtn.title = 'Previous Page';
+      prevBtn.id = 'pdf-prev-btn-' + containerId;
+
+      var pageLabel = document.createElement('span');
+      pageLabel.id = 'pdf-page-label-' + containerId;
+      pageLabel.style.cssText = 'color:rgba(255,255,255,0.85);font-size:12px;min-width:80px;text-align:center;font-weight:600;font-family:system-ui;';
+      pageLabel.textContent = '1 / 1';
+
+      var nextBtn = document.createElement('button');
+      nextBtn.innerHTML = '&#9654;';
+      nextBtn.style.cssText = btnDefault;
+      nextBtn.title = 'Next Page';
+      nextBtn.id = 'pdf-next-btn-' + containerId;
+
+      var divider1 = document.createElement('span');
+      divider1.style.cssText = 'width:1px;height:18px;background:rgba(255,255,255,0.12);margin:0 4px;';
 
       var zoomOutBtn = document.createElement('button');
-      zoomOutBtn.innerHTML = '−';
-      zoomOutBtn.style.cssText = btnStyle + 'background:#333;color:white;';
+      zoomOutBtn.innerHTML = '&#8722;';
+      zoomOutBtn.style.cssText = btnDefault;
       zoomOutBtn.title = 'Zoom Out';
-      zoomOutBtn.onclick = function() { _changeScale(containerId, -0.2); };
 
       var zoomLabel = document.createElement('span');
       zoomLabel.id = 'pdf-zoom-label-' + containerId;
-      zoomLabel.style.cssText = 'color:#aaa;font-size:12px;min-width:50px;text-align:center;font-weight:600;';
+      zoomLabel.style.cssText = 'color:rgba(255,255,255,0.6);font-size:11px;min-width:44px;text-align:center;font-weight:600;';
       zoomLabel.textContent = '100%';
 
       var zoomInBtn = document.createElement('button');
       zoomInBtn.innerHTML = '+';
-      zoomInBtn.style.cssText = btnStyle + 'background:#333;color:white;';
+      zoomInBtn.style.cssText = btnDefault;
       zoomInBtn.title = 'Zoom In';
-      zoomInBtn.onclick = function() { _changeScale(containerId, 0.2); };
+
+      var divider2 = document.createElement('span');
+      divider2.style.cssText = 'width:1px;height:18px;background:rgba(255,255,255,0.12);margin:0 4px;';
 
       var fitBtn = document.createElement('button');
-      fitBtn.innerHTML = '&#8596; Fit Width';
-      fitBtn.style.cssText = btnStyle + 'background:#4A148C;color:white;';
+      fitBtn.innerHTML = '&#8596; Fit';
+      fitBtn.style.cssText = btnActive;
       fitBtn.title = 'Fit to Width';
+
+      prevBtn.onclick = function() { _goToPage(containerId, -1); };
+      nextBtn.onclick = function() { _goToPage(containerId, 1); };
+      zoomOutBtn.onclick = function() { _changeScale(containerId, -0.2); };
+      zoomInBtn.onclick = function() { _changeScale(containerId, 0.2); };
       fitBtn.onclick = function() { _fitToWidth(containerId); };
 
+      toolbar.appendChild(prevBtn);
+      toolbar.appendChild(pageLabel);
+      toolbar.appendChild(nextBtn);
+      toolbar.appendChild(divider1);
       toolbar.appendChild(zoomOutBtn);
       toolbar.appendChild(zoomLabel);
       toolbar.appendChild(zoomInBtn);
+      toolbar.appendChild(divider2);
       toolbar.appendChild(fitBtn);
       container.appendChild(toolbar);
 
       pdfjsLib.getDocument(blobUrl).promise.then(function(pdf) {
         _currentPdf = pdf;
-        var totalPages = pdf.numPages;
-        for (var i = 1; i <= totalPages; i++) {
+        _totalPdfPages = pdf.numPages;
+        pageLabel.textContent = '1 / ' + pdf.numPages;
+        for (var i = 1; i <= pdf.numPages; i++) {
           (function(pageNum) {
             pdf.getPage(pageNum).then(function(page) {
               var scale = maxWidth / page.getViewport({scale:1}).width;
@@ -232,9 +297,45 @@
             });
           })(i);
         }
+        container.addEventListener('scroll', function() {
+          _trackCurrentPage(containerId);
+        });
       }).catch(function(err) {
         container.innerHTML = '<p style="color:white;text-align:center;padding:40px;">PDF load error: ' + err.message + '</p>';
       });
+    }
+
+    function _trackCurrentPage(containerId) {
+      if (!_currentPdf || !_currentContainerId) return;
+      var container = document.getElementById(containerId);
+      if (!container) return;
+      var label = document.getElementById('pdf-page-label-' + containerId);
+      if (!label) return;
+      var scrollTop = container.scrollTop;
+      var currentPage = 1;
+      for (var i = 1; i <= _totalPdfPages; i++) {
+        var canvas = document.getElementById('pdf-page-' + i);
+        if (canvas && canvas.offsetTop - 60 <= scrollTop + 10) {
+          currentPage = i;
+        }
+      }
+      label.textContent = currentPage + ' / ' + _totalPdfPages;
+    }
+
+    function _goToPage(containerId, delta) {
+      if (!_currentPdf || !_currentContainerId) return;
+      var container = document.getElementById(containerId);
+      if (!container) return;
+      var label = document.getElementById('pdf-page-label-' + containerId);
+      if (!label) return;
+      var parts = label.textContent.split('/');
+      var current = parseInt(parts[0].trim());
+      var target = current + delta;
+      if (target < 1 || target > _totalPdfPages) return;
+      var canvas = document.getElementById('pdf-page-' + target);
+      if (canvas) {
+        canvas.scrollIntoView({behavior: 'smooth', block: 'start'});
+      }
     }
 
     function _changeScale(containerId, delta) {

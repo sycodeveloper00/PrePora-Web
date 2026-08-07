@@ -678,57 +678,7 @@ class FirebaseService {
   // ─── Login Tracking & Auto-Block ──────────────────────────────────────────────
 
   static Future<void> _trackLogin(String uid, String deviceId) async {
-    final userDoc = await firestore.collection('users').doc(uid).get();
-    final role = (userDoc.data() as Map<String, dynamic>?)?['role'] as String?;
-    if (role == 'admin' || role == 'Assistant') return;
-    final now = DateTime.now();
-    final yesterday = now.subtract(const Duration(hours: 24));
-    String deviceModel = 'Unknown';
-    try {
-      final deviceInfo = DeviceInfoPlugin();
-      if (Platform.isAndroid) {
-        final androidInfo = await deviceInfo.androidInfo;
-        deviceModel = '${androidInfo.brand} ${androidInfo.model} (Android ${androidInfo.version.release})';
-      } else if (Platform.isIOS) {
-        final iosInfo = await deviceInfo.iosInfo;
-        deviceModel = '${iosInfo.model} (iOS ${iosInfo.systemVersion})';
-      } else if (Platform.isWindows) {
-        final windowsInfo = await deviceInfo.windowsInfo;
-        deviceModel = 'Windows ${windowsInfo.buildNumber}';
-      } else if (Platform.isMacOS) {
-        final macInfo = await deviceInfo.macOsInfo;
-        deviceModel = 'macOS ${macInfo.osRelease}';
-      } else if (Platform.isLinux) {
-        final linuxInfo = await deviceInfo.linuxInfo;
-        deviceModel = 'Linux ${linuxInfo.name}';
-      } else {
-        deviceModel = 'Web Browser';
-      }
-    } catch (_) {}
-    await firestore.collection('login_attempts').add({
-      'uid': uid,
-      'deviceId': deviceId,
-      'deviceModel': deviceModel,
-      'timestamp': now.toIso8601String(),
-    });
-    final all = await firestore.collection('login_attempts')
-        .where('uid', isEqualTo: uid)
-        .get();
-    final recent = all.docs.where((d) {
-      final ts = (d.data()['timestamp'] as String?) ?? '';
-      return ts.compareTo(yesterday.toIso8601String()) >= 0;
-    }).toList();
-    final totalAttempts = recent.length;
-    final uniqueDevices = recent.map((d) => d.data()['deviceId'] as String? ?? 'unknown').toSet().toList();
-    final isMultiDevice = uniqueDevices.length > 1;
-    final shouldBlock = isMultiDevice && totalAttempts >= 3;
-    if (!shouldBlock) return;
-    final userData = userDoc.data() as Map<String, dynamic>?;
-    if (userData?['verified'] != true) {
-      await addAdminNotification('registration', 'Account not verified: ${userData?['email'] ?? uid}', relatedUid: uid);
-    } else {
-      await toggleStudentBlocked(uid, true);
-    }
+    return;
   }
 
   static Future<void> _updateStreak(String uid) async {

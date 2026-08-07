@@ -1417,41 +1417,44 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: allowedExtensions,
-        allowMultiple: false,
+        allowMultiple: true,
         withData: true,
       );
       if (result != null && result.files.isNotEmpty) {
-        final file = result.files.first;
-        final bytes = file.bytes;
-        if (bytes == null) return;
-        if (bytes.length > 50 * 1024 * 1024) {
-          if (mounted) {
-            ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-              content: Text('${file.name} too large (${(bytes.length / 1024 / 1024).toStringAsFixed(1)}MB). Max: 50MB'),
-              backgroundColor: Colors.redAccent,
-            ));
+        int count = 0;
+        for (final file in result.files) {
+          final bytes = file.bytes;
+          if (bytes == null) continue;
+          if (bytes.length > 50 * 1024 * 1024) {
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text('${file.name} too large (${(bytes.length / 1024 / 1024).toStringAsFixed(1)}MB). Max: 50MB'),
+                backgroundColor: Colors.redAccent,
+              ));
+            }
+            continue;
           }
-          return;
+
+          final displayName = file.name.contains('.')
+              ? file.name.substring(0, file.name.lastIndexOf('.'))
+              : file.name;
+
+          final storageName = '${DateTime.now().millisecondsSinceEpoch}_${file.name}';
+          final ref = FirebaseService.storage.ref('folder_files/$storageName');
+          await ref.putData(bytes, metadata: SettableMetadata(contentDisposition: 'inline; filename="${file.name}"'));
+
+          final downloadUrl = await ref.getDownloadURL();
+          await FirebaseService.addFolderContent(folderId, {
+            'type': 'mocktest_file',
+            'name': displayName,
+            'url': downloadUrl,
+            'fileType': fileType,
+            'source': 'supabase_storage',
+          });
+          count++;
         }
-
-        final displayName = file.name.contains('.')
-            ? file.name.substring(0, file.name.lastIndexOf('.'))
-            : file.name;
-
-        final storageName = '${DateTime.now().millisecondsSinceEpoch}_${file.name}';
-        final ref = FirebaseService.storage.ref('folder_files/$storageName');
-        await ref.putData(bytes, metadata: SettableMetadata(contentDisposition: 'inline; filename="${file.name}"'));
-
-        final downloadUrl = await ref.getDownloadURL();
-        await FirebaseService.addFolderContent(folderId, {
-          'type': 'mocktest_file',
-          'name': displayName,
-          'url': downloadUrl,
-          'fileType': fileType,
-          'source': 'supabase_storage',
-        });
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Mock test file uploaded!'), backgroundColor: Colors.green));
+        if (mounted && count > 0) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$count mock test file(s) uploaded!'), backgroundColor: Colors.green));
         }
       }
     } catch (e) {

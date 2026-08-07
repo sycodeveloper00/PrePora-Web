@@ -8,35 +8,39 @@ class KaTeXInjector {
   static String inject(String html) {
     var result = html;
 
-    // Replace local KaTeX CSS references with CDN
-    result = result.replaceAll(
-      '../../../katex/katex.min.css', _cdnCss);
-    result = result.replaceAll(
-      '../../katex/katex.min.css', _cdnCss);
-    result = result.replaceAll(
-      '../katex/katex.min.css', _cdnCss);
-    result = result.replaceAll(
-      'katex/katex.min.css', _cdnCss);
+    // Replace any depth of relative path to KaTeX files
+    // Matches: katex/katex.min.css, ../katex/..., ../../katex/..., ../../../../katex/...
+    final cssPattern = RegExp(r'(?:\.\./)*katex/katex\.min\.css');
+    final jsPattern = RegExp(r'(?:\.\./)*katex/katex\.min\.js');
+    final arPattern = RegExp(r'(?:\.\./)*katex/auto-render\.min\.js');
 
-    // Replace local KaTeX JS references with CDN
-    result = result.replaceAll(
-      '../../../katex/katex.min.js', _cdnJs);
-    result = result.replaceAll(
-      '../../katex/katex.min.js', _cdnJs);
-    result = result.replaceAll(
-      '../katex/katex.min.js', _cdnJs);
-    result = result.replaceAll(
-      'katex/katex.min.js', _cdnJs);
+    result = result.replaceAll(cssPattern, _cdnCss);
+    result = result.replaceAll(jsPattern, _cdnJs);
+    result = result.replaceAll(arPattern, _cdnAutoRender);
 
-    // Replace local auto-render references with CDN
-    result = result.replaceAll(
-      '../../../katex/auto-render.min.js', _cdnAutoRender);
-    result = result.replaceAll(
-      '../../katex/auto-render.min.js', _cdnAutoRender);
-    result = result.replaceAll(
-      '../katex/auto-render.min.js', _cdnAutoRender);
-    result = result.replaceAll(
-      'katex/auto-render.min.js', _cdnAutoRender);
+    // Ensure KaTeX is injected even if HTML has NO katex references at all
+    final hasKatexCss = result.contains('katex.min.css');
+    final hasKatexJs = result.contains('katex.min.js');
+
+    final buffer = StringBuffer();
+    if (!hasKatexCss) {
+      buffer.writeln('<link rel="stylesheet" href="$_cdnCss">');
+    }
+    if (!hasKatexJs) {
+      buffer.writeln('<script src="$_cdnJs"></script>');
+      buffer.writeln('<script src="$_cdnAutoRender"></script>');
+    }
+
+    final injection = buffer.toString();
+    if (injection.isNotEmpty) {
+      if (result.contains('</head>')) {
+        result = result.replaceFirst('</head>', '$injection</head>');
+      } else if (result.contains('<body')) {
+        result = result.replaceFirst(RegExp(r'<body[^>]*>'), '$injection\$0');
+      } else {
+        result = '$injection$result';
+      }
+    }
 
     return result;
   }

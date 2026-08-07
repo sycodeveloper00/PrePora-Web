@@ -6,7 +6,6 @@ import 'package:go_router/go_router.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
 import '../../../core/services/firebase_service.dart';
-import '../../../core/widgets/professional_loader.dart';
 import '../../../core/helpers/blob_helper_stub.dart'
     if (dart.library.html) '../../../core/helpers/blob_helper.dart';
 
@@ -202,8 +201,13 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_isLoading ? 'Loading...' : (_fileName ?? 'PDF Viewer')),
+        title: Text(_isLoading ? 'Loading PDF...' : (_fileName ?? 'PDF Viewer')),
         actions: [
+          if (_isLoading)
+            const Padding(
+              padding: EdgeInsets.only(right: 16),
+              child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70)),
+            ),
           if (_localPath != null)
             IconButton(
               icon: Icon(_annotating ? Icons.edit_off_rounded : Icons.edit_rounded),
@@ -220,7 +224,34 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           if (_annotating) _buildInlineToolbar(isDark),
           Expanded(
             child: _isLoading
-                ? const Center(child: ProfessionalLoader())
+                ? Center(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 20),
+                      decoration: BoxDecoration(
+                        color: (isDark ? Colors.black87 : Colors.white).withValues(alpha: 0.92),
+                        borderRadius: BorderRadius.circular(16),
+                        boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.1), blurRadius: 12)],
+                      ),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          SizedBox(
+                            width: 28, height: 28,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 3,
+                              color: const Color(0xFF4A148C),
+                              backgroundColor: isDark ? Colors.white24 : Colors.black12,
+                            ),
+                          ),
+                          const SizedBox(height: 14),
+                          Text(
+                            'Preparing PDF...',
+                            style: TextStyle(color: isDark ? Colors.white70 : Colors.black54, fontSize: 12),
+                          ),
+                        ],
+                      ),
+                    ),
+                  )
                 : _error != null
                     ? _buildErrorView()
                     : kIsWeb
@@ -420,15 +451,20 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.error_outline_rounded, size: 64, color: Colors.redAccent),
-            const SizedBox(height: 16),
+            const Icon(Icons.error_outline_rounded, size: 56, color: Colors.redAccent),
+            const SizedBox(height: 14),
             Text(_error!, textAlign: TextAlign.center,
-                style: const TextStyle(color: Colors.redAccent, fontSize: 16)),
-            const SizedBox(height: 24),
+                style: const TextStyle(color: Colors.redAccent, fontSize: 14)),
+            const SizedBox(height: 20),
             ElevatedButton.icon(
               onPressed: () { setState(() { _isLoading = true; _error = null; }); _loadPdf(); },
-              icon: const Icon(Icons.refresh_rounded),
+              icon: const Icon(Icons.refresh_rounded, size: 18),
               label: const Text('Retry'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: const Color(0xFF4A148C),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+              ),
             ),
           ],
         ),

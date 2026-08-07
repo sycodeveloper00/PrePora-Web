@@ -110,6 +110,15 @@ class _WebViewWebWidgetState extends State<WebViewWebWidget> {
 
     final bytes = await _fetchBytes(url);
     if (bytes != null && mounted) {
+      if (mime == 'text/html' || ext == 'html' || ext == 'htm') {
+        final htmlContent = String.fromCharCodes(bytes);
+        final injected = KaTeXInjector.inject(htmlContent);
+        setState(() {
+          _src = 'data:text/html;charset=utf-8,${Uri.encodeComponent(injected)}';
+          _loading = false;
+        });
+        return;
+      }
       final blob = html.Blob([bytes], mime);
       final blobUrl = html.Url.createObjectUrlFromBlob(blob);
       setState(() {

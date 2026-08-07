@@ -771,56 +771,59 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
       final result = await FilePicker.platform.pickFiles(
         type: FileType.custom,
         allowedExtensions: allowedExtensions,
-        allowMultiple: false,
+        allowMultiple: true,
         withData: true,
       );
       if (result != null && result.files.isNotEmpty) {
-        final file = result.files.first;
-        final bytes = file.bytes ?? (!kIsWeb && file.path != null ? File(file.path!).readAsBytesSync() : null);
-        if (bytes == null) return;
-        if (bytes.length > 50 * 1024 * 1024) {
-          if (ctx.mounted) {
-            ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
-              content: Text('${file.name} too large (${(bytes.length / 1024 / 1024).toStringAsFixed(1)}MB). Max: 50MB'),
-              backgroundColor: Colors.redAccent,
-            ));
+        int count = 0;
+        for (final file in result.files) {
+          final bytes = file.bytes ?? (!kIsWeb && file.path != null ? File(file.path!).readAsBytesSync() : null);
+          if (bytes == null) continue;
+          if (bytes.length > 50 * 1024 * 1024) {
+            if (ctx.mounted) {
+              ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(
+                content: Text('${file.name} too large (${(bytes.length / 1024 / 1024).toStringAsFixed(1)}MB). Max: 50MB'),
+                backgroundColor: Colors.redAccent,
+              ));
+            }
+            continue;
           }
-          return;
+
+          final displayName = file.name.contains('.')
+              ? file.name.substring(0, file.name.lastIndexOf('.'))
+              : file.name;
+
+          if (mounted) setState(() => _uploadProgress[file.name] = 0);
+
+          try {
+            final storageName = '${DateTime.now().millisecondsSinceEpoch}_${file.name}';
+            final ref = FirebaseService.storage.ref('folder_files/$storageName');
+            await ref.putData(bytes, metadata: SettableMetadata(contentDisposition: 'inline; filename="${file.name}"'), onProgress: (p) {
+              if (mounted) setState(() => _uploadProgress[file.name] = p);
+            });
+            if (mounted) setState(() => _uploadProgress.remove(file.name));
+
+            final downloadUrl = await ref.getDownloadURL();
+            final data = <String, dynamic>{
+              'type': 'mocktest_file',
+              'name': displayName,
+              'url': downloadUrl,
+              'fileType': fileType,
+              'source': 'supabase_storage',
+            };
+            if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
+            final newId = await FirebaseService.addFolderContent(widget.folderId, data);
+            if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
+            await _sendScopedNotification('Uploaded mock test file: $displayName', parentContentId: widget.parentContentId);
+            count++;
+          } catch (e) {
+            if (mounted) setState(() => _uploadProgress.remove(file.name));
+            rethrow;
+          }
         }
-
-        final displayName = file.name.contains('.')
-            ? file.name.substring(0, file.name.lastIndexOf('.'))
-            : file.name;
-
-        if (mounted) setState(() => _uploadProgress[file.name] = 0);
-
-        try {
-          final storageName = '${DateTime.now().millisecondsSinceEpoch}_${file.name}';
-          final ref = FirebaseService.storage.ref('folder_files/$storageName');
-          await ref.putData(bytes, metadata: SettableMetadata(contentDisposition: 'inline; filename="${file.name}"'), onProgress: (p) {
-            if (mounted) setState(() => _uploadProgress[file.name] = p);
-          });
-          if (mounted) setState(() => _uploadProgress.remove(file.name));
-
-          final downloadUrl = await ref.getDownloadURL();
-          final data = <String, dynamic>{
-            'type': 'mocktest_file',
-            'name': displayName,
-            'url': downloadUrl,
-            'fileType': fileType,
-            'source': 'supabase_storage',
-          };
-          if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
-          final newId = await FirebaseService.addFolderContent(widget.folderId, data);
-          if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
-          await _sendScopedNotification('Uploaded mock test file: $displayName', parentContentId: widget.parentContentId);
-          _refreshAssistantAccess();
-          if (ctx.mounted) {
-            ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Mock test file uploaded!'), backgroundColor: Colors.green));
-          }
-        } catch (e) {
-          if (mounted) setState(() => _uploadProgress.remove(file.name));
-          rethrow;
+        _refreshAssistantAccess();
+        if (ctx.mounted && count > 0) {
+          ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('$count mock test file(s) uploaded!'), backgroundColor: Colors.green));
         }
       }
     } catch (e) {
@@ -2115,11 +2118,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               const SizedBox(width: 14),
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(name, style: TextStyle(color: disabled ? Colors.grey : null, fontWeight: FontWeight.bold, fontSize: 14)),
-                Row(children: [
-                  Icon(fileType == 'html' ? Icons.html : Icons.picture_as_pdf_rounded, color: Colors.orange, size: 12),
-                  const SizedBox(width: 4),
-                  Text(fileType.toUpperCase(), style: const TextStyle(color: Colors.orange, fontSize: 11, fontWeight: FontWeight.w600)),
-                ]),
+                if (fileType == 'pdf')
+                  const Row(children: [Icon(Icons.picture_as_pdf_rounded, color: Colors.orange, size: 12), SizedBox(width: 4), Text('PDF', style: TextStyle(color: Colors.orange, fontSize: 11, fontWeight: FontWeight.w600))]),
                 if (updating)
                   const Row(children: [Icon(Icons.update_rounded, color: Colors.orange, size: 12), SizedBox(width: 4), Text('Updating...', style: TextStyle(color: Colors.orange, fontSize: 11))]),
                 if (locked && !updating)

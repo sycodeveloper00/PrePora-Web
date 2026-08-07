@@ -6,7 +6,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/services/firebase_service.dart';
 import '../../../core/theme/theme_provider.dart';
 import '../../../core/widgets/professional_loader.dart';
-import '../../../core/widgets/shortcuts_help_dialog.dart';
 
 class AdminSettingsScreen extends StatefulWidget {
   const AdminSettingsScreen({super.key});
@@ -105,44 +104,6 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
                       },
                     ),
                   ]),
-                ),
-                const SizedBox(height: 12),
-                Card(
-                  color: cardColor,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                  elevation: 0,
-                  margin: const EdgeInsets.symmetric(horizontal: 16),
-                  child: InkWell(
-                    borderRadius: BorderRadius.circular(16),
-                    onTap: () => ShortcutsHelpDialog.show(context),
-                    child: Padding(
-                      padding: const EdgeInsets.all(20),
-                      child: Row(
-                        children: [
-                          Container(
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: const Color(0xFF7C4DFF).withOpacity(0.15),
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: const Icon(Icons.keyboard_rounded, color: Color(0xFF7C4DFF), size: 24),
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text('Keyboard Shortcuts', style: TextStyle(color: textColor, fontSize: 16, fontWeight: FontWeight.w600)),
-                                const SizedBox(height: 4),
-                                Text('View all available shortcuts for folder management', style: TextStyle(color: hintColor, fontSize: 13)),
-                              ],
-                            ),
-                          ),
-                          Icon(Icons.chevron_right_rounded, color: hintColor),
-                        ],
-                      ),
-                    ),
-                  ),
                 ),
               ],
             ),
