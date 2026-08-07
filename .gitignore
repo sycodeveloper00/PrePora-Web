@@ -56,5 +56,5 @@ functions/node_modules/
 # Cloudflare cache
 .wrangler/
 
-.vercel
+# .vercel kept for Vercel config
 .env*

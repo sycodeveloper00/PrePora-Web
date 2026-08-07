@@ -17,16 +17,13 @@ jobs:
       - run: flutter pub get
       - run: flutter build web --release
 
-      - name: Copy API folder
-        run: cp -r api build/web/api
-
-      - name: Copy .vercel config
-        run: cp -r .vercel build/web/.vercel
+      - name: Copy API to build
+        run: cp -r api build/web/
 
       - name: Install Vercel CLI
         run: npm install -g vercel
 
-      - name: Deploy
+      - name: Deploy to Vercel
         working-directory: build/web
         run: vercel --yes --prod --token=${{ secrets.VERCEL_TOKEN }}
         env:
