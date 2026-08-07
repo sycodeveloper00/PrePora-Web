@@ -160,18 +160,28 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     _generateSession();
   }
 
-  void _generateSession() {
+  Future<void> _generateSession() async {
+    if (fb_auth.FirebaseAuth.instance.currentUser == null) {
+      try {
+        await fb_auth.FirebaseAuth.instance.signInAnonymously();
+      } catch (_) {}
+    }
+
     final rng = Random.secure();
     final token = List.generate(32, (_) => rng.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
     _sessionId = 'web-$token';
     _createdAt = DateTime.now();
 
-    FirebaseFirestore.instance.collection('web_sessions').doc(_sessionId).set({
-      'sessionId': _sessionId,
-      'status': 'waiting',
-      'createdAt': Timestamp.fromDate(_createdAt!),
-      'lastActive': Timestamp.fromDate(_createdAt!),
-    });
+    try {
+      await FirebaseFirestore.instance.collection('web_sessions').doc(_sessionId).set({
+        'sessionId': _sessionId,
+        'status': 'waiting',
+        'createdAt': Timestamp.fromDate(_createdAt!),
+        'lastActive': Timestamp.fromDate(_createdAt!),
+      });
+    } catch (e) {
+      print('[generateSession] Firestore write failed: $e');
+    }
 
     _sessionSub = FirebaseFirestore.instance
         .collection('web_sessions')
@@ -205,12 +215,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
       }
     });
 
-    _refreshTimer = Timer(const Duration(minutes: 2), () {
-      if (_status == 'waiting' && mounted) {
-        _cleanupSession();
-        _generateSession();
-      }
-    });
+    // Refresh timer removed — 5-min expiry is sufficient
 
     if (mounted) setState(() {});
   }
@@ -325,7 +330,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     _refreshTimer?.cancel();
     _sessionSub?.cancel();
     await _cleanupSession();
-    _generateSession();
+    await _generateSession();
   }
 
   String get _qrData => 'prepora-web-link:$_sessionId';
