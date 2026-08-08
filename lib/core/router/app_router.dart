@@ -28,6 +28,7 @@ import '../../features/media_player/presentation/media_player_screen.dart';
 import '../../features/image_viewer/presentation/image_viewer_screen.dart';
 import '../../features/settings/presentation/settings_screen.dart';
 import '../../features/settings/presentation/admin_settings_screen.dart';
+import '../../features/settings/presentation/storage_settings_screen.dart';
 import '../../features/webview/presentation/webview_screen.dart';
 import '../../features/splash_onboarding/presentation/splash_screen.dart';
 import '../../features/notifications/presentation/admin_notifications_screen.dart';
@@ -233,6 +234,7 @@ class AppRouter {
       ),
       GoRoute(path: '/settings', builder: (c, s) => const SettingsScreen()),
       GoRoute(path: '/admin/settings', builder: (c, s) => const AdminSettingsScreen()),
+      GoRoute(path: '/admin/storage-settings', builder: (c, s) => const StorageSettingsScreen()),
       GoRoute(path: '/practice/:id', builder: (c, s) => TestPracticeScreen(testId: s.pathParameters['id']!)),
       GoRoute(
         path: '/lectures/:id',

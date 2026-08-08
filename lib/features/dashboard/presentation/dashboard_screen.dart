@@ -984,7 +984,7 @@ class _DashboardScreenState extends State<DashboardScreen>
             ListTile(
               leading: const Icon(Icons.info_outline_rounded, color: Colors.grey),
               title: Text('Version', style: TextStyle(color: baseColor)),
-              subtitle: Text('PrePora v1.0.0', style: TextStyle(color: dimColor, fontSize: 12)),
+              subtitle: Text('PrePora v2.0.0', style: TextStyle(color: dimColor, fontSize: 12)),
             ),
             const SizedBox(height: 8),
           ]),
@@ -1669,32 +1669,13 @@ class _DashboardScreenState extends State<DashboardScreen>
     return Stack(
       children: [
         _buildDashboard(context),
-        if (_latestUpdateVersion != null && _latestUpdateVersion!.isNotEmpty)
-          Positioned(
-            top: 0, left: 0, right: 0,
-            child: GestureDetector(
-              onTap: () => _showUpdateDialog(context),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(colors: [Color(0xFF4A148C), Color(0xFF00B8D4)]),
-                ),
-                child: Row(children: [
-                  const Icon(Icons.system_update_rounded, color: Colors.white, size: 18),
-                  const SizedBox(width: 8),
-                  Expanded(child: Text('Update v$_latestUpdateVersion available', style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600))),
-                  const Icon(Icons.arrow_forward_ios_rounded, color: Colors.white, size: 14),
-                ]),
-              ),
-            ),
-          ),
       ],
     );
   }
 
   String? _latestUpdateVersion;
   String? _latestUpdateLink;
-  String _currentAppVersion = '1.0.0';
+  String _currentAppVersion = '2.0.0';
 
   void _checkForUpdates() {
     PackageInfo.fromPlatform().then((info) {
@@ -1707,35 +1688,42 @@ class _DashboardScreenState extends State<DashboardScreen>
       final link = d['link'] as String?;
       if (version != null && version.isNotEmpty && version != _currentAppVersion) {
         setState(() { _latestUpdateVersion = version; _latestUpdateLink = link; });
+        if (mounted) _showForceUpdateDialog(context);
       }
     });
   }
 
-  void _showUpdateDialog(BuildContext context) {
+  void _showForceUpdateDialog(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     showDialog(
       context: context,
-      builder: (d) => AlertDialog(
-        backgroundColor: isDark ? const Color(0xFF1A0533) : Colors.white,
-        title: Row(children: [
-          const Icon(Icons.system_update_rounded, color: Colors.cyanAccent),
-          const SizedBox(width: 8),
-          Text('Update v$_latestUpdateVersion', style: TextStyle(color: isDark ? Colors.white : Colors.black87)),
-        ]),
-        content: Text('A new version of PrePora is available. Update now for the latest features and improvements.',
-            style: TextStyle(color: isDark ? Colors.white70 : Colors.black54)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(d), child: const Text('Later', style: TextStyle(color: Colors.grey))),
-          if (_latestUpdateLink != null && _latestUpdateLink!.isNotEmpty)
-            ElevatedButton(
-              onPressed: () {
-                Navigator.pop(d);
-                context.push('/webview', extra: {'url': _latestUpdateLink, 'title': 'Update v$_latestUpdateVersion'});
-              },
-              style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A148C)),
-              child: const Text('Update Now', style: TextStyle(color: Colors.white)),
-            ),
-        ],
+      barrierDismissible: false,
+      builder: (d) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          backgroundColor: isDark ? const Color(0xFF1A0533) : Colors.white,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: Row(children: [
+            const Icon(Icons.system_update_rounded, color: Colors.cyanAccent),
+            const SizedBox(width: 8),
+            Text('Update v$_latestUpdateVersion', style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontWeight: FontWeight.bold)),
+          ]),
+          content: Text('A new version of PrePora is available. Please update to continue using the app.',
+              style: TextStyle(color: isDark ? Colors.white70 : Colors.black54)),
+          actions: [
+            if (_latestUpdateLink != null && _latestUpdateLink!.isNotEmpty)
+              ElevatedButton(
+                onPressed: () {
+                  context.push('/webview', extra: {'url': _latestUpdateLink, 'title': 'Update v$_latestUpdateVersion'});
+                },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFF4A148C),
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+                ),
+                child: const Text('Update Now', style: TextStyle(color: Colors.white)),
+              ),
+          ],
+        ),
       ),
     );
   }

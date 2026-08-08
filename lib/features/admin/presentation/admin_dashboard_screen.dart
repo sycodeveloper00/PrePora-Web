@@ -4,7 +4,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import '../../../core/widgets/glassmorphic_container.dart';
 import '../../../core/widgets/animated_pressable.dart';
 import '../../../core/services/firebase_service.dart';
@@ -27,6 +26,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   final _folderNameController = TextEditingController();
   int _pendingFeedbackCount = 0;
   StreamSubscription? _feedbackSub;
+  Timer? _feedbackDebounce;
   // Cached stream to prevent folder list from blinking on each rebuild
   late final Stream<QuerySnapshot> _folderStream;
   // Local docs for optimistic reorder — avoids snap-back on drag
@@ -72,7 +72,10 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         return data['viewed'] != true;
       }).toList();
       final count = all.length;
-      if (mounted) setState(() => _pendingFeedbackCount = count);
+      _feedbackDebounce?.cancel();
+      _feedbackDebounce = Timer(const Duration(milliseconds: 500), () {
+        if (mounted) setState(() => _pendingFeedbackCount = count);
+      });
       NotificationService.setBadgeCount(count);
       for (final change in snap.docChanges) {
         if (change.type == DocumentChangeType.added) {
@@ -92,6 +95,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   @override
   void dispose() {
     _feedbackSub?.cancel();
+    _feedbackDebounce?.cancel();
     _folderNameController.dispose();
     super.dispose();
   }
@@ -203,7 +207,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                           const SizedBox(height: 2),
                           Text(email, style: const TextStyle(color: Colors.orange, fontSize: 12)),
                           const SizedBox(height: 2),
-                          Text('Password: Assistant123', style: TextStyle(color: dimColor, fontSize: 11)),
+                          Text('Password: ${name.replaceAll(RegExp(r'\s+'), '')[0].toUpperCase()}${name.replaceAll(RegExp(r'\s+'), '').substring(1).toLowerCase()}123', style: TextStyle(color: dimColor, fontSize: 11)),
                         ])),
                         IconButton(
                           icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
@@ -1439,17 +1443,13 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               ? file.name.substring(0, file.name.lastIndexOf('.'))
               : file.name;
 
-          final storageName = '${DateTime.now().millisecondsSinceEpoch}_${file.name}';
-          final ref = FirebaseService.storage.ref('folder_files/$storageName');
-          await ref.putData(bytes, metadata: SettableMetadata(contentDisposition: 'inline; filename="${file.name}"'));
-
-          final downloadUrl = await ref.getDownloadURL();
+          final downloadUrl = await FirebaseService.uploadFile(bytes, file.name);
           await FirebaseService.addFolderContent(folderId, {
             'type': 'mocktest_file',
             'name': displayName,
             'url': downloadUrl,
             'fileType': fileType,
-            'source': 'supabase_storage',
+            'source': 'storage',
           });
           count++;
         }
@@ -1789,6 +1789,15 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             stream: _folderStream,
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: ProfessionalLoader());
+              if (snapshot.hasError) {
+                return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                  Icon(Icons.error_outline_rounded, size: 60, color: Colors.redAccent.withValues(alpha: 0.6)),
+                  const SizedBox(height: 16),
+                  const Text('Something went wrong', style: TextStyle(color: Colors.white38, fontSize: 16)),
+                  const SizedBox(height: 8),
+                  const Text('Folders will reappear shortly', style: TextStyle(color: Colors.white24, fontSize: 13)),
+                ]));
+              }
               if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
                 return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                   Icon(Icons.folder_open_rounded, size: 80, color: Colors.white12),
@@ -1977,7 +1986,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             ListTile(
               leading: const Icon(Icons.info_outline_rounded, color: Colors.grey),
               title: Text('Version', style: TextStyle(color: baseColor)),
-              subtitle: Text('PrePora v1.0.0', style: TextStyle(color: dimColor, fontSize: 12)),
+              subtitle: Text('PrePora v2.0.0', style: TextStyle(color: dimColor, fontSize: 12)),
             ),
             ListTile(
               leading: const Icon(Icons.palette_outlined, color: Colors.amber),

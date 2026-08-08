@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
@@ -7,7 +6,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:http/http.dart' as http;
 import '../../../core/widgets/glassmorphic_container.dart';
 import '../../../core/widgets/professional_loader.dart';
@@ -521,6 +519,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     try {
       final result = await FilePicker.platform.pickFiles(type: FileType.any, allowMultiple: true, withData: true);
       if (result != null && result.files.isNotEmpty) {
+        SessionManager.pause();
         int count = 0;
         for (final file in result.files) {
           final bytes = file.bytes ?? (!kIsWeb && file.path != null ? File(file.path!).readAsBytesSync() : null);
@@ -538,15 +537,14 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
           if (mounted) setState(() => _uploadProgress[file.name] = 0);
 
           try {
-            final storageName = '${DateTime.now().millisecondsSinceEpoch}_${file.name}';
-            final ref = FirebaseService.storage.ref('folder_files/$storageName');
-            await ref.putData(bytes, metadata: SettableMetadata(contentDisposition: 'inline; filename="${file.name}"'), onProgress: (p) {
+            final downloadUrl = await FirebaseService.uploadFile(bytes, file.name, onProgress: (p) {
               if (mounted) setState(() => _uploadProgress[file.name] = p);
             });
             if (mounted) setState(() => _uploadProgress.remove(file.name));
 
-            final downloadUrl = await ref.getDownloadURL();
-            final data = <String, dynamic>{'type': 'file', 'name': file.name, 'url': downloadUrl, 'source': 'supabase_storage'};
+            final provider = await FirebaseService.getStorageProvider();
+            final data = <String, dynamic>{'type': 'file', 'name': file.name, 'url': downloadUrl, 'source': 'storage', 'provider': provider};
+            if (provider == 'cloudinary') data['cloudAccount'] = await FirebaseService.getActiveCloudinaryAccountName();
             if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
             final newId = await FirebaseService.addFolderContent(widget.folderId, data);
             if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
@@ -566,6 +564,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
       if (ctx.mounted) {
         ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: Colors.redAccent, duration: const Duration(seconds: 5)));
       }
+    } finally {
+      SessionManager.resume();
     }
   }
 
@@ -775,6 +775,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
         withData: true,
       );
       if (result != null && result.files.isNotEmpty) {
+        SessionManager.pause();
         int count = 0;
         for (final file in result.files) {
           final bytes = file.bytes ?? (!kIsWeb && file.path != null ? File(file.path!).readAsBytesSync() : null);
@@ -796,21 +797,21 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
           if (mounted) setState(() => _uploadProgress[file.name] = 0);
 
           try {
-            final storageName = '${DateTime.now().millisecondsSinceEpoch}_${file.name}';
-            final ref = FirebaseService.storage.ref('folder_files/$storageName');
-            await ref.putData(bytes, metadata: SettableMetadata(contentDisposition: 'inline; filename="${file.name}"'), onProgress: (p) {
+            final downloadUrl = await FirebaseService.uploadFile(bytes, file.name, onProgress: (p) {
               if (mounted) setState(() => _uploadProgress[file.name] = p);
             });
             if (mounted) setState(() => _uploadProgress.remove(file.name));
 
-            final downloadUrl = await ref.getDownloadURL();
+            final provider = await FirebaseService.getStorageProvider();
             final data = <String, dynamic>{
               'type': 'mocktest_file',
               'name': displayName,
               'url': downloadUrl,
               'fileType': fileType,
-              'source': 'supabase_storage',
+              'source': 'storage',
+              'provider': provider,
             };
+            if (provider == 'cloudinary') data['cloudAccount'] = await FirebaseService.getActiveCloudinaryAccountName();
             if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
             final newId = await FirebaseService.addFolderContent(widget.folderId, data);
             if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
@@ -830,6 +831,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
       if (ctx.mounted) {
         ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Upload failed: $e'), backgroundColor: Colors.redAccent, duration: const Duration(seconds: 5)));
       }
+    } finally {
+      SessionManager.resume();
     }
   }
 
@@ -1091,7 +1094,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   Future<void> _openContent(Map<String, dynamic> data, {String? folderName}) async {
     folderName ??= _folderName;
     final type = data['type'] as String? ?? 'file';
-    final name = data['name'] as String? ?? '';
+    final name = FirebaseService.cleanTitle(data['name'] as String? ?? '');
     final locked = data['locked'] as bool? ?? false;
     final updating = data['updating'] as bool? ?? false;
 
@@ -1154,20 +1157,11 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               if (activityId != null) FirebaseService.endActivity(activityId!);
             });
           } else {
-            try {
-              final response = await http.get(Uri.parse(url));
-              if (response.statusCode == 200) {
-                final htmlContent = response.body;
-                if (context.mounted) {
-                  context.push('/webview', extra: {'html': htmlContent, 'title': name, 'folderId': widget.folderId, 'parentContentId': widget.parentContentId, 'isMockTest': true}).then((_) {
-                    if (activityId != null) FirebaseService.endActivity(activityId!);
-                  });
-                }
-              }
-            } catch (_) {
-              if (context.mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Failed to load mock test file'), backgroundColor: Colors.redAccent));
-              }
+            // Navigate immediately with URL — webview fetches content in background
+            if (context.mounted) {
+              context.push('/webview', extra: {'url': url, 'title': name, 'folderId': widget.folderId, 'parentContentId': widget.parentContentId, 'isMockTest': true}).then((_) {
+                if (activityId != null) FirebaseService.endActivity(activityId!);
+              });
             }
           }
         }
@@ -1192,7 +1186,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
       final urlName = url.split('/').last.split('?').first.split('#').first;
       ext = urlName.contains('.') ? urlName.split('.').last.toLowerCase() : '';
     }
-    final displayTitle = name.replaceFirst(RegExp(r'^\d+_'), '');
+    final displayTitle = FirebaseService.cleanTitle(name);
 
     if (kIsWeb && source == 'internal_storage' && !url.startsWith('http://') && !url.startsWith('https://') && !url.startsWith('blob:')) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
@@ -1508,7 +1502,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     for (final doc in contentsSnap.docs) {
       final data = doc.data();
       final type = data['type'] as String? ?? 'file';
-      final name = data['name'] as String? ?? 'Unnamed';
+      final name = FirebaseService.cleanTitle(data['name'] as String? ?? 'Unnamed');
       final locked = data['locked'] as bool? ?? false;
       final updating = data['updating'] as bool? ?? false;
       final invisible = data['invisible'] as bool? ?? false;
@@ -1731,7 +1725,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   // ─── Lecture Card ────────────────────────────────────────────────────────────
 
   Widget _buildLectureCard(BuildContext context, String id, Map<String, dynamic> data, bool locked, bool updating, bool invisible, int index) {
-    final name = data['name'] as String? ?? 'Lecture';
+    final name = FirebaseService.cleanTitle(data['name'] as String? ?? 'Lecture');
     final disabled = _isDisabled(data, id);
     return GestureDetector(
       onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
@@ -1818,7 +1812,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   // ─── Sub-Folder Card ─────────────────────────────────────────────────────────
 
   Widget _buildSubFolderCard(BuildContext context, String id, Map<String, dynamic> data, bool locked, bool updating, bool invisible, int index) {
-    final name = data['name'] as String? ?? 'Sub-Folder';
+    final name = FirebaseService.cleanTitle(data['name'] as String? ?? 'Sub-Folder');
     final disabled = _isDisabled(data, id);
     return GestureDetector(
       onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
@@ -1916,7 +1910,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   // ─── Mock Test URL Card ──────────────────────────────────────────────────────
 
   Widget _buildMockTestUrlCard(BuildContext context, String id, Map<String, dynamic> data, bool locked, bool updating, bool invisible, int index) {
-    final name = data['name'] as String? ?? 'Mock Test';
+    final name = FirebaseService.cleanTitle(data['name'] as String? ?? 'Mock Test');
     final disabled = _isDisabled(data, id);
     return GestureDetector(
       onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
@@ -2003,7 +1997,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   // ─── Mock Test Code Card ─────────────────────────────────────────────────────
 
   Widget _buildMockTestCodeCard(BuildContext context, String id, Map<String, dynamic> data, bool locked, bool updating, bool invisible, int index) {
-    final name = data['name'] as String? ?? 'Mock Test';
+    final name = FirebaseService.cleanTitle(data['name'] as String? ?? 'Mock Test');
     final disabled = _isDisabled(data, id);
     return GestureDetector(
       onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
@@ -2090,7 +2084,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   // ─── Mock Test File Card ──────────────────────────────────────────────────────
 
   Widget _buildMockTestFileCard(BuildContext context, String id, Map<String, dynamic> data, bool locked, bool updating, bool invisible, int index) {
-    final name = data['name'] as String? ?? 'Mock Test';
+    final name = FirebaseService.cleanTitle(data['name'] as String? ?? 'Mock Test');
     final fileType = data['fileType'] as String? ?? 'pdf';
     final disabled = _isDisabled(data, id);
     return GestureDetector(
@@ -2176,7 +2170,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   // ─── File Card ───────────────────────────────────────────────────────────────
 
   Widget _buildFileCard(BuildContext context, String id, Map<String, dynamic> data, bool locked, bool updating, bool invisible, int index) {
-    final name = data['name'] as String? ?? 'File';
+    final name = FirebaseService.cleanTitle(data['name'] as String? ?? 'File');
     final disabled = _isDisabled(data, id);
     return GestureDetector(
       onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),

@@ -20,7 +20,7 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
   String _accountTitle = '';
   String _accountNo = '';
   String _bankName = '';
-  String _appVersion = '1.0.0';
+  String _appVersion = '2.0.0';
 
   @override
   void initState() {
@@ -86,6 +86,8 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
                   }),
                 ),
                 const SizedBox(height: 12),
+
+                // ─── Version & Logout ────────────────────────────────────────────
                 Card(
                   color: cardColor,
                   child: Column(children: [
@@ -109,6 +111,8 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
             ),
     );
   }
+
+  // ─── Misc Dialogs ──────────────────────────────────────────────────────────
 
   void _showBlockStudents() {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -398,7 +402,7 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
             children: [
               Padding(
                 padding: const EdgeInsets.only(bottom: 8),
-                child: Text('Welcome to PrePora — Pakistan\'s Smart Study App.', style: TextStyle(color: dimColor, fontSize: 13)),
+                child: Text('Welcome to PrePora \u2014 Pakistan\'s Smart Study App.', style: TextStyle(color: dimColor, fontSize: 13)),
               ),
               ...terms.map((t) => ListTile(
                 contentPadding: EdgeInsets.zero,
@@ -425,7 +429,6 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
     final notifier = ref.read(themeModeProvider.notifier);
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final textColor = isDark ? Colors.white : const Color(0xFF1A0533);
-    final hintColor = isDark ? Colors.white38 : Colors.black54;
     final bgColor = isDark ? const Color(0xFF1A0533) : Colors.white;
     showDialog(
       context: context,
@@ -446,7 +449,6 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
           ListTile(
             leading: const Icon(Icons.settings_brightness_rounded, color: Colors.teal),
             title: Text('System', style: TextStyle(color: textColor)),
-            subtitle: Text('Follow device theme', style: TextStyle(color: hintColor, fontSize: 11)),
             onTap: () { notifier.set(ThemeMode.system); Navigator.pop(d); },
           ),
         ]),

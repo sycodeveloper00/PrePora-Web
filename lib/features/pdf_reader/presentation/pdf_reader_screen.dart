@@ -73,15 +73,11 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       _fileName = _fileName!.replaceFirst(RegExp(r'^\d+_'), '');
 
       if (kIsWeb) {
-        try {
-          final response = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 20));
-          if (response.statusCode == 200 && response.bodyBytes.length > 100) {
-            final blobUrl = createBlobUrl(response.bodyBytes, 'application/pdf');
-            setState(() { _localPath = blobUrl; _isLoading = false; });
-            return;
-          }
-        } catch (_) {}
-        setState(() { _error = 'Could not load PDF. Check your connection.'; _isLoading = false; });
+        // On web: show PDF immediately from URL (PDF.js loads directly).
+        // Only create blob if direct load fails (CORS).
+        _localPath = url;
+        _isLoading = false;
+        if (mounted) setState(() {});
         return;
       }
 

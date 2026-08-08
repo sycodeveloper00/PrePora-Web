@@ -81,7 +81,7 @@ class SettingsScreen extends StatelessWidget {
               ListTile(
                 leading: const Icon(Icons.info_outline_rounded, color: Colors.grey),
                 title: Text('Version', style: TextStyle(color: textColor)),
-                subtitle: Text('PrePora v1.0.0', style: TextStyle(color: hintColor, fontSize: 12)),
+                subtitle: Text('PrePora v2.0.0', style: TextStyle(color: hintColor, fontSize: 12)),
               ),
               Divider(height: 1, color: isDark ? Colors.white12 : Colors.black12),
               ListTile(
