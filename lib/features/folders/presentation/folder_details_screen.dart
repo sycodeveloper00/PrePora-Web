@@ -51,6 +51,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   bool _isSelectMode = false;
   List<String> _visibleContentIds = [];
   String? _groupLink;
+  String _sortMode = 'custom';
   final Map<String, double> _uploadProgress = {};
 
   // ─── Cached futures & streams to prevent blinking rebuild loops ───
@@ -73,6 +74,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     _checkStatus();
     _loadSubfolderName();
     _loadGroupLink();
+    _loadSortMode();
   }
 
   void _loadSubfolderName() async {
@@ -126,6 +128,21 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     } else {
       await FirebaseService.addNotification(message, folderId: widget.folderId, parentContentId: parentContentId, contentData: contentData);
     }
+  }
+
+  void _loadSortMode() async {
+    try {
+      final doc = await FirebaseService.firestore.collection('folders').doc(widget.folderId).get();
+      if (doc.exists && mounted) {
+        final data = doc.data() as Map<String, dynamic>?;
+        setState(() { _sortMode = data?['sortMode'] as String? ?? 'custom'; });
+      }
+    } catch (_) {}
+  }
+
+  void _saveSortMode(String mode) {
+    setState(() { _sortMode = mode; });
+    FirebaseService.firestore.collection('folders').doc(widget.folderId).update({'sortMode': mode});
   }
 
   List<DocumentSnapshot> _filterDocs(List<DocumentSnapshot> docs, String query) {
@@ -1297,22 +1314,59 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
             children: [
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-              child: TextField(
-                    onChanged: (v) => setState(() => _searchQuery = v),
-                    style: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87),
-                    decoration: InputDecoration(
-                      hintText: 'Search content...', hintStyle: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white38 : Colors.black38),
-                      prefixIcon: Icon(Icons.search, color: Theme.of(context).brightness == Brightness.dark ? Colors.white54 : Colors.black54),
-                      suffixIcon: _searchQuery.isNotEmpty
-                          ? IconButton(icon: Icon(Icons.clear, color: Theme.of(context).brightness == Brightness.dark ? Colors.white54 : Colors.black54), onPressed: () => setState(() => _searchQuery = ''))
-                          : null,
-                      filled: true, fillColor: Theme.of(context).brightness == Brightness.dark ? Colors.white10 : Colors.black12,
-                      border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: Theme.of(context).brightness == Brightness.dark ? Colors.white12 : Colors.black12)),
-                      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: Theme.of(context).brightness == Brightness.dark ? Colors.white12 : Colors.black12)),
-                      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: Theme.of(context).brightness == Brightness.dark ? Colors.cyanAccent : const Color(0xFF4A148C), width: 1.5)),
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                child: Row(children: [
+                  Expanded(
+                    child: TextField(
+                      onChanged: (v) => setState(() => _searchQuery = v),
+                      style: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87),
+                      decoration: InputDecoration(
+                        hintText: 'Search content...', hintStyle: TextStyle(color: Theme.of(context).brightness == Brightness.dark ? Colors.white38 : Colors.black38),
+                        prefixIcon: Icon(Icons.search, color: Theme.of(context).brightness == Brightness.dark ? Colors.white54 : Colors.black54),
+                        suffixIcon: _searchQuery.isNotEmpty
+                            ? IconButton(icon: Icon(Icons.clear, color: Theme.of(context).brightness == Brightness.dark ? Colors.white54 : Colors.black54), onPressed: () => setState(() => _searchQuery = ''))
+                            : null,
+                        filled: true, fillColor: Theme.of(context).brightness == Brightness.dark ? Colors.white10 : Colors.black12,
+                        border: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: Theme.of(context).brightness == Brightness.dark ? Colors.white12 : Colors.black12)),
+                        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: Theme.of(context).brightness == Brightness.dark ? Colors.white12 : Colors.black12)),
+                        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(16), borderSide: BorderSide(color: Theme.of(context).brightness == Brightness.dark ? Colors.cyanAccent : const Color(0xFF4A148C), width: 1.5)),
+                        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+                      ),
                     ),
                   ),
+                  const SizedBox(width: 8),
+                  PopupMenuButton<String>(
+                    onSelected: _saveSortMode,
+                    icon: Container(
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).brightness == Brightness.dark ? Colors.white10 : Colors.black12,
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Icon(
+                        _sortMode == 'custom' ? Icons.drag_indicator_rounded : Icons.sort_by_alpha_rounded,
+                        color: _sortMode != 'custom' ? const Color(0xFF4A148C) : (Theme.of(context).brightness == Brightness.dark ? Colors.white54 : Colors.black54),
+                        size: 20,
+                      ),
+                    ),
+                    itemBuilder: (_) => [
+                      CheckedPopupMenuItem<String>(
+                        value: 'custom',
+                        checked: _sortMode == 'custom',
+                        child: const Text('Custom Order'),
+                      ),
+                      CheckedPopupMenuItem<String>(
+                        value: 'az',
+                        checked: _sortMode == 'az',
+                        child: const Text('Title A → Z'),
+                      ),
+                      CheckedPopupMenuItem<String>(
+                        value: 'za',
+                        checked: _sortMode == 'za',
+                        child: const Text('Title Z → A'),
+                      ),
+                    ],
+                  ),
+                ]),
               ),
               _buildSelectionToolbar(),
               Expanded(
@@ -1371,9 +1425,24 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                       }
                     }
 
-                    // Sort visibleDocs by local order map when local order is active
-                    if (_hasLocalOrder && _searchQuery.isEmpty) {
-                      visibleDocs.sort((a, b) => (_localOrderMap[a.id] ?? 9999).compareTo(_localOrderMap[b.id] ?? 9999));
+                    // Apply sort mode
+                    if (_sortMode == 'az') {
+                      visibleDocs.sort((a, b) {
+                        final aName = (a.data() as Map<String, dynamic>)['name'] as String? ?? '';
+                        final bName = (b.data() as Map<String, dynamic>)['name'] as String? ?? '';
+                        return aName.toLowerCase().compareTo(bName.toLowerCase());
+                      });
+                    } else if (_sortMode == 'za') {
+                      visibleDocs.sort((a, b) {
+                        final aName = (a.data() as Map<String, dynamic>)['name'] as String? ?? '';
+                        final bName = (b.data() as Map<String, dynamic>)['name'] as String? ?? '';
+                        return bName.toLowerCase().compareTo(aName.toLowerCase());
+                      });
+                    } else {
+                      // Custom order — use local order map
+                      if (_hasLocalOrder && _searchQuery.isEmpty) {
+                        visibleDocs.sort((a, b) => (_localOrderMap[a.id] ?? 9999).compareTo(_localOrderMap[b.id] ?? 9999));
+                      }
                     }
 
                     if (visibleDocs.isEmpty && _groupLink == null) {
@@ -1387,7 +1456,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
 
                     _visibleContentIds = visibleDocs.map((d) => d.id).toList();
 
-                    final listWidget = widget.isAdmin
+                    final useCustomOrder = widget.isAdmin && _sortMode == 'custom';
+                    final listWidget = useCustomOrder
                         ? ReorderableListView.builder(
                             padding: const EdgeInsets.only(left: 16, right: 16, top: 16, bottom: 100),
                             itemCount: visibleDocs.length,
@@ -1762,7 +1832,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               _openContent(data);
             },
             child: Row(children: [
-              if (widget.isAdmin)
+              if (widget.isAdmin && _sortMode == 'custom')
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: ReorderableDragStartListener(
@@ -1854,7 +1924,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               });
             },
             child: Row(children: [
-              if (widget.isAdmin)
+              if (widget.isAdmin && _sortMode == 'custom')
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: ReorderableDragStartListener(
@@ -1947,7 +2017,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               _openContent(data);
             },
             child: Row(children: [
-              if (widget.isAdmin)
+              if (widget.isAdmin && _sortMode == 'custom')
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: ReorderableDragStartListener(
@@ -2034,7 +2104,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               _openContent(data);
             },
             child: Row(children: [
-              if (widget.isAdmin)
+              if (widget.isAdmin && _sortMode == 'custom')
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: ReorderableDragStartListener(
@@ -2122,7 +2192,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               _openContent(data);
             },
             child: Row(children: [
-              if (widget.isAdmin)
+              if (widget.isAdmin && _sortMode == 'custom')
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: ReorderableDragStartListener(
@@ -2207,7 +2277,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               _openContent(data);
             },
             child: Row(children: [
-              if (widget.isAdmin)
+              if (widget.isAdmin && _sortMode == 'custom')
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: ReorderableDragStartListener(
