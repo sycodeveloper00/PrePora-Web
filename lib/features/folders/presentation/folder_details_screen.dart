@@ -54,6 +54,41 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   String _sortMode = 'custom';
   final Map<String, double> _uploadProgress = {};
 
+  int _naturalCompare(String a, String b) {
+    final aLower = a.toLowerCase();
+    final bLower = b.toLowerCase();
+    final aRuns = < dynamic >[];
+    final bRuns = < dynamic >[];
+    final numRe = RegExp(r'\d+');
+    int start = 0;
+    for (final m in numRe.allMatches(aLower)) {
+      if (m.start > start) aRuns.add(aLower.substring(start, m.start));
+      aRuns.add(int.parse(m.group(0)!));
+      start = m.end;
+    }
+    if (start < aLower.length) aRuns.add(aLower.substring(start));
+    start = 0;
+    for (final m in numRe.allMatches(bLower)) {
+      if (m.start > start) bRuns.add(bLower.substring(start, m.start));
+      bRuns.add(int.parse(m.group(0)!));
+      start = m.end;
+    }
+    if (start < bLower.length) bRuns.add(bLower.substring(start));
+    final len = aRuns.length < bRuns.length ? aRuns.length : bRuns.length;
+    for (int i = 0; i < len; i++) {
+      final aR = aRuns[i];
+      final bR = bRuns[i];
+      if (aR is int && bR is int) {
+        final cmp = aR.compareTo(bR);
+        if (cmp != 0) return cmp;
+      } else {
+        final cmp = aR.toString().compareTo(bR.toString());
+        if (cmp != 0) return cmp;
+      }
+    }
+    return aRuns.length.compareTo(bRuns.length);
+  }
+
   // ─── Cached futures & streams to prevent blinking rebuild loops ───
   late Future<DocumentSnapshot> _folderFuture;
   late Stream<QuerySnapshot> _contentsStream;
@@ -1339,12 +1374,21 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                     icon: Container(
                       padding: const EdgeInsets.all(10),
                       decoration: BoxDecoration(
-                        color: Theme.of(context).brightness == Brightness.dark ? Colors.white10 : Colors.black12,
+                        color: Theme.of(context).brightness == Brightness.dark
+                            ? Colors.cyanAccent.withValues(alpha: 0.15)
+                            : const Color(0xFF4A148C).withValues(alpha: 0.1),
                         borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: Theme.of(context).brightness == Brightness.dark
+                              ? Colors.cyanAccent.withValues(alpha: 0.3)
+                              : const Color(0xFF4A148C).withValues(alpha: 0.3),
+                        ),
                       ),
                       child: Icon(
                         _sortMode == 'custom' ? Icons.drag_indicator_rounded : Icons.sort_by_alpha_rounded,
-                        color: _sortMode != 'custom' ? const Color(0xFF4A148C) : (Theme.of(context).brightness == Brightness.dark ? Colors.white54 : Colors.black54),
+                        color: Theme.of(context).brightness == Brightness.dark
+                            ? Colors.cyanAccent
+                            : const Color(0xFF4A148C),
                         size: 20,
                       ),
                     ),
@@ -1430,13 +1474,13 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                       visibleDocs.sort((a, b) {
                         final aName = (a.data() as Map<String, dynamic>)['name'] as String? ?? '';
                         final bName = (b.data() as Map<String, dynamic>)['name'] as String? ?? '';
-                        return aName.toLowerCase().compareTo(bName.toLowerCase());
+                        return _naturalCompare(aName, bName);
                       });
                     } else if (_sortMode == 'za') {
                       visibleDocs.sort((a, b) {
                         final aName = (a.data() as Map<String, dynamic>)['name'] as String? ?? '';
                         final bName = (b.data() as Map<String, dynamic>)['name'] as String? ?? '';
-                        return bName.toLowerCase().compareTo(aName.toLowerCase());
+                        return _naturalCompare(bName, aName);
                       });
                     } else {
                       // Custom order — use local order map
@@ -1726,17 +1770,24 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
       margin: const EdgeInsets.fromLTRB(16, 4, 16, 0),
       decoration: BoxDecoration(
-        color: (isDark ? Colors.white : Colors.black).withValues(alpha: 0.08),
+        color: isDark
+            ? Colors.cyanAccent.withValues(alpha: 0.1)
+            : const Color(0xFF4A148C).withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: isDark
+              ? Colors.cyanAccent.withValues(alpha: 0.2)
+              : const Color(0xFF4A148C).withValues(alpha: 0.15),
+        ),
       ),
       child: Row(children: [
-        Icon(Icons.checklist_rounded, size: 18, color: isDark ? Colors.white70 : Colors.black54),
+        Icon(Icons.checklist_rounded, size: 18, color: isDark ? Colors.cyanAccent : const Color(0xFF4A148C)),
         const SizedBox(width: 6),
-        Text('${_selectedIds.length} selected', style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontWeight: FontWeight.w600, fontSize: 13)),
+        Text('${_selectedIds.length} selected', style: TextStyle(color: isDark ? Colors.cyanAccent : const Color(0xFF4A148C), fontWeight: FontWeight.w600, fontSize: 13)),
         const SizedBox(width: 8),
         _toolbarIconButton(
           _selectedIds.length == _visibleContentIds.length ? Icons.deselect_rounded : Icons.select_all_rounded,
-          const Color(0xFF4A148C),
+          isDark ? Colors.cyanAccent : const Color(0xFF4A148C),
           _selectedIds.length == _visibleContentIds.length ? 'Deselect All' : 'Select All',
           _selectAll,
         ),
