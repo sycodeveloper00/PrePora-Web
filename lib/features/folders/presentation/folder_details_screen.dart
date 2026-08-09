@@ -49,6 +49,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   bool _hasLocalOrder = false;
   Set<String> _selectedIds = {};
   bool _isSelectMode = false;
+  List<String> _visibleContentIds = [];
   String? _groupLink;
   final Map<String, double> _uploadProgress = {};
 
@@ -1034,6 +1035,18 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     });
   }
 
+  void _selectAll() {
+    setState(() {
+      if (_selectedIds.length == _visibleContentIds.length) {
+        _selectedIds.clear();
+        _isSelectMode = false;
+      } else {
+        _selectedIds = Set<String>.from(_visibleContentIds);
+        _isSelectMode = true;
+      }
+    });
+  }
+
   Future<void> _deleteSelected() async {
     final count = _selectedIds.length;
     for (final id in _selectedIds) {
@@ -1372,6 +1385,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                       ]));
                     }
 
+                    _visibleContentIds = visibleDocs.map((d) => d.id).toList();
+
                     final listWidget = widget.isAdmin
                         ? ReorderableListView.builder(
                             padding: const EdgeInsets.only(left: 16, right: 16, top: 16, bottom: 100),
@@ -1635,7 +1650,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   }
 
   Widget _buildSelectionToolbar() {
-    if (!_isSelectMode || !widget.isAdmin) return const SizedBox.shrink();
+    if (!_isSelectMode) return const SizedBox.shrink();
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -1648,6 +1663,13 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
         Icon(Icons.checklist_rounded, size: 18, color: isDark ? Colors.white70 : Colors.black54),
         const SizedBox(width: 6),
         Text('${_selectedIds.length} selected', style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontWeight: FontWeight.w600, fontSize: 13)),
+        const SizedBox(width: 8),
+        _toolbarIconButton(
+          _selectedIds.length == _visibleContentIds.length ? Icons.deselect_rounded : Icons.select_all_rounded,
+          const Color(0xFF4A148C),
+          _selectedIds.length == _visibleContentIds.length ? 'Deselect All' : 'Select All',
+          _selectAll,
+        ),
         const Spacer(),
         _toolbarIconButton(Icons.delete_outline_rounded, Colors.redAccent, 'Delete', _confirmDeleteSelected),
         const SizedBox(width: 4),
@@ -1728,7 +1750,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     final name = FirebaseService.cleanTitle(data['name'] as String? ?? 'Lecture');
     final disabled = _isDisabled(data, id);
     return GestureDetector(
-      onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
+      onLongPress: ((!widget.isAdmin && !widget.canEdit) || disabled) ? null : () => _onContentSelect(id),
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         child: GlassmorphicContainer(
@@ -1815,7 +1837,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     final name = FirebaseService.cleanTitle(data['name'] as String? ?? 'Sub-Folder');
     final disabled = _isDisabled(data, id);
     return GestureDetector(
-      onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
+      onLongPress: ((!widget.isAdmin && !widget.canEdit) || disabled) ? null : () => _onContentSelect(id),
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         child: GlassmorphicContainer(
@@ -1913,7 +1935,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     final name = FirebaseService.cleanTitle(data['name'] as String? ?? 'Mock Test');
     final disabled = _isDisabled(data, id);
     return GestureDetector(
-      onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
+      onLongPress: ((!widget.isAdmin && !widget.canEdit) || disabled) ? null : () => _onContentSelect(id),
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         child: GlassmorphicContainer(
@@ -2000,7 +2022,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     final name = FirebaseService.cleanTitle(data['name'] as String? ?? 'Mock Test');
     final disabled = _isDisabled(data, id);
     return GestureDetector(
-      onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
+      onLongPress: ((!widget.isAdmin && !widget.canEdit) || disabled) ? null : () => _onContentSelect(id),
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         child: GlassmorphicContainer(
@@ -2088,7 +2110,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     final fileType = data['fileType'] as String? ?? 'pdf';
     final disabled = _isDisabled(data, id);
     return GestureDetector(
-      onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
+      onLongPress: ((!widget.isAdmin && !widget.canEdit) || disabled) ? null : () => _onContentSelect(id),
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         child: GlassmorphicContainer(
@@ -2173,7 +2195,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     final name = FirebaseService.cleanTitle(data['name'] as String? ?? 'File');
     final disabled = _isDisabled(data, id);
     return GestureDetector(
-      onLongPress: (!widget.isAdmin || disabled) ? null : () => _onContentSelect(id),
+      onLongPress: ((!widget.isAdmin && !widget.canEdit) || disabled) ? null : () => _onContentSelect(id),
       child: Container(
         margin: const EdgeInsets.only(bottom: 12),
         child: GlassmorphicContainer(
