@@ -89,6 +89,7 @@ class _AppLifecycleState extends State<_AppLifecycle> with WidgetsBindingObserve
     if (role == 'admin' || role == 'Assistant') {
       SessionManager.start(onExpiredCallback: () async {
         await FirebaseService.signOut();
+        AppRouter.router.go('/auth/login');
       });
     }
   }
