@@ -24,7 +24,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
   Timer? _redirectTimer;
   StreamSubscription? _sessionSub;
   DateTime? _createdAt;
-  int _countdown = 5;
+  int _countdown = 3;
   DateTime? _lastUserActivity;
   Timer? _activityCheckTimer;
 
@@ -196,7 +196,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
         setState(() {
           _status = 'connected';
           _sessionData = data;
-          _countdown = 5;
+          _countdown = 3;
         });
         _startRedirectTimer();
       } else if (status == 'disconnected' && mounted) {
@@ -604,87 +604,131 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     final connectedAt = (_sessionData?['connectedAt'] as Timestamp?)?.toDate();
 
     return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
+      child: Padding(
+        padding: const EdgeInsets.all(32),
         child: Container(
-          width: 400,
+          width: 480,
+          constraints: const BoxConstraints(maxWidth: 480),
           decoration: BoxDecoration(
-            color: Colors.white.withValues(alpha: 0.06),
-            borderRadius: BorderRadius.circular(24),
-            border: Border.all(color: Colors.white.withValues(alpha: 0.1)),
+            color: cardColor,
+            borderRadius: BorderRadius.circular(28),
+            border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
             boxShadow: [
               BoxShadow(
-                color: const Color(0xFF00E676).withValues(alpha: 0.1),
-                blurRadius: 40,
-                spreadRadius: -5,
+                color: const Color(0xFF00E676).withValues(alpha: 0.08),
+                blurRadius: 60,
+                spreadRadius: -10,
               ),
             ],
           ),
-          padding: const EdgeInsets.symmetric(horizontal: 36, vertical: 32),
+          padding: const EdgeInsets.symmetric(horizontal: 44, vertical: 40),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
               Container(
-                width: 64, height: 64,
+                width: 72, height: 72,
                 decoration: BoxDecoration(
-                  color: const Color(0xFF00E676).withValues(alpha: 0.12),
+                  gradient: const LinearGradient(
+                    begin: Alignment.topLeft,
+                    end: Alignment.bottomRight,
+                    colors: [Color(0xFF00E676), Color(0xFF00C853)],
+                  ),
                   shape: BoxShape.circle,
-                  border: Border.all(color: const Color(0xFF00E676).withValues(alpha: 0.3)),
+                  boxShadow: [
+                    BoxShadow(
+                      color: const Color(0xFF00E676).withValues(alpha: 0.3),
+                      blurRadius: 24,
+                      spreadRadius: 2,
+                    ),
+                  ],
                 ),
-                child: const Icon(Icons.check_rounded, size: 36, color: Color(0xFF00E676)),
+                child: const Icon(Icons.check_rounded, size: 40, color: Colors.white),
               ),
-              const SizedBox(height: 16),
-              Text('Connected!', style: TextStyle(color: textColor, fontSize: 22, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 4),
-              Text('Linked to PrePora mobile app', style: TextStyle(color: textColor.withValues(alpha: 0.5), fontSize: 13)),
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
+              Text('Connected!', style: TextStyle(color: textColor, fontSize: 24, fontWeight: FontWeight.bold)),
+              const SizedBox(height: 6),
+              Text('Linked to PrePora mobile app', style: TextStyle(color: textColor.withValues(alpha: 0.45), fontSize: 13)),
+              const SizedBox(height: 28),
               Container(
-                width: 52, height: 52,
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(colors: [Color(0xFF7C4DFF), Color(0xFF536DFE)]),
-                  shape: BoxShape.circle,
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.04),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: Colors.white.withValues(alpha: 0.06)),
                 ),
-                child: Center(
-                  child: Text(userName[0].toUpperCase(), style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.bold)),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 44, height: 44,
+                      decoration: const BoxDecoration(
+                        gradient: LinearGradient(colors: [Color(0xFF7C4DFF), Color(0xFF536DFE)]),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Center(
+                        child: Text(userName[0].toUpperCase(), style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold)),
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(userName, style: TextStyle(color: textColor, fontSize: 15, fontWeight: FontWeight.bold)),
+                          const SizedBox(height: 2),
+                          Text(userEmail, style: TextStyle(color: textColor.withValues(alpha: 0.4), fontSize: 12)),
+                        ],
+                      ),
+                    ),
+                    if (connectedAt != null)
+                      Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF00E676).withValues(alpha: 0.1),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          '${connectedAt.hour}:${connectedAt.minute.toString().padLeft(2, '0')}',
+                          style: const TextStyle(color: Color(0xFF00E676), fontSize: 11, fontWeight: FontWeight.w600),
+                        ),
+                      ),
+                  ],
                 ),
               ),
-              const SizedBox(height: 12),
-              Text(userName, style: TextStyle(color: textColor, fontSize: 16, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 3),
-              Text(userEmail, style: TextStyle(color: textColor.withValues(alpha: 0.45), fontSize: 12)),
-              if (connectedAt != null) ...[
-                const SizedBox(height: 12),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF00E676).withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(20),
-                    border: Border.all(color: const Color(0xFF00E676).withValues(alpha: 0.2)),
-                  ),
-                  child: Text(
-                    'Connected at ${connectedAt.hour}:${connectedAt.minute.toString().padLeft(2, '0')}',
-                    style: const TextStyle(color: Color(0xFF00E676), fontSize: 12, fontWeight: FontWeight.w500),
-                  ),
-                ),
-              ],
-              const SizedBox(height: 24),
+              const SizedBox(height: 20),
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton.icon(
                   onPressed: _disconnectSession,
-                  icon: const Icon(Icons.link_off_rounded, size: 18, color: Colors.redAccent),
-                  label: const Text('Disconnect', style: TextStyle(color: Colors.redAccent)),
+                  icon: const Icon(Icons.link_off_rounded, size: 18),
+                  label: const Text('Disconnect', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w500)),
                   style: OutlinedButton.styleFrom(
-                    side: BorderSide(color: Colors.redAccent.withValues(alpha: 0.5)),
+                    foregroundColor: Colors.redAccent,
+                    side: BorderSide(color: Colors.redAccent.withValues(alpha: 0.4)),
                     padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
                   ),
                 ),
               ),
-              const SizedBox(height: 16),
-              Text(
-                'Redirecting to dashboard in $_countdown...',
-                style: TextStyle(color: textColor.withValues(alpha: 0.4), fontSize: 13),
+              const SizedBox(height: 20),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  SizedBox(
+                    width: 16, height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      value: _countdown / 3,
+                      color: const Color(0xFF00E676),
+                      backgroundColor: Colors.white.withValues(alpha: 0.1),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    'Redirecting in $_countdown...',
+                    style: TextStyle(color: textColor.withValues(alpha: 0.45), fontSize: 13),
+                  ),
+                ],
               ),
             ],
           ),
