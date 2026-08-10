@@ -48,8 +48,9 @@ class _LoginScreenState extends State<LoginScreen> {
         }
         if (role == 'admin' || role == 'Assistant') {
           SessionManager.start(onExpiredCallback: () async {
-            await FirebaseService.signOut();
             if (context.mounted) context.go('/auth/login');
+            await Future.delayed(const Duration(milliseconds: 500));
+            await FirebaseService.signOut();
           });
         }
         if (mounted) {

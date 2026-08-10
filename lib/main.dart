@@ -88,7 +88,6 @@ class _AppLifecycleState extends State<_AppLifecycle> with WidgetsBindingObserve
     FirebaseService.cachedRole = role;
     if (role == 'admin' || role == 'Assistant') {
       SessionManager.start(onExpiredCallback: () async {
-        await FirebaseService.signOut();
         if (AppRouter.rootNavigatorKey.currentContext != null) {
           showDialog(
             context: AppRouter.rootNavigatorKey.currentContext!,
@@ -103,9 +102,11 @@ class _AppLifecycleState extends State<_AppLifecycle> with WidgetsBindingObserve
               content: const Text('Your session has expired due to inactivity. Please login again to continue.'),
               actions: [
                 ElevatedButton(
-                  onPressed: () {
+                  onPressed: () async {
                     Navigator.pop(ctx);
                     AppRouter.router.go('/auth/login');
+                    await Future.delayed(const Duration(milliseconds: 500));
+                    await FirebaseService.signOut();
                   },
                   style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A148C)),
                   child: const Text('Login', style: TextStyle(color: Colors.white)),
@@ -115,6 +116,8 @@ class _AppLifecycleState extends State<_AppLifecycle> with WidgetsBindingObserve
           );
         } else {
           AppRouter.router.go('/auth/login');
+          await Future.delayed(const Duration(milliseconds: 500));
+          await FirebaseService.signOut();
         }
       });
     }
