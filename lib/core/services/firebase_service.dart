@@ -25,8 +25,9 @@ class FirebaseService {
   static String? _cachedDeviceId;
   static String? cachedRole;
 
-  static const String supabaseUrl = 'https://zynfizrocesynbaguhtj.supabase.co';
-  static const String serviceRoleKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp5bmZpenJvY2VzeW5iYWd1aHRqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MzY3MjkzOSwiZXhwIjoyMDk5MjQ4OTM5fQ.CdfQUkM_-O9lYZ8MIcJh8H1n_-SHIWUuwI8DE5HGdZU';
+  static String supabaseUrl = '';
+  static String serviceRoleKey = '';
+  static String _supabaseAnonKey = '';
 
   static String cleanTitle(String name) {
     var cleaned = name.replaceFirst(RegExp(r'^\d+_'), '');
@@ -74,11 +75,34 @@ class FirebaseService {
   static Future<void> initialize() async {
     if (_initialized) return;
     await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-    await Supabase.initialize(
-      url: 'https://zynfizrocesynbaguhtj.supabase.co',
-      anonKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp5bmZpenJvY2VzeW5iYWd1aHRqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM2NzI5MzksImV4cCI6MjA5OTI0ODkzOX0.uA8lHGv1Q7ax5WjGY5x5tFo9hxYDNhHzqOAO-Z0-fOo',
-    );
+    await _loadActiveSupabaseAccount();
+    if (supabaseUrl.isNotEmpty && _supabaseAnonKey.isNotEmpty) {
+      try {
+        await Supabase.initialize(url: supabaseUrl, anonKey: _supabaseAnonKey);
+      } catch (_) {}
+    }
     _initialized = true;
+  }
+
+  static Future<void> _loadActiveSupabaseAccount() async {
+    try {
+      final snap = await firestore.collection('supabase_accounts').where('isActive', isEqualTo: true).limit(1).get();
+      if (snap.docs.isNotEmpty) {
+        final data = snap.docs.first.data();
+        supabaseUrl = data['projectUrl'] as String? ?? '';
+        serviceRoleKey = data['serviceRoleKey'] as String? ?? '';
+        _supabaseAnonKey = data['anonKey'] as String? ?? '';
+      }
+    } catch (_) {}
+  }
+
+  static Future<void> reinitializeSupabase() async {
+    await _loadActiveSupabaseAccount();
+    if (supabaseUrl.isNotEmpty && _supabaseAnonKey.isNotEmpty) {
+      try {
+        await Supabase.initialize(url: supabaseUrl, anonKey: _supabaseAnonKey);
+      } catch (_) {}
+    }
   }
 
   // ─── Auth ──────────────────────────────────────────────────────────────────────
@@ -338,7 +362,7 @@ class FirebaseService {
     try {
       final settings = await getSettings();
       final provider = settings[_storageProviderKey] as String?;
-      if (provider == 'supabase' || provider == 'cloudinary') {
+      if (provider == 'supabase' || provider == 'cloudinary' || provider == 'both') {
         _cachedStorageProvider = provider!;
       }
     } catch (_) {}
@@ -513,21 +537,169 @@ class FirebaseService {
     }
   }
 
+  // ─── Supabase Multi-Account ────────────────────────────────────────────────
+
+  static Future<List<Map<String, dynamic>>> getSupabaseAccounts() async {
+    final snap = await firestore.collection('supabase_accounts').orderBy('createdAt', descending: false).get();
+    return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
+  }
+
+  static Future<Map<String, dynamic>> verifySupabaseCredentials(String projectUrl, String serviceKey) async {
+    try {
+      final uri = Uri.parse('$projectUrl/storage/v1/bucket');
+      final response = await http.get(uri, headers: {'Authorization': 'Bearer $serviceKey'}).timeout(const Duration(seconds: 15));
+      if (response.statusCode == 200) return {'valid': true};
+      if (response.statusCode == 401 || response.statusCode == 403) return {'valid': false, 'error': 'Invalid credentials'};
+      return {'valid': false, 'error': 'Server error: ${response.statusCode}'};
+    } catch (e) {
+      return {'valid': false, 'error': 'Connection failed: $e'};
+    }
+  }
+
+  static Future<Map<String, dynamic>> _autoCreateBuckets(String projectUrl, String serviceKey) async {
+    final results = <String, String>{};
+    for (final bucket in ['folder_files', 'notices']) {
+      try {
+        final uri = Uri.parse('$projectUrl/storage/v1/bucket');
+        final response = await http.post(uri,
+          headers: {'Authorization': 'Bearer $serviceKey', 'Content-Type': 'application/json'},
+          body: jsonEncode({'id': bucket, 'public': true}),
+        ).timeout(const Duration(seconds: 15));
+        if (response.statusCode == 200 || response.statusCode == 201) {
+          results[bucket] = 'ready';
+        } else if (response.statusCode == 409) {
+          results[bucket] = 'ready';
+        } else {
+          results[bucket] = 'failed';
+        }
+      } catch (_) {
+        results[bucket] = 'failed';
+      }
+    }
+    final failed = results.entries.where((e) => e.value == 'failed').map((e) => e.key).toList();
+    final allReady = failed.isEmpty;
+    return {'status': allReady ? 'ready' : (failed.length == 2 ? 'failed' : 'partial'), 'failedBuckets': failed};
+  }
+
+  static Future<String> addSupabaseAccount(String projectUrl, String serviceRoleKey, String anonKey, {bool isActive = true}) async {
+    final doc = await firestore.collection('supabase_accounts').add({
+      'projectUrl': projectUrl.trim(),
+      'serviceRoleKey': serviceRoleKey.trim(),
+      'anonKey': anonKey.trim(),
+      'bucketStatus': 'pending',
+      'failedBuckets': <String>[],
+      'isActive': isActive,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    if (isActive) {
+      final snap = await firestore.collection('supabase_accounts').get();
+      final batch = firestore.batch();
+      for (final d in snap.docs) {
+        if (d.id != doc.id) {
+          batch.update(d.reference, {'isActive': false});
+        }
+      }
+      await batch.commit();
+    }
+    final bucketResult = await _autoCreateBuckets(projectUrl.trim(), serviceRoleKey.trim());
+    await firestore.collection('supabase_accounts').doc(doc.id).update({
+      'bucketStatus': bucketResult['status'],
+      'failedBuckets': bucketResult['failedBuckets'],
+    });
+    return doc.id;
+  }
+
+  static Future<void> updateSupabaseAccount(String id, {String? projectUrl, String? serviceRoleKey, String? anonKey, bool? isActive}) async {
+    if (isActive == true) {
+      final snap = await firestore.collection('supabase_accounts').get();
+      final batch = firestore.batch();
+      for (final doc in snap.docs) {
+        if (doc.id != id) {
+          batch.update(doc.reference, {'isActive': false});
+        } else {
+          batch.update(doc.reference, {'isActive': true});
+        }
+      }
+      await batch.commit();
+    } else if (isActive == false) {
+      await firestore.collection('supabase_accounts').doc(id).update({'isActive': false});
+    }
+    if (projectUrl != null || serviceRoleKey != null || anonKey != null) {
+      final data = <String, dynamic>{};
+      if (projectUrl != null) data['projectUrl'] = projectUrl.trim();
+      if (serviceRoleKey != null) data['serviceRoleKey'] = serviceRoleKey.trim();
+      if (anonKey != null) data['anonKey'] = anonKey.trim();
+      await firestore.collection('supabase_accounts').doc(id).update(data);
+    }
+  }
+
+  static Future<void> deleteSupabaseAccount(String id) async {
+    await firestore.collection('supabase_accounts').doc(id).delete();
+  }
+
+  static Future<Map<String, dynamic>> retryBucketCreation(String accountId) async {
+    final doc = await firestore.collection('supabase_accounts').doc(accountId).get();
+    if (!doc.exists) return {'status': 'error', 'error': 'Account not found'};
+    final data = doc.data()!;
+    final projectUrl = data['projectUrl'] as String;
+    final serviceKey = data['serviceRoleKey'] as String;
+    final result = await _autoCreateBuckets(projectUrl, serviceKey);
+    await firestore.collection('supabase_accounts').doc(accountId).update({
+      'bucketStatus': result['status'],
+      'failedBuckets': result['failedBuckets'],
+    });
+    return result;
+  }
+
+  static Future<String> getActiveSupabaseAccountName() async {
+    try {
+      final accounts = await getSupabaseAccounts();
+      final active = accounts.firstWhere((a) => a['isActive'] == true, orElse: () => {});
+      if (active.isEmpty) return '';
+      return active['projectUrl'] as String? ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
   static Future<String> uploadFile(Uint8List bytes, String filename, {void Function(double)? onProgress, String? forceProvider}) async {
     final provider = forceProvider ?? await getStorageProvider();
 
-    if (provider == 'cloudinary') {
-      final user = currentUser;
-      if (user != null) {
-        final role = await getUserRole(user.uid);
-        if (role == 'Assistant') {
-          return await _uploadToAssistantCloudinary(user.uid, bytes, filename);
+    if (provider == 'both') {
+      if (bytes.length <= 10 * 1024 * 1024) {
+        try {
+          return await _uploadViaCloudinary(bytes, filename);
+        } catch (_) {
+          return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
+        }
+      } else {
+        try {
+          return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
+        } catch (_) {
+          return await _uploadViaCloudinary(bytes, filename);
         }
       }
-      return await uploadToCloudinary(bytes, filename);
     }
 
-    // Default: Supabase / Firebase Storage
+    if (provider == 'cloudinary') {
+      return await _uploadViaCloudinary(bytes, filename);
+    }
+
+    return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
+  }
+
+  static Future<String> _uploadViaCloudinary(Uint8List bytes, String filename) async {
+    final user = currentUser;
+    if (user != null) {
+      final role = await getUserRole(user.uid);
+      if (role == 'Assistant') {
+        return await _uploadToAssistantCloudinary(user.uid, bytes, filename);
+      }
+    }
+    return await uploadToCloudinary(bytes, filename);
+  }
+
+  static Future<String> _uploadViaSupabase(Uint8List bytes, String filename, {void Function(double)? onProgress}) async {
     final storageName = '${DateTime.now().millisecondsSinceEpoch}_$filename';
     final ref = storage.ref('folder_files/$storageName');
     await ref.putData(bytes, metadata: fb_storage.SettableMetadata(contentDisposition: 'inline; filename="$filename"'), onProgress: onProgress);

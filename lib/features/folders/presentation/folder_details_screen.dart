@@ -596,8 +596,11 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
             if (mounted) setState(() => _uploadProgress.remove(file.name));
 
             final provider = await FirebaseService.getStorageProvider();
-            final data = <String, dynamic>{'type': 'file', 'name': file.name, 'url': downloadUrl, 'source': 'storage', 'provider': provider};
-            if (provider == 'cloudinary') data['cloudAccount'] = await FirebaseService.getActiveCloudinaryAccountName();
+            final actualProvider = provider == 'both'
+                ? (downloadUrl.contains('cloudinary.com') ? 'cloudinary' : 'supabase')
+                : provider;
+            final data = <String, dynamic>{'type': 'file', 'name': file.name, 'url': downloadUrl, 'source': 'storage', 'provider': actualProvider};
+            if (actualProvider == 'cloudinary') data['cloudAccount'] = await FirebaseService.getActiveCloudinaryAccountName();
             if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
             final newId = await FirebaseService.addFolderContent(widget.folderId, data);
             if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
@@ -856,15 +859,18 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
             if (mounted) setState(() => _uploadProgress.remove(file.name));
 
             final provider = await FirebaseService.getStorageProvider();
+            final actualProvider = provider == 'both'
+                ? (downloadUrl.contains('cloudinary.com') ? 'cloudinary' : 'supabase')
+                : provider;
             final data = <String, dynamic>{
               'type': 'mocktest_file',
               'name': displayName,
               'url': downloadUrl,
               'fileType': fileType,
               'source': 'storage',
-              'provider': provider,
+              'provider': actualProvider,
             };
-            if (provider == 'cloudinary') data['cloudAccount'] = await FirebaseService.getActiveCloudinaryAccountName();
+            if (actualProvider == 'cloudinary') data['cloudAccount'] = await FirebaseService.getActiveCloudinaryAccountName();
             if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
             final newId = await FirebaseService.addFolderContent(widget.folderId, data);
             if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }

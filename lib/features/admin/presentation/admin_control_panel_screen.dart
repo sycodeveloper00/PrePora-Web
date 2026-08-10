@@ -80,7 +80,7 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
                 ]),
                 const SizedBox(height: 8),
                 _ctrlSection(context, 'App', [
-                  _ctrlTile(context, Icons.cloud_upload_rounded, Colors.deepPurple, 'Storage Settings', 'Manage Cloudinary & upload providers', onTap: () => context.push('/admin/storage-settings')),
+                  _ctrlTile(context, Icons.cloud_upload_rounded, Colors.deepPurple, 'Storage Settings', 'Manage Supabase, Cloudinary & upload providers', onTap: () => context.push('/admin/storage-settings')),
                   _ctrlTile(context, Icons.update_rounded, Colors.cyanAccent, 'App Updates', 'Manage version & update banner', onTap: () => _showAppUpdates(context)),
                 ]),
               ],
