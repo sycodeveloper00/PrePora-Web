@@ -191,6 +191,36 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   void _saveSortMode(String mode) {
     setState(() { _sortMode = mode; });
     FirebaseService.firestore.collection('folders').doc(widget.folderId).update({'sortModes.$_sortKey': mode});
+    if (mode == 'custom_asc' || mode == 'custom_desc') {
+      _persistSortedOrder(mode);
+    }
+  }
+
+  Future<void> _persistSortedOrder(String mode) async {
+    try {
+      final snapshot = await FirebaseService.firestore
+          .collection('folders').doc(widget.folderId)
+          .collection('contents')
+          .get();
+      final docs = snapshot.docs.toList();
+      docs.sort((a, b) {
+        final aName = (a.data())['name'] as String? ?? '';
+        final bName = (b.data())['name'] as String? ?? '';
+        return mode == 'custom_asc'
+            ? _naturalCompare(aName, bName)
+            : _naturalCompare(bName, aName);
+      });
+      final batch = FirebaseService.firestore.batch();
+      for (int i = 0; i < docs.length; i++) {
+        batch.update(docs[i].reference, {'order': i});
+      }
+      await batch.commit();
+      _localOrderMap.clear();
+      for (int i = 0; i < docs.length; i++) {
+        _localOrderMap[docs[i].id] = i;
+      }
+      _hasLocalOrder = true;
+    } catch (_) {}
   }
 
   List<DocumentSnapshot> _filterDocs(List<DocumentSnapshot> docs, String query) {
