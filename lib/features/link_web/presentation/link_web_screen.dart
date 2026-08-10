@@ -27,6 +27,8 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
   int _countdown = 3;
   DateTime? _lastUserActivity;
   Timer? _activityCheckTimer;
+  Timer? _heartbeatTimer;
+  html.EventListener? _beforeUnloadHandler;
 
   static const String _sessionKey = 'prepora_web_session';
 
@@ -43,6 +45,8 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     _redirectTimer?.cancel();
     _sessionSub?.cancel();
     _activityCheckTimer?.cancel();
+    _stopHeartbeat();
+    _stopBeforeUnloadListener();
     if (_status != 'connected') {
       _cleanupSession();
     }
@@ -76,6 +80,47 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     html.window.removeEventListener('mousemove', _onUserActivity);
     html.window.removeEventListener('click', _onUserActivity);
     html.window.removeEventListener('keydown', _onUserActivity);
+  }
+
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (_sessionId.isEmpty || _status != 'connected') return;
+      FirebaseFirestore.instance.collection('web_sessions').doc(_sessionId).update({
+        'lastActive': FieldValue.serverTimestamp(),
+      }).catchError((_) {});
+    });
+  }
+
+  void _stopHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+  }
+
+  void _startBeforeUnloadListener() {
+    if (_beforeUnloadHandler != null) return;
+    _beforeUnloadHandler = (html.Event e) {
+      _cleanupSession();
+    };
+    html.window.addEventListener('beforeunload', _beforeUnloadHandler!);
+  }
+
+  void _stopBeforeUnloadListener() {
+    if (_beforeUnloadHandler != null) {
+      html.window.removeEventListener('beforeunload', _beforeUnloadHandler!);
+      _beforeUnloadHandler = null;
+    }
+  }
+
+  String _detectBrowser() {
+    final ua = html.window.navigator.userAgent.toLowerCase();
+    if (ua.contains('edg/')) return 'Edge';
+    if (ua.contains('opr') || ua.contains('opera')) return 'Opera';
+    if (ua.contains('brave')) return 'Brave';
+    if (ua.contains('chrome') && !ua.contains('edg/')) return 'Chrome';
+    if (ua.contains('firefox')) return 'Firefox';
+    if (ua.contains('safari') && !ua.contains('chrome')) return 'Safari';
+    return 'Other';
   }
 
   void _checkExistingSession() {
@@ -178,6 +223,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
         'status': 'waiting',
         'createdAt': Timestamp.fromDate(_createdAt!),
         'lastActive': Timestamp.fromDate(_createdAt!),
+        'browser': _detectBrowser(),
       });
     } catch (e) {
       print('[generateSession] Firestore write failed: $e');
@@ -199,12 +245,16 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
           _countdown = 3;
         });
         _startRedirectTimer();
+        _startHeartbeat();
+        _startBeforeUnloadListener();
       } else if (status == 'disconnected' && mounted) {
         setState(() {
           _status = 'waiting';
           _sessionData = null;
         });
         _expireTimer?.cancel();
+        _stopHeartbeat();
+        _stopBeforeUnloadListener();
         _generateSession();
       }
     });

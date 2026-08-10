@@ -135,7 +135,10 @@ class AppRouter {
     return '/link-web';
   }
 
+  static final GlobalKey<NavigatorState> rootNavigatorKey = GlobalKey<NavigatorState>();
+
   static final GoRouter router = GoRouter(
+    navigatorKey: rootNavigatorKey,
     initialLocation: _initialLocation,
     redirect: AuthGuard.guard,
     routes: <RouteBase>[
