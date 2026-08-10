@@ -1385,7 +1385,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                         ),
                       ),
                       child: Icon(
-                        _sortMode == 'custom' ? Icons.drag_indicator_rounded : Icons.sort_by_alpha_rounded,
+                        _sortMode.startsWith('custom') ? Icons.drag_indicator_rounded : Icons.sort_by_alpha_rounded,
                         color: Theme.of(context).brightness == Brightness.dark
                             ? Colors.cyanAccent
                             : const Color(0xFF4A148C),
@@ -1398,6 +1398,17 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                         checked: _sortMode == 'custom',
                         child: const Text('Custom Order'),
                       ),
+                      CheckedPopupMenuItem<String>(
+                        value: 'custom_asc',
+                        checked: _sortMode == 'custom_asc',
+                        child: const Text('Custom Ascending'),
+                      ),
+                      CheckedPopupMenuItem<String>(
+                        value: 'custom_desc',
+                        checked: _sortMode == 'custom_desc',
+                        child: const Text('Custom Descending'),
+                      ),
+                      const PopupMenuDivider(),
                       CheckedPopupMenuItem<String>(
                         value: 'az',
                         checked: _sortMode == 'az',
@@ -1470,13 +1481,13 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                     }
 
                     // Apply sort mode
-                    if (_sortMode == 'az') {
+                    if (_sortMode == 'az' || _sortMode == 'custom_asc') {
                       visibleDocs.sort((a, b) {
                         final aName = (a.data() as Map<String, dynamic>)['name'] as String? ?? '';
                         final bName = (b.data() as Map<String, dynamic>)['name'] as String? ?? '';
                         return _naturalCompare(aName, bName);
                       });
-                    } else if (_sortMode == 'za') {
+                    } else if (_sortMode == 'za' || _sortMode == 'custom_desc') {
                       visibleDocs.sort((a, b) {
                         final aName = (a.data() as Map<String, dynamic>)['name'] as String? ?? '';
                         final bName = (b.data() as Map<String, dynamic>)['name'] as String? ?? '';
@@ -1500,7 +1511,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
 
                     _visibleContentIds = visibleDocs.map((d) => d.id).toList();
 
-                    final useCustomOrder = widget.isAdmin && _sortMode == 'custom';
+                    final useCustomOrder = widget.isAdmin && (_sortMode == 'custom' || _sortMode == 'custom_asc' || _sortMode == 'custom_desc');
                     final listWidget = useCustomOrder
                         ? ReorderableListView.builder(
                             padding: const EdgeInsets.only(left: 16, right: 16, top: 16, bottom: 100),
@@ -1883,7 +1894,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               _openContent(data);
             },
             child: Row(children: [
-              if (widget.isAdmin && _sortMode == 'custom')
+              if (widget.isAdmin && (_sortMode == 'custom' || _sortMode == 'custom_asc' || _sortMode == 'custom_desc'))
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: ReorderableDragStartListener(
@@ -1975,7 +1986,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               });
             },
             child: Row(children: [
-              if (widget.isAdmin && _sortMode == 'custom')
+              if (widget.isAdmin && (_sortMode == 'custom' || _sortMode == 'custom_asc' || _sortMode == 'custom_desc'))
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: ReorderableDragStartListener(
@@ -2068,7 +2079,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               _openContent(data);
             },
             child: Row(children: [
-              if (widget.isAdmin && _sortMode == 'custom')
+              if (widget.isAdmin && (_sortMode == 'custom' || _sortMode == 'custom_asc' || _sortMode == 'custom_desc'))
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: ReorderableDragStartListener(
@@ -2155,7 +2166,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               _openContent(data);
             },
             child: Row(children: [
-              if (widget.isAdmin && _sortMode == 'custom')
+              if (widget.isAdmin && (_sortMode == 'custom' || _sortMode == 'custom_asc' || _sortMode == 'custom_desc'))
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: ReorderableDragStartListener(
@@ -2243,7 +2254,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               _openContent(data);
             },
             child: Row(children: [
-              if (widget.isAdmin && _sortMode == 'custom')
+              if (widget.isAdmin && (_sortMode == 'custom' || _sortMode == 'custom_asc' || _sortMode == 'custom_desc'))
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: ReorderableDragStartListener(
@@ -2328,7 +2339,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               _openContent(data);
             },
             child: Row(children: [
-              if (widget.isAdmin && _sortMode == 'custom')
+              if (widget.isAdmin && (_sortMode == 'custom' || _sortMode == 'custom_asc' || _sortMode == 'custom_desc'))
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: ReorderableDragStartListener(
