@@ -27,8 +27,9 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   int _pendingFeedbackCount = 0;
   StreamSubscription? _feedbackSub;
   Timer? _feedbackDebounce;
+  Timer? _tokenRefreshTimer;
   // Cached stream to prevent folder list from blinking on each rebuild
-  late final Stream<QuerySnapshot> _folderStream;
+  late Stream<QuerySnapshot> _folderStream;
   // Local docs for optimistic reorder — avoids snap-back on drag
   List<QueryDocumentSnapshot>? _localDocs;
   final TextEditingController _searchController = TextEditingController();
@@ -40,6 +41,22 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     _folderStream = FirebaseService.getAllFolders();
     _loadPendingCount();
     _listenNewFeedbacks();
+    _startTokenRefreshTimer();
+  }
+
+  void _startTokenRefreshTimer() {
+    _tokenRefreshTimer = Timer.periodic(const Duration(minutes: 30), (_) async {
+      try {
+        final user = FirebaseService.currentUser;
+        if (user != null) await user.getIdToken(true);
+      } catch (_) {}
+    });
+  }
+
+  void _refreshFolderStream() {
+    setState(() {
+      _folderStream = FirebaseService.getAllFolders();
+    });
   }
 
   void _markAllFeedbacksViewed() async {
@@ -94,9 +111,11 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
 
   @override
   void dispose() {
+    _tokenRefreshTimer?.cancel();
     _feedbackSub?.cancel();
     _feedbackDebounce?.cancel();
     _folderNameController.dispose();
+    _searchController.dispose();
     super.dispose();
   }
 
@@ -1795,7 +1814,14 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   const SizedBox(height: 16),
                   const Text('Something went wrong', style: TextStyle(color: Colors.white38, fontSize: 16)),
                   const SizedBox(height: 8),
-                  const Text('Folders will reappear shortly', style: TextStyle(color: Colors.white24, fontSize: 13)),
+                  Text('${snapshot.error}', style: TextStyle(color: Colors.white24, fontSize: 11), textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis),
+                  const SizedBox(height: 16),
+                  ElevatedButton.icon(
+                    onPressed: () => _refreshFolderStream(),
+                    icon: const Icon(Icons.refresh_rounded, size: 16),
+                    label: const Text('Retry'),
+                    style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple),
+                  ),
                 ]));
               }
               if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {

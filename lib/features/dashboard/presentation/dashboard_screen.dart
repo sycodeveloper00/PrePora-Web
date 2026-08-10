@@ -1778,12 +1778,18 @@ class _DashboardGrid extends StatefulWidget {
 }
 
 class _DashboardGridState extends State<_DashboardGrid> {
-  late final Stream<QuerySnapshot> _folderStream;
+  late Stream<QuerySnapshot> _folderStream;
 
   @override
   void initState() {
     super.initState();
     _folderStream = FirebaseService.getAllFolders();
+  }
+
+  void _refreshFolderStream() {
+    setState(() {
+      _folderStream = FirebaseService.getAllFolders();
+    });
   }
 
   @override
@@ -1793,6 +1799,21 @@ class _DashboardGridState extends State<_DashboardGrid> {
       builder: (context, snapshot) {
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const Center(child: ProfessionalLoader());
+        }
+        if (snapshot.hasError) {
+          final isDark = Theme.of(context).brightness == Brightness.dark;
+          return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+            Icon(Icons.error_outline_rounded, size: 60, color: Colors.redAccent.withValues(alpha: 0.6)),
+            const SizedBox(height: 16),
+            Text('Something went wrong', style: TextStyle(color: isDark ? Colors.white38 : Colors.black45, fontSize: 16)),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: () => _refreshFolderStream(),
+              icon: const Icon(Icons.refresh_rounded, size: 16),
+              label: const Text('Retry'),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple),
+            ),
+          ]));
         }
         if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
           final isDark = Theme.of(context).brightness == Brightness.dark;

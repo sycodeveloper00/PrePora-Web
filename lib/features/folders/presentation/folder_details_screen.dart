@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
@@ -53,6 +54,11 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   String? _groupLink;
   String _sortMode = 'custom';
   final Map<String, double> _uploadProgress = {};
+  bool _isUploading = false;
+  final Map<String, bool> _filePaused = {};
+  List<Map<String, dynamic>> _uploadQueue = [];
+  int _currentUploadIndex = -1;
+  DateTime? _uploadStartTime;
 
   int _naturalCompare(String a, String b) {
     final aLower = a.toLowerCase();
@@ -165,19 +171,26 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     }
   }
 
+  String get _sortKey => widget.parentContentId ?? 'root';
+
   void _loadSortMode() async {
     try {
       final doc = await FirebaseService.firestore.collection('folders').doc(widget.folderId).get();
       if (doc.exists && mounted) {
         final data = doc.data() as Map<String, dynamic>?;
-        setState(() { _sortMode = data?['sortMode'] as String? ?? 'custom'; });
+        final sortModes = data?['sortModes'] as Map<String, dynamic>?;
+        if (sortModes != null && sortModes.containsKey(_sortKey)) {
+          setState(() { _sortMode = sortModes[_sortKey] as String? ?? 'custom'; });
+        } else {
+          setState(() { _sortMode = 'custom'; });
+        }
       }
     } catch (_) {}
   }
 
   void _saveSortMode(String mode) {
     setState(() { _sortMode = mode; });
-    FirebaseService.firestore.collection('folders').doc(widget.folderId).update({'sortMode': mode});
+    FirebaseService.firestore.collection('folders').doc(widget.folderId).update({'sortModes.$_sortKey': mode});
   }
 
   List<DocumentSnapshot> _filterDocs(List<DocumentSnapshot> docs, String query) {
@@ -573,7 +586,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
       final result = await FilePicker.platform.pickFiles(type: FileType.any, allowMultiple: true, withData: true);
       if (result != null && result.files.isNotEmpty) {
         SessionManager.pause();
-        int count = 0;
+        _uploadQueue = [];
         for (final file in result.files) {
           final bytes = file.bytes ?? (!kIsWeb && file.path != null ? File(file.path!).readAsBytesSync() : null);
           if (bytes == null) continue;
@@ -586,35 +599,25 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
             }
             continue;
           }
-
-          if (mounted) setState(() => _uploadProgress[file.name] = 0);
-
-          try {
-            final downloadUrl = await FirebaseService.uploadFile(bytes, file.name, onProgress: (p) {
-              if (mounted) setState(() => _uploadProgress[file.name] = p);
-            });
-            if (mounted) setState(() => _uploadProgress.remove(file.name));
-
-            final provider = await FirebaseService.getStorageProvider();
-            final actualProvider = provider == 'both'
-                ? (downloadUrl.contains('cloudinary.com') ? 'cloudinary' : 'supabase')
-                : provider;
-            final data = <String, dynamic>{'type': 'file', 'name': file.name, 'url': downloadUrl, 'source': 'storage', 'provider': actualProvider};
-            if (actualProvider == 'cloudinary') data['cloudAccount'] = await FirebaseService.getActiveCloudinaryAccountName();
-            if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
-            final newId = await FirebaseService.addFolderContent(widget.folderId, data);
-            if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
-            await _sendScopedNotification('Uploaded file: ${file.name}', parentContentId: widget.parentContentId);
-            count++;
-          } catch (e) {
-            if (mounted) setState(() => _uploadProgress.remove(file.name));
-            rethrow;
-          }
+          _uploadQueue.add({
+            'name': file.name,
+            'bytes': bytes,
+            'totalBytes': bytes.length,
+            'uploadedBytes': 0,
+            'status': 'pending',
+            'url': null,
+          });
         }
-        _refreshAssistantAccess();
-        if (ctx.mounted && count > 0) {
-          ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('$count file(s) uploaded!'), backgroundColor: Colors.green));
-        }
+        if (_uploadQueue.isEmpty) return;
+        if (mounted) setState(() {
+          _isUploading = true;
+          _currentUploadIndex = 0;
+          _uploadStartTime = DateTime.now();
+          _filePaused.clear();
+          for (final q in _uploadQueue) { _filePaused[q['name'] as String] = false; }
+        });
+        SessionManager.setUploading(true);
+        await _processUploadQueue();
       }
     } catch (e) {
       if (ctx.mounted) {
@@ -622,6 +625,73 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
       }
     } finally {
       SessionManager.resume();
+    }
+  }
+
+  Future<void> _processUploadQueue() async {
+    while (_currentUploadIndex < _uploadQueue.length) {
+      if (!mounted) return;
+      final item = _uploadQueue[_currentUploadIndex];
+      final name = item['name'] as String;
+      if (item['status'] != 'pending') {
+        _currentUploadIndex++;
+        continue;
+      }
+      while (_filePaused[name] == true && mounted) {
+        await Future.delayed(const Duration(milliseconds: 200));
+      }
+      if (!mounted) return;
+      if (mounted) setState(() {
+        item['status'] = 'uploading';
+        item['uploadStartedAt'] = DateTime.now().millisecondsSinceEpoch;
+        _uploadProgress[name] = 0;
+      });
+      try {
+        final bytes = item['bytes'] as Uint8List;
+        final downloadUrl = await FirebaseService.uploadFile(bytes, name, onProgress: (p) {
+          if (mounted) setState(() {
+            _uploadProgress[name] = p;
+            item['uploadedBytes'] = ((item['totalBytes'] as int) * p).toInt();
+          });
+        });
+        final provider = await FirebaseService.getStorageProvider();
+        final actualProvider = provider == 'both'
+            ? (downloadUrl.contains('cloudinary.com') ? 'cloudinary' : 'supabase')
+            : provider;
+        final data = <String, dynamic>{'type': 'file', 'name': name, 'url': downloadUrl, 'source': 'storage', 'provider': actualProvider};
+        if (actualProvider == 'cloudinary') data['cloudAccount'] = await FirebaseService.getActiveCloudinaryAccountName();
+        if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
+        final newId = await FirebaseService.addFolderContent(widget.folderId, data);
+        if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
+        await _sendScopedNotification('Uploaded file: $name', parentContentId: widget.parentContentId);
+        if (mounted) setState(() {
+          item['status'] = 'completed';
+          item['url'] = downloadUrl;
+          _uploadProgress.remove(name);
+        });
+      } catch (e) {
+        if (mounted) setState(() {
+          item['status'] = 'failed';
+          item['error'] = e.toString();
+          _uploadProgress.remove(name);
+        });
+      }
+      _currentUploadIndex++;
+    }
+    _refreshAssistantAccess();
+    if (mounted) {
+      final completed = _uploadQueue.where((q) => q['status'] == 'completed').length;
+      final failed = _uploadQueue.where((q) => q['status'] == 'failed').length;
+      final cancelled = _uploadQueue.where((q) => q['status'] == 'cancelled').length;
+      final msg = StringBuffer('$completed uploaded');
+      if (failed > 0) msg.write(', $failed failed');
+      if (cancelled > 0) msg.write(', $cancelled cancelled');
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg.toString()), backgroundColor: completed > 0 ? Colors.green : Colors.orange));
+      SessionManager.setUploading(false);
+      setState(() {
+        _isUploading = false;
+        _uploadStartTime = null;
+      });
     }
   }
 
@@ -1375,7 +1445,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                     ),
                   ),
                   const SizedBox(width: 8),
-                  PopupMenuButton<String>(
+                  if (widget.isAdmin) PopupMenuButton<String>(
                     onSelected: _saveSortMode,
                     icon: Container(
                       padding: const EdgeInsets.all(10),
@@ -1427,6 +1497,31 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                       ),
                     ],
                   ),
+                  if (_isUploading) ...[
+                    const SizedBox(width: 8),
+                    GestureDetector(
+                      onTap: () => _showUploadPopup(),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                        decoration: BoxDecoration(
+                          color: Colors.green.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: Colors.green.withValues(alpha: 0.3)),
+                        ),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          const SizedBox(
+                            width: 14, height: 14,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.green),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Uploading (${_uploadQueue.where((q) => q['status'] == 'completed').length}/${_uploadQueue.length})',
+                            style: const TextStyle(color: Colors.green, fontSize: 12, fontWeight: FontWeight.w600),
+                          ),
+                        ]),
+                      ),
+                    ),
+                  ],
                 ]),
               ),
               _buildSelectionToolbar(),
@@ -1584,12 +1679,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                             },
                           );
 
-                    if (_uploadProgress.isNotEmpty) {
-                      return Column(children: [
-                        ..._uploadProgress.entries.map((e) => _buildUploadingFileCard(e.key, e.value)),
-                        Expanded(child: listWidget),
-                      ]);
-                    }
+                    return listWidget;
                     if (_groupLink == null || _groupLink!.isEmpty || !widget.isAdmin) return listWidget;
                     return Column(children: [_buildGroupBanner(), Expanded(child: listWidget)]);
                   },
@@ -1835,6 +1925,184 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
         ),
       ),
     );
+  }
+
+  void _showUploadPopup() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    Timer? refreshTimer;
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setDialogState) {
+          void refreshDialog() => setDialogState(() {});
+          refreshTimer?.cancel();
+          refreshTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+            if (ctx.mounted) refreshDialog(); else refreshTimer?.cancel();
+          });
+          final completed = _uploadQueue.where((q) => q['status'] == 'completed').length;
+          final failed = _uploadQueue.where((q) => q['status'] == 'failed').length;
+          final cancelled = _uploadQueue.where((q) => q['status'] == 'cancelled').length;
+          final uploading = _uploadQueue.where((q) => q['status'] == 'uploading').length;
+          final total = _uploadQueue.length;
+          final done = completed + failed + cancelled;
+          String? etaText;
+          if (_uploadStartTime != null && done > 0 && done < total) {
+            final elapsed = DateTime.now().difference(_uploadStartTime!).inSeconds;
+            if (elapsed > 0) {
+              final perFile = elapsed / done;
+              final remaining = ((total - done) * perFile).round();
+              etaText = remaining >= 60 ? '${(remaining / 60).floor()}m ${remaining % 60}s left' : '${remaining}s left';
+            }
+          }
+          return Dialog(
+            backgroundColor: isDark ? const Color(0xFF1A1A2E) : Colors.white,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+            insetPadding: const EdgeInsets.symmetric(horizontal: 24, vertical: 40),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                maxHeight: MediaQuery.of(ctx).size.height * 0.7,
+                maxWidth: 520,
+              ),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                Container(
+                  padding: const EdgeInsets.fromLTRB(16, 14, 8, 14),
+                  decoration: BoxDecoration(
+                    color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.black.withValues(alpha: 0.03),
+                    borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
+                  ),
+                  child: Row(children: [
+                    const Icon(Icons.cloud_upload_rounded, size: 20, color: Colors.green),
+                    const SizedBox(width: 10),
+                    Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      Text('Uploading ($completed/$total)', style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontWeight: FontWeight.w700, fontSize: 15)),
+                      if (etaText != null) Text(etaText!, style: TextStyle(color: isDark ? Colors.white54 : Colors.black45, fontSize: 11)),
+                    ])),
+                    _popupActionBtn(Icons.minimize_rounded, isDark ? Colors.white54 : Colors.black45, 'Minimize', () => Navigator.pop(ctx)),
+                  ]),
+                ),
+                const Divider(height: 1),
+                Flexible(
+                  child: ListView.builder(
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    itemCount: _uploadQueue.length,
+                    itemBuilder: (_, i) {
+                      final item = _uploadQueue[i];
+                      final name = item['name'] as String;
+                      final totalBytes = item['totalBytes'] as int;
+                      final status = item['status'] as String;
+                      final progress = _uploadProgress[name] ?? 0.0;
+                      final uploadedBytes = (totalBytes * progress).toInt();
+                      final sizeStr = totalBytes > 1024 * 1024 ? '${(totalBytes / 1024 / 1024).toStringAsFixed(1)} MB' : '${(totalBytes / 1024).toStringAsFixed(0)} KB';
+                      final uploadedStr = uploadedBytes > 1024 * 1024 ? '${(uploadedBytes / 1024 / 1024).toStringAsFixed(1)} MB' : '${(uploadedBytes / 1024).toStringAsFixed(0)} KB';
+                      String? fileEta;
+                      if (status == 'uploading' && progress > 0.05 && item['uploadStartedAt'] != null) {
+                        final fileElapsed = ((DateTime.now().millisecondsSinceEpoch - (item['uploadStartedAt'] as int)) / 1000).round();
+                        if (fileElapsed > 1) {
+                          final fileRemaining = ((fileElapsed / progress) * (1 - progress)).round();
+                          fileEta = fileRemaining >= 60 ? '${(fileRemaining / 60).floor()}m ${fileRemaining % 60}s' : '${fileRemaining}s';
+                        }
+                      }
+                      final error = item['error'] as String?;
+                      return Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        child: Row(children: [
+                          SizedBox(width: 18, child: _uploadStatusIcon(status)),
+                          const SizedBox(width: 10),
+                          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                            Text(name, style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 13, fontWeight: FontWeight.w500), overflow: TextOverflow.ellipsis, maxLines: 1),
+                            if (status == 'uploading') ...[
+                              const SizedBox(height: 4),
+                              Row(children: [
+                                Expanded(
+                                  child: ClipRRect(
+                                    borderRadius: BorderRadius.circular(3),
+                                    child: LinearProgressIndicator(value: progress, backgroundColor: isDark ? Colors.white10 : Colors.black12, valueColor: AlwaysStoppedAnimation(isDark ? Colors.cyanAccent : const Color(0xFF4A148C)), minHeight: 4),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Text('$uploadedStr/$sizeStr', style: TextStyle(color: isDark ? Colors.white54 : Colors.black45, fontSize: 10)),
+                                if (fileEta != null) ...[
+                                  const SizedBox(width: 6),
+                                  Text(fileEta!, style: TextStyle(color: Colors.orange.withValues(alpha: 0.8), fontSize: 10, fontWeight: FontWeight.w600)),
+                                ],
+                              ]),
+                            ],
+                            if (status == 'failed' && error != null)
+                              Padding(
+                                padding: const EdgeInsets.only(top: 2),
+                                child: Text(error.length > 150 ? '${error.substring(0, 150)}...' : error, style: const TextStyle(color: Colors.redAccent, fontSize: 10), maxLines: 3, overflow: TextOverflow.ellipsis),
+                              ),
+                          ])),
+                          const SizedBox(width: 8),
+                          if (status == 'uploading') ...[
+                            _popupFileBtn(
+                              _filePaused[name] == true ? Icons.play_arrow_rounded : Icons.pause_rounded,
+                              _filePaused[name] == true ? Colors.green : Colors.orange,
+                              () {
+                                _filePaused[name] = !(_filePaused[name] ?? false);
+                                refreshDialog();
+                              },
+                            ),
+                            const SizedBox(width: 4),
+                            _popupFileBtn(Icons.close_rounded, Colors.redAccent, () {
+                              setState(() {
+                                _filePaused[name] = false;
+                                item['status'] = 'cancelled';
+                              });
+                              refreshDialog();
+                            }),
+                          ],
+                        ],
+                        ),
+                      );
+                    },
+                  ),
+                ),
+              ]),
+            ),
+          );
+        },
+      ),
+    ).then((_) {
+      refreshTimer?.cancel();
+      setState(() {});
+    });
+  }
+
+  Widget _popupActionBtn(IconData icon, Color color, String tooltip, VoidCallback onTap) {
+    return Tooltip(
+      message: tooltip,
+      child: GestureDetector(
+        onTap: onTap,
+        child: Container(
+          padding: const EdgeInsets.all(6),
+          decoration: BoxDecoration(color: color.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(8)),
+          child: Icon(icon, color: color, size: 18),
+        ),
+      ),
+    );
+  }
+
+  Widget _popupFileBtn(IconData icon, Color color, VoidCallback onTap) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(color: color.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(6)),
+        child: Icon(icon, color: color, size: 14),
+      ),
+    );
+  }
+
+  Widget _uploadStatusIcon(String status) {
+    switch (status) {
+      case 'uploading': return const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.cyanAccent));
+      case 'completed': return const Icon(Icons.check_circle_rounded, color: Colors.green, size: 18);
+      case 'failed': return const Icon(Icons.error_rounded, color: Colors.redAccent, size: 18);
+      case 'cancelled': return Icon(Icons.cancel_rounded, color: Colors.orange.withValues(alpha: 0.6), size: 18);
+      default: return Icon(Icons.hourglass_empty_rounded, color: Colors.white24, size: 18);
+    }
   }
 
   Widget _buildContentCard(BuildContext context, String id, Map<String, dynamic> data, String type, int index) {
@@ -2408,49 +2676,10 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                   ],
                 ),
               ] else if (!disabled)
-                const Icon(Icons.chevron_right, color: Colors.teal, size: 20),
+                Icon(Icons.chevron_right, color: Colors.teal, size: 20),
             ]),
           ),
         ),
-      ),
-    );
-  }
-
-  Widget _buildUploadingFileCard(String fileName, double progress) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12, left: 16, right: 16, top: 16),
-      child: GlassmorphicContainer(
-        padding: const EdgeInsets.all(16),
-        child: Row(children: [
-          SizedBox(
-            width: 36,
-            height: 36,
-            child: Stack(alignment: Alignment.center, children: [
-              CircularProgressIndicator(
-                value: progress,
-                strokeWidth: 3,
-                backgroundColor: isDark ? Colors.white12 : Colors.black12,
-                valueColor: const AlwaysStoppedAnimation(Color(0xFF7C4DFF)),
-              ),
-              Text('${(progress * 100).toInt()}%', style: const TextStyle(fontSize: 8, fontWeight: FontWeight.bold, color: Color(0xFF7C4DFF))),
-            ]),
-          ),
-          const SizedBox(width: 14),
-          Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(fileName, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 14), maxLines: 1, overflow: TextOverflow.ellipsis),
-            const SizedBox(height: 4),
-            ClipRRect(
-              borderRadius: BorderRadius.circular(4),
-              child: LinearProgressIndicator(
-                value: progress,
-                minHeight: 4,
-                backgroundColor: isDark ? Colors.white12 : Colors.black12,
-                valueColor: const AlwaysStoppedAnimation(Color(0xFF7C4DFF)),
-              ),
-            ),
-          ])),
-        ]),
       ),
     );
   }

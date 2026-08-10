@@ -526,6 +526,93 @@ class FirebaseService {
     await firestore.collection('assistant_cloudinary').doc(id).delete();
   }
 
+  // ─── Assistant Supabase Accounts ──────────────────────────────────────────
+
+  static Future<List<Map<String, dynamic>>> getAssistantSupabaseAccounts() async {
+    final snap = await firestore.collection('assistant_supabase').orderBy('createdAt', descending: false).get();
+    return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
+  }
+
+  static Future<String> addAssistantSupabaseAccount({
+    required String assistantUid,
+    required String assistantName,
+    required String projectUrl,
+    required String serviceRoleKey,
+    required String anonKey,
+  }) async {
+    final doc = await firestore.collection('assistant_supabase').add({
+      'assistantUid': assistantUid,
+      'assistantName': assistantName,
+      'projectUrl': projectUrl.trim(),
+      'serviceRoleKey': serviceRoleKey.trim(),
+      'anonKey': anonKey.trim(),
+      'bucketStatus': 'pending',
+      'failedBuckets': <String>[],
+      'isActive': true,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    final snap = await firestore.collection('assistant_supabase').where('assistantUid', isEqualTo: assistantUid).get();
+    final batch = firestore.batch();
+    for (final d in snap.docs) {
+      if (d.id != doc.id) {
+        batch.update(d.reference, {'isActive': false});
+      }
+    }
+    await batch.commit();
+    final bucketResult = await _autoCreateBuckets(projectUrl.trim(), serviceRoleKey.trim());
+    await firestore.collection('assistant_supabase').doc(doc.id).update({
+      'bucketStatus': bucketResult['status'],
+      'failedBuckets': bucketResult['failedBuckets'],
+    });
+    return doc.id;
+  }
+
+  static Future<void> updateAssistantSupabaseAccount(String id, {String? projectUrl, String? serviceRoleKey, String? anonKey, bool? isActive}) async {
+    if (isActive == true) {
+      final docSnap = await firestore.collection('assistant_supabase').doc(id).get();
+      final assistantUid = (docSnap.data() as Map<String, dynamic>?)?['assistantUid'] as String?;
+      if (assistantUid != null) {
+        final snap = await firestore.collection('assistant_supabase').where('assistantUid', isEqualTo: assistantUid).get();
+        final batch = firestore.batch();
+        for (final doc in snap.docs) {
+          if (doc.id != id) {
+            batch.update(doc.reference, {'isActive': false});
+          } else {
+            batch.update(doc.reference, {'isActive': true});
+          }
+        }
+        await batch.commit();
+      }
+    } else if (isActive == false) {
+      await firestore.collection('assistant_supabase').doc(id).update({'isActive': false});
+    }
+    if (projectUrl != null || serviceRoleKey != null || anonKey != null) {
+      final data = <String, dynamic>{};
+      if (projectUrl != null) data['projectUrl'] = projectUrl.trim();
+      if (serviceRoleKey != null) data['serviceRoleKey'] = serviceRoleKey.trim();
+      if (anonKey != null) data['anonKey'] = anonKey.trim();
+      await firestore.collection('assistant_supabase').doc(id).update(data);
+    }
+  }
+
+  static Future<void> deleteAssistantSupabaseAccount(String id) async {
+    await firestore.collection('assistant_supabase').doc(id).delete();
+  }
+
+  static Future<Map<String, dynamic>> retryAssistantSupabaseBuckets(String accountId) async {
+    final doc = await firestore.collection('assistant_supabase').doc(accountId).get();
+    if (!doc.exists) return {'status': 'error', 'error': 'Account not found'};
+    final data = doc.data()!;
+    final projectUrl = data['projectUrl'] as String;
+    final serviceKey = data['serviceRoleKey'] as String;
+    final result = await _autoCreateBuckets(projectUrl, serviceKey);
+    await firestore.collection('assistant_supabase').doc(accountId).update({
+      'bucketStatus': result['status'],
+      'failedBuckets': result['failedBuckets'],
+    });
+    return result;
+  }
+
   static Future<String> getActiveCloudinaryAccountName() async {
     try {
       final accounts = await getCloudinaryAccounts();
@@ -560,14 +647,18 @@ class FirebaseService {
     final results = <String, String>{};
     for (final bucket in ['folder_files', 'notices']) {
       try {
+        final checkUri = Uri.parse('$projectUrl/storage/v1/bucket/$bucket');
+        final checkResp = await http.get(checkUri, headers: {'Authorization': 'Bearer $serviceKey'}).timeout(const Duration(seconds: 15));
+        if (checkResp.statusCode == 200) {
+          results[bucket] = 'ready';
+          continue;
+        }
         final uri = Uri.parse('$projectUrl/storage/v1/bucket');
         final response = await http.post(uri,
           headers: {'Authorization': 'Bearer $serviceKey', 'Content-Type': 'application/json'},
           body: jsonEncode({'id': bucket, 'public': true}),
         ).timeout(const Duration(seconds: 15));
-        if (response.statusCode == 200 || response.statusCode == 201) {
-          results[bucket] = 'ready';
-        } else if (response.statusCode == 409) {
+        if (response.statusCode == 200 || response.statusCode == 201 || response.statusCode == 409) {
           results[bucket] = 'ready';
         } else {
           results[bucket] = 'failed';
@@ -673,11 +764,7 @@ class FirebaseService {
           return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
         }
       } else {
-        try {
-          return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
-        } catch (_) {
-          return await _uploadViaCloudinary(bytes, filename);
-        }
+        return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
       }
     }
 
@@ -1610,11 +1697,12 @@ class _SupabaseStorageReference {
 }
 
 class SessionManager {
-  static const Duration _timeout = Duration(minutes: 12);
+  static const Duration _timeout = Duration(minutes: 20);
   static Timer? _timer;
   static DateTime? _lastActivity;
   static VoidCallback? onExpired;
   static bool _isPaused = false;
+  static bool _isUploading = false;
 
   static DateTime? get lastActivity => _lastActivity;
 
@@ -1622,6 +1710,7 @@ class SessionManager {
     onExpired = onExpiredCallback;
     _lastActivity = DateTime.now();
     _isPaused = false;
+    _isUploading = false;
     _timer?.cancel();
     _timer = Timer.periodic(const Duration(seconds: 30), (_) => _check());
   }
@@ -1635,6 +1724,7 @@ class SessionManager {
     _timer = null;
     _lastActivity = null;
     _isPaused = false;
+    _isUploading = false;
   }
 
   static void pause() {
@@ -1656,8 +1746,21 @@ class SessionManager {
     _timer = Timer.periodic(const Duration(seconds: 30), (_) => _check());
   }
 
+  static void setUploading(bool uploading) {
+    _isUploading = uploading;
+    if (uploading) {
+      _lastActivity = DateTime.now();
+      _timer?.cancel();
+      _timer = null;
+    } else {
+      _lastActivity = DateTime.now();
+      _timer?.cancel();
+      _timer = Timer.periodic(const Duration(seconds: 30), (_) => _check());
+    }
+  }
+
   static void _check() {
-    if (_lastActivity == null || _isPaused) return;
+    if (_lastActivity == null || _isPaused || _isUploading) return;
     if (DateTime.now().difference(_lastActivity!) >= _timeout) {
       stop();
       onExpired?.call();
