@@ -202,7 +202,18 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
           .collection('folders').doc(widget.folderId)
           .collection('contents')
           .get();
-      final docs = snapshot.docs.toList();
+      var docs = snapshot.docs.toList();
+      if (widget.parentContentId != null) {
+        docs = docs.where((d) {
+          final data = d.data() as Map<String, dynamic>;
+          return data['parentContentId'] == widget.parentContentId;
+        }).toList();
+      } else {
+        docs = docs.where((d) {
+          final data = d.data() as Map<String, dynamic>;
+          return data['parentContentId'] == null;
+        }).toList();
+      }
       docs.sort((a, b) {
         final aName = (a.data())['name'] as String? ?? '';
         final bName = (b.data())['name'] as String? ?? '';
@@ -1612,13 +1623,13 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                     }
 
                     // Apply sort mode
-                    if (_sortMode == 'az' || _sortMode == 'custom_asc') {
+                    if (_sortMode == 'az') {
                       visibleDocs.sort((a, b) {
                         final aName = (a.data() as Map<String, dynamic>)['name'] as String? ?? '';
                         final bName = (b.data() as Map<String, dynamic>)['name'] as String? ?? '';
                         return _naturalCompare(aName, bName);
                       });
-                    } else if (_sortMode == 'za' || _sortMode == 'custom_desc') {
+                    } else if (_sortMode == 'za') {
                       visibleDocs.sort((a, b) {
                         final aName = (a.data() as Map<String, dynamic>)['name'] as String? ?? '';
                         final bName = (b.data() as Map<String, dynamic>)['name'] as String? ?? '';
