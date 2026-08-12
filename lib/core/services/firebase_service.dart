@@ -40,6 +40,16 @@ class FirebaseService {
   /// Downloads a file from Supabase Storage using the REST API with service role auth.
   /// [bucketPath] format: "bucket_name/path/to/file"
   static Future<Uint8List> downloadSupabaseFile(String bucketPath) async {
+    if (kIsWeb) {
+      final proxyUrl = '/api/download-file?url=${Uri.encodeComponent('$supabaseUrl/storage/v1/object/$bucketPath')}';
+      final response = await http.get(Uri.parse(proxyUrl), headers: {
+        'Authorization': 'Bearer $serviceRoleKey',
+      }).timeout(const Duration(seconds: 30));
+      if (response.statusCode != 200) {
+        throw Exception('Supabase download failed ($bucketPath): ${response.statusCode}');
+      }
+      return response.bodyBytes;
+    }
     final uri = Uri.parse('$supabaseUrl/storage/v1/object/$bucketPath');
     final response = await http.get(
       uri,
@@ -128,7 +138,7 @@ class FirebaseService {
         await storeSession(cred.user!.uid);
         final deviceId = await getDeviceId();
         await _trackLogin(cred.user!.uid, deviceId);
-        await _updateStreak(cred.user!.uid);
+        await updateStreak(cred.user!.uid);
         final label = userRole == 'admin' ? 'Admin' : (userRole == 'Assistant' ? 'Assistant' : 'Student');
         await addAdminNotification('login', '$label logged in: ${cred.user!.email}', relatedUid: cred.user!.uid);
       }
@@ -1193,7 +1203,7 @@ class FirebaseService {
     return;
   }
 
-  static Future<void> _updateStreak(String uid) async {
+  static Future<void> updateStreak(String uid) async {
     try {
       final doc = await firestore.collection('users').doc(uid).get();
       if (!doc.exists) return;
@@ -1217,6 +1227,7 @@ class FirebaseService {
         'lastActiveDate': todayStr,
         'streakCount': streak,
         'totalActiveDays': totalDays + 1,
+        'lastLogin': Timestamp.fromDate(today),
       });
     } catch (_) {}
   }
@@ -1657,41 +1668,93 @@ class _SupabaseStorageReference {
   }
 
   Future<_SupabaseStorageReference> putData(Uint8List data, {fb_storage.SettableMetadata? metadata, void Function(double progress)? onProgress}) async {
-    final uri = Uri.parse('${FirebaseService.supabaseUrl}/storage/v1/object/$_bucket/$_objectPath');
     final filename = _objectPath.split('/').last;
     onProgress?.call(0.1);
 
-    final request = http.MultipartRequest('POST', uri);
-    request.headers['Authorization'] = 'Bearer ${FirebaseService.serviceRoleKey}';
-    request.files.add(http.MultipartFile.fromBytes('file', data, filename: filename));
-    if (metadata?.contentDisposition != null) {
-      request.fields['metadata'] = jsonEncode({'Content-Disposition': metadata!.contentDisposition});
-    }
-    onProgress?.call(0.5);
-
-    final client = http.Client();
-    try {
-      final streamed = await client.send(request).timeout(const Duration(minutes: 5));
-      if (streamed.statusCode >= 400) {
-        final body = await streamed.stream.bytesToString();
-        throw Exception('Supabase upload failed ($fullPath): $body');
+    if (kIsWeb) {
+      if (FirebaseService.supabaseUrl.isEmpty || FirebaseService.serviceRoleKey.isEmpty) {
+        await FirebaseService.reinitializeSupabase();
       }
-      await streamed.stream.bytesToString();
+      if (FirebaseService.supabaseUrl.isEmpty || FirebaseService.serviceRoleKey.isEmpty) {
+        throw Exception('Supabase not configured. Please check your internet connection and try again.');
+      }
+      final proxyUri = Uri.parse('/api/upload-file');
+      final body = jsonEncode({
+        'supabaseUrl': FirebaseService.supabaseUrl,
+        'bucket': _bucket,
+        'path': _objectPath,
+        'fileBase64': base64Encode(data),
+        'filename': filename,
+        'auth': 'Bearer ${FirebaseService.serviceRoleKey}',
+      });
+      onProgress?.call(0.5);
+      http.Response? response;
+      for (int attempt = 0; attempt < 3; attempt++) {
+        try {
+          response = await http.post(proxyUri, headers: {'Content-Type': 'application/json'}, body: body).timeout(const Duration(minutes: 10));
+          if (response.statusCode < 400) break;
+          if (attempt < 2) await Future.delayed(Duration(seconds: 2 * (attempt + 1)));
+        } catch (e) {
+          if (attempt == 2) rethrow;
+          await Future.delayed(Duration(seconds: 2 * (attempt + 1)));
+        }
+      }
+      if (response == null) throw Exception('Supabase upload failed after 3 attempts. Check your internet connection.');
+      if (response.statusCode >= 400) {
+        throw Exception('Supabase upload failed ($fullPath): ${response.body}');
+      }
       onProgress?.call(1.0);
-    } finally {
-      client.close();
+    } else {
+      final uri = Uri.parse('${FirebaseService.supabaseUrl}/storage/v1/object/$_bucket/$_objectPath');
+      final request = http.MultipartRequest('POST', uri);
+      request.headers['Authorization'] = 'Bearer ${FirebaseService.serviceRoleKey}';
+      request.files.add(http.MultipartFile.fromBytes('file', data, filename: filename));
+      if (metadata?.contentDisposition != null) {
+        request.fields['metadata'] = jsonEncode({'Content-Disposition': metadata!.contentDisposition});
+      }
+      onProgress?.call(0.5);
+      final client = http.Client();
+      try {
+        final streamed = await client.send(request).timeout(const Duration(minutes: 5));
+        if (streamed.statusCode >= 400) {
+          final body = await streamed.stream.bytesToString();
+          throw Exception('Supabase upload failed ($fullPath): $body');
+        }
+        await streamed.stream.bytesToString();
+        onProgress?.call(1.0);
+      } finally {
+        client.close();
+      }
     }
     return this;
   }
 
   Future<void> delete() async {
-    final uri = Uri.parse('${FirebaseService.supabaseUrl}/storage/v1/object/$_bucket/$_objectPath');
-    final request = http.Request('DELETE', uri)
-      ..headers['Authorization'] = 'Bearer ${FirebaseService.serviceRoleKey}';
-    final streamed = await request.send();
-    if (streamed.statusCode >= 400) {
-      final body = await streamed.stream.bytesToString();
-      throw Exception('Supabase delete failed ($fullPath): $body');
+    if (kIsWeb) {
+      final proxyUri = Uri.parse('/api/upload-file');
+      final response = await http.post(
+        proxyUri,
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({
+          'supabaseUrl': FirebaseService.supabaseUrl,
+          'bucket': _bucket,
+          'path': _objectPath,
+          '_method': 'DELETE',
+          'auth': 'Bearer ${FirebaseService.serviceRoleKey}',
+        }),
+      );
+      if (response.statusCode >= 400) {
+        throw Exception('Supabase delete failed ($fullPath): ${response.body}');
+      }
+    } else {
+      final uri = Uri.parse('${FirebaseService.supabaseUrl}/storage/v1/object/$_bucket/$_objectPath');
+      final request = http.Request('DELETE', uri)
+        ..headers['Authorization'] = 'Bearer ${FirebaseService.serviceRoleKey}';
+      final streamed = await request.send();
+      if (streamed.statusCode >= 400) {
+        final body = await streamed.stream.bytesToString();
+        throw Exception('Supabase delete failed ($fullPath): $body');
+      }
     }
   }
 }
