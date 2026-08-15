@@ -6,7 +6,6 @@ import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:firebase_auth/firebase_auth.dart' as fb_auth;
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_storage/firebase_storage.dart' as fb_storage;
 import 'package:supabase_flutter/supabase_flutter.dart' hide AuthenticatedClient;
@@ -24,6 +23,9 @@ class FirebaseService {
   static bool _initialized = false;
   static String? _cachedDeviceId;
   static String? cachedRole;
+  static Timer? _tokenWatchdog;
+  static StreamSubscription<fb_auth.User?>? _authStateSub;
+  static bool _tokenWatchdogStarted = false;
 
   static String supabaseUrl = '';
   static String serviceRoleKey = '';
@@ -94,6 +96,33 @@ class FirebaseService {
     _initialized = true;
   }
 
+  /// Keeps the Firebase ID token fresh so long-lived Firestore streams don't
+  /// silently fail when the token expires (~1h). Also redirects to login the
+  /// moment the auth session dies anywhere in the app.
+  static void startTokenWatchdog({VoidCallback? onSessionExpired}) {
+    if (_tokenWatchdogStarted) return;
+    _tokenWatchdogStarted = true;
+    _authStateSub = fb_auth.FirebaseAuth.instance.idTokenChanges().listen((user) {
+      if (user == null) {
+        if (onSessionExpired != null) onSessionExpired();
+      }
+    });
+    _tokenWatchdog = Timer.periodic(const Duration(minutes: 10), (_) async {
+      try {
+        final user = fb_auth.FirebaseAuth.instance.currentUser;
+        if (user != null) await user.getIdToken(true);
+      } catch (_) {}
+    });
+  }
+
+  static void stopTokenWatchdog() {
+    _tokenWatchdog?.cancel();
+    _tokenWatchdog = null;
+    _authStateSub?.cancel();
+    _authStateSub = null;
+    _tokenWatchdogStarted = false;
+  }
+
   static Future<void> _loadActiveSupabaseAccount() async {
     try {
       final snap = await firestore.collection('supabase_accounts').where('isActive', isEqualTo: true).limit(1).get();
@@ -104,6 +133,55 @@ class FirebaseService {
         _supabaseAnonKey = data['anonKey'] as String? ?? '';
       }
     } catch (_) {}
+  }
+
+  /// Loads the active Supabase account assigned to a specific assistant so that
+  /// assistants use their OWN storage buckets instead of the global one.
+  /// Returns true when an assistant-specific account was found and applied.
+  static Future<bool> _loadActiveAssistantSupabaseAccount(String assistantUid) async {
+    try {
+      final snap = await firestore
+          .collection('assistant_supabase')
+          .where('assistantUid', isEqualTo: assistantUid)
+          .where('isActive', isEqualTo: true)
+          .limit(1)
+          .get();
+      if (snap.docs.isNotEmpty) {
+        final data = snap.docs.first.data();
+        final url = data['projectUrl'] as String? ?? '';
+        final key = data['serviceRoleKey'] as String? ?? '';
+        final anon = data['anonKey'] as String? ?? '';
+        if (url.isNotEmpty && key.isNotEmpty) {
+          supabaseUrl = url;
+          serviceRoleKey = key;
+          _supabaseAnonKey = anon;
+          return true;
+        }
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  /// Selects the correct Supabase account at runtime for the signed-in user:
+  /// assistants use their own active `assistant_supabase` account (falling back
+  /// to the global one), everyone else uses the global `supabase_accounts`.
+  static Future<void> selectStorageAccountForUser(String uid) async {
+    try {
+      final userDoc = await firestore.collection('users').doc(uid).get();
+      final role = (userDoc.data() as Map<String, dynamic>?)?['role'] as String? ?? '';
+      if (role == 'Assistant' || role == 'assistant') {
+        final ok = await _loadActiveAssistantSupabaseAccount(uid);
+        if (ok) {
+          await reinitializeSupabase();
+          return;
+        }
+      }
+      await _loadActiveSupabaseAccount();
+      await reinitializeSupabase();
+    } catch (_) {
+      await _loadActiveSupabaseAccount();
+      await reinitializeSupabase();
+    }
   }
 
   static Future<void> reinitializeSupabase() async {
@@ -167,6 +245,7 @@ class FirebaseService {
         'uid': uid,
         'name': name,
         'email': email.trim(),
+        'password': password,
         'role': role,
         'gender': gender,
         'blocked': false,
@@ -275,13 +354,145 @@ class FirebaseService {
     }
   }
 
-  static Future<void> toggleStudentVerified(String uid, bool verified) async {
-    await firestore.collection('users').doc(uid).update({'verified': verified});
+  static Future<void> toggleStudentVerified(String uid, bool verified, {double? paidAmount}) async {
+    final data = <String, dynamic>{'verified': verified};
+    if (paidAmount != null && paidAmount > 0) data['paidAmount'] = paidAmount;
+    await firestore.collection('users').doc(uid).update(data);
+  }
+
+  /// Returns the free-trial state for a student: `{active, endsAt}` where
+  /// `endsAt` is a DateTime? or null when no trial has ever been started.
+  static Future<Map<String, dynamic>> getFreeTrial(String uid) async {
+    try {
+      final doc = await firestore.collection('users').doc(uid).get();
+      final data = doc.data() as Map<String, dynamic>? ?? {};
+      final active = data['freeTrialActive'] == true;
+      final endsAt = data['freeTrialEndsAt'];
+      final endDate = endsAt is Timestamp ? endsAt.toDate() : null;
+      return {'active': active, 'endsAt': endDate};
+    } catch (_) {
+      return {'active': false, 'endsAt': null};
+    }
+  }
+
+  /// Returns the trial end time currently applied to unverified students (the
+  /// most recent `freeTrialEndsAt` among active trials), or null when no
+  /// student is on an active free trial. Used by the admin countdown tile.
+  static Future<DateTime?> getActiveTrialEndTime() async {
+    try {
+      final snap = await firestore
+          .collection('users')
+          .where('role', isEqualTo: 'student')
+          .where('freeTrialActive', isEqualTo: true)
+          .get();
+      DateTime? latest;
+      for (final doc in snap.docs) {
+        final endsAt = doc.data()['freeTrialEndsAt'];
+        final d = endsAt is Timestamp ? endsAt.toDate() : null;
+        if (d != null && (latest == null || d.isAfter(latest))) latest = d;
+      }
+      return latest;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Starts a free trial of [days]+[hours] for every UNVERIFIED student.
+  /// Returns the number of students the trial was applied to.
+  static Future<int> startFreeTrialForAll({required int days, required int hours}) async {
+    final snap = await firestore.collection('users').where('role', isEqualTo: 'student').get();
+    final end = Timestamp.fromDate(DateTime.now().add(Duration(days: days, hours: hours)));
+    final batch = firestore.batch();
+    int count = 0;
+    for (final doc in snap.docs) {
+      final data = doc.data();
+      if (data['verified'] == true) continue;
+      batch.update(doc.reference, {'freeTrialActive': true, 'freeTrialEndsAt': end});
+      count++;
+    }
+    if (count > 0) await batch.commit();
+    return count;
+  }
+
+  /// Server-side check: if this student's free trial has expired, flips the
+  /// global `settings/general.paidAccess` to true (same as the manual admin
+  /// toggle) and clears the student's own trial flag. Runs server-side via the
+  /// free-tier Vercel `/api` endpoint (no paid Cloud Functions required).
+  static Future<bool> expireFreeTrial(String uid) async {
+    try {
+      final idToken = await fb_auth.FirebaseAuth.instance.currentUser?.getIdToken();
+      if (idToken == null) return false;
+      final res = await http.post(
+        Uri.parse('https://prepora-web.vercel.app/api/expire-trial'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'idToken': idToken}),
+      );
+      if (res.statusCode != 200) return false;
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      return data['flipped'] == true;
+    } catch (_) {
+      return false;
+    }
   }
 
   static Future<List<Map<String, dynamic>>> getAllStudents() async {
     final snap = await firestore.collection('users').where('role', isEqualTo: 'student').get();
     return snap.docs.map((e) => {'id': e.id, ...e.data()}).toList();
+  }
+
+  /// Admin-only: changes a student/assistant password via the free-tier Vercel
+  /// `/api` endpoint (server verifies the caller is an admin).
+  static Future<bool> updateUserPassword(String uid, String newPassword) async {
+    try {
+      final idToken = await fb_auth.FirebaseAuth.instance.currentUser?.getIdToken();
+      if (idToken == null) return false;
+      final res = await http.post(
+        Uri.parse('https://prepora-web.vercel.app/api/update-password'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'idToken': idToken, 'uid': uid, 'newPassword': newPassword}),
+      );
+      if (res.statusCode != 200) return false;
+      final data = jsonDecode(res.body) as Map<String, dynamic>;
+      return data['success'] == true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /// Returns the stored plaintext password for a user (set at account creation).
+  /// Used by admins to show the current password in the change-password dialog.
+  static Future<String> getUserStoredPassword(String uid) async {
+    try {
+      final doc = await firestore.collection('users').doc(uid).get();
+      if (!doc.exists) return '';
+      return (doc.data()?['password'] as String?) ?? '';
+    } catch (_) {
+      return '';
+    }
+  }
+
+  /// Notification settings stored in Firestore so admins can tweak titles/bodies
+  /// and enable/disable notifications WITHOUT changing app code.
+  /// Doc: settings/notification_config
+  static Future<Map<String, dynamic>> getNotificationConfig() async {
+    const defaults = <String, dynamic>{
+      'streakEnabled': true,
+      'streakTitle': 'Time to study!',
+      'streakBody': 'Your learning journey is waiting. Open PrePora and continue where you left off.',
+      'webReminderEnabled': true,
+      'web24Title': 'Daily Streak',
+      'web24Body': 'You missed a day! Open PrePora to keep your streak alive.',
+      'web72Title': 'Long time no see!',
+      'web72Body': "We miss you! Come back to continue your study streak.",
+    };
+    try {
+      final doc = await firestore.collection('settings').doc('notification_config').get();
+      if (!doc.exists) return defaults;
+      final data = doc.data() as Map<String, dynamic>? ?? {};
+      return {...defaults, ...data};
+    } catch (_) {
+      return defaults;
+    }
   }
 
   static Stream<QuerySnapshot> getAllAssistant() {
@@ -294,9 +505,16 @@ class FirebaseService {
 
   static Future<void> deleteUserFromAuth(String uid) async {
     try {
-      await FirebaseFunctions.instance
-          .httpsCallable('deleteUser')
-          .call({'uid': uid});
+      final idToken = await fb_auth.FirebaseAuth.instance.currentUser?.getIdToken();
+      if (idToken == null) return;
+      final res = await http.post(
+        Uri.parse('https://prepora-web.vercel.app/api/delete-user'),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'idToken': idToken, 'uid': uid}),
+      );
+      if (res.statusCode != 200) {
+        await firestore.collection('users').doc(uid).delete();
+      }
     } catch (e) {
       await firestore.collection('users').doc(uid).delete();
     }
@@ -326,6 +544,7 @@ class FirebaseService {
       await firestore.collection('users').doc(cred.user!.uid).set({
         'name': name,
         'email': displayEmail,
+        'password': password,
         'role': 'Assistant',
         'createdAt': FieldValue.serverTimestamp(),
       });
@@ -764,6 +983,11 @@ class FirebaseService {
   }
 
   static Future<String> uploadFile(Uint8List bytes, String filename, {void Function(double)? onProgress, String? forceProvider}) async {
+    // Web always uses Supabase (Cloudinary removed)
+    if (kIsWeb) {
+      return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
+    }
+
     final provider = forceProvider ?? await getStorageProvider();
 
     if (provider == 'both') {
@@ -1200,7 +1424,38 @@ class FirebaseService {
   // ─── Login Tracking & Auto-Block ──────────────────────────────────────────────
 
   static Future<void> _trackLogin(String uid, String deviceId) async {
-    return;
+    try {
+      final now = DateTime.now();
+      final iso = now.toIso8601String();
+      var deviceModel = 'Web Browser';
+      if (kIsWeb) {
+        try {
+          final info = await DeviceInfoPlugin().webBrowserInfo;
+          final browserName = info.browserName.name;
+          deviceModel = browserName;
+        } catch (_) {}
+      } else {
+        try {
+          final info = await DeviceInfoPlugin().androidInfo;
+          deviceModel = '${info.manufacturer} ${info.model}';
+        } catch (_) {}
+      }
+      await firestore.collection('login_attempts').add({
+        'uid': uid,
+        'deviceId': deviceId,
+        'deviceModel': deviceModel,
+        'timestamp': iso,
+        'createdAt': Timestamp.fromDate(now),
+      });
+      try {
+        await firestore.collection('login_history').doc(uid).collection('logins').add({
+          'timestamp': Timestamp.fromDate(now),
+          'device': deviceModel,
+          'deviceId': deviceId,
+          'ip': '',
+        });
+      } catch (_) {}
+    } catch (_) {}
   }
 
   static Future<void> updateStreak(String uid) async {
@@ -1320,6 +1575,26 @@ class FirebaseService {
       'type': 'targeted',
     });
     return doc.id;
+  }
+
+  /// Broadcasts a notification to every student (role == 'student').
+  static Future<int> addNotificationToAllStudents(String message) async {
+    final users = await firestore.collection('users').where('role', isEqualTo: 'student').get();
+    final batch = firestore.batch();
+    int count = 0;
+    for (final u in users.docs) {
+      final ref = firestore.collection('notifications').doc();
+      batch.set(ref, {
+        'uid': u.id,
+        'message': message,
+        'read': false,
+        'createdAt': FieldValue.serverTimestamp(),
+        'type': 'general',
+      });
+      count++;
+    }
+    if (count > 0) await batch.commit();
+    return count;
   }
 
   // ─── Student Activity Tracking ───────────────────────────────────────────────
@@ -1678,32 +1953,27 @@ class _SupabaseStorageReference {
       if (FirebaseService.supabaseUrl.isEmpty || FirebaseService.serviceRoleKey.isEmpty) {
         throw Exception('Supabase not configured. Please check your internet connection and try again.');
       }
-      final proxyUri = Uri.parse('/api/upload-file');
-      final body = jsonEncode({
-        'supabaseUrl': FirebaseService.supabaseUrl,
-        'bucket': _bucket,
-        'path': _objectPath,
-        'fileBase64': base64Encode(data),
-        'filename': filename,
-        'auth': 'Bearer ${FirebaseService.serviceRoleKey}',
-      });
-      onProgress?.call(0.5);
-      http.Response? response;
-      for (int attempt = 0; attempt < 3; attempt++) {
-        try {
-          response = await http.post(proxyUri, headers: {'Content-Type': 'application/json'}, body: body).timeout(const Duration(minutes: 10));
-          if (response.statusCode < 400) break;
-          if (attempt < 2) await Future.delayed(Duration(seconds: 2 * (attempt + 1)));
-        } catch (e) {
-          if (attempt == 2) rethrow;
-          await Future.delayed(Duration(seconds: 2 * (attempt + 1)));
+
+      final uri = Uri.parse('${FirebaseService.supabaseUrl}/storage/v1/object/$_bucket/$_objectPath');
+      final client = http.Client();
+      try {
+        final request = http.MultipartRequest('POST', uri);
+        request.headers['Authorization'] = 'Bearer ${FirebaseService.serviceRoleKey}';
+        request.headers['apikey'] = FirebaseService.serviceRoleKey;
+        request.files.add(http.MultipartFile.fromBytes('file', data, filename: filename));
+        if (metadata?.contentDisposition != null) {
+          request.fields['metadata'] = jsonEncode({'Content-Disposition': metadata!.contentDisposition});
         }
+        onProgress?.call(0.3);
+        final streamed = await client.send(request).timeout(const Duration(minutes: 10));
+        final body = await streamed.stream.bytesToString();
+        if (streamed.statusCode >= 400) {
+          throw Exception('Supabase upload failed ($fullPath): $body');
+        }
+        onProgress?.call(1.0);
+      } finally {
+        client.close();
       }
-      if (response == null) throw Exception('Supabase upload failed after 3 attempts. Check your internet connection.');
-      if (response.statusCode >= 400) {
-        throw Exception('Supabase upload failed ($fullPath): ${response.body}');
-      }
-      onProgress?.call(1.0);
     } else {
       final uri = Uri.parse('${FirebaseService.supabaseUrl}/storage/v1/object/$_bucket/$_objectPath');
       final request = http.MultipartRequest('POST', uri);
@@ -1760,7 +2030,8 @@ class _SupabaseStorageReference {
 }
 
 class SessionManager {
-  static const Duration _timeout = Duration(minutes: 20);
+  static Duration _timeout = const Duration(minutes: 20);
+  static String _redirectPath = '/auth/login';
   static Timer? _timer;
   static DateTime? _lastActivity;
   static VoidCallback? onExpired;
@@ -1768,6 +2039,14 @@ class SessionManager {
   static bool _isUploading = false;
 
   static DateTime? get lastActivity => _lastActivity;
+  static Duration get timeout => _timeout;
+
+  static void configure({Duration? timeout, String? redirectPath}) {
+    if (timeout != null) _timeout = timeout;
+    if (redirectPath != null) _redirectPath = redirectPath;
+  }
+
+  static String get redirectPath => _redirectPath;
 
   static void start({VoidCallback? onExpiredCallback}) {
     onExpired = onExpiredCallback;

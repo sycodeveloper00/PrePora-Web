@@ -130,8 +130,16 @@ class _StudentFeedbackScreenState extends State<StudentFeedbackScreen> {
                 if (sending) return;
                 if (ctrl.text.trim().isEmpty) return;
                 setLocal(() => sending = true);
-                await FirebaseService.submitFeedback(ctrl.text.trim());
-                if (d.mounted) Navigator.pop(d);
+                final docId = await FirebaseService.submitFeedback(ctrl.text.trim());
+                if (docId != null) {
+                  final ticketNo = docId.substring(0, 6).toUpperCase();
+                  if (d.mounted) Navigator.pop(d);
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Message sent! Your ticket ID: #$ticketNo'), backgroundColor: const Color(0xFF4A148C)),
+                    );
+                  }
+                }
                 _load();
               },
               style: ElevatedButton.styleFrom(

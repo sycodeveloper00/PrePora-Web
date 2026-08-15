@@ -19,7 +19,7 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
   bool _isBlocked = true;
   String _email = '';
   String _studentName = '';
-  String _gender = '';
+  double _paidAmount = 0;
   List<Map<String, dynamic>> _feedbacks = [];
   bool _loadingUser = true;
 
@@ -64,11 +64,11 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
     final streak = results[2] as Map<String, dynamic>;
     if (mounted) {
       setState(() {
-        _isVerified = userData?['verified'] == true;
+_isVerified = userData?['verified'] == true;
         _isBlocked = userData?['blocked'] == true;
         _email = userData?['email'] as String? ?? '';
         _studentName = userData?['name'] as String? ?? '';
-        _gender = userData?['gender'] as String? ?? '';
+        _paidAmount = (userData?['paidAmount'] as num?)?.toDouble() ?? 0;
         _feedbacks = feedbacks;
         _streakCount = streak['streakCount'] as int? ?? 0;
         _totalActiveDays = streak['totalActiveDays'] as int? ?? 0;
@@ -1043,7 +1043,7 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
   }
 
   // ─── Fee Details Dialog ─────────────────────────────────────────────────────
-  void _showFeeDetailsDialog() {
+  void _showFeeDetailsDialog() async {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     String? paymentMessage;
     for (final fb in _feedbacks) {
@@ -1053,19 +1053,42 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
         break;
       }
     }
-    if (paymentMessage == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: const Text('No payment details found'), backgroundColor: Colors.orange, behavior: SnackBarBehavior.floating, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-      );
+
+    final fields = <String, String>{};
+
+    if (paymentMessage != null) {
+      for (final line in paymentMessage.split('\n')) {
+        final idx = line.indexOf(':');
+        if (idx != -1) {
+          fields[line.substring(0, idx).trim()] = line.substring(idx + 1).trim();
+        }
+      }
+    } else {
+      try {
+        final settings = await FirebaseService.getSettings();
+        final price = (settings['price'] as num?)?.toDouble();
+        final accountTitle = settings['accountTitle'] as String? ?? '';
+        final accountNo = settings['accountNo'] as String? ?? '';
+        final bankName = settings['bankName'] as String? ?? '';
+        if (accountTitle.isNotEmpty || accountNo.isNotEmpty || bankName.isNotEmpty) {
+          if (price != null && price > 0) fields['Fee Amount'] = 'Rs. ${price.toStringAsFixed(0)}';
+          if (accountTitle.isNotEmpty) fields['Account Title'] = accountTitle;
+          if (accountNo.isNotEmpty) fields['Account No'] = accountNo;
+          if (bankName.isNotEmpty) fields['Bank Name'] = bankName;
+        }
+      } catch (_) {}
+    }
+
+    if (fields.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: const Text('No payment details found'), backgroundColor: Colors.orange, behavior: SnackBarBehavior.floating, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+        );
+      }
       return;
     }
-    final fields = <String, String>{};
-    for (final line in paymentMessage.split('\n')) {
-      final idx = line.indexOf(':');
-      if (idx != -1) {
-        fields[line.substring(0, idx).trim()] = line.substring(idx + 1).trim();
-      }
-    }
+
+    if (!mounted) return;
     showDialog(
       context: context,
       builder: (d) => AlertDialog(
@@ -1074,7 +1097,20 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
         title: Row(children: [
           Container(width: 36, height: 36, decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.15), shape: BoxShape.circle), child: const Icon(Icons.verified_rounded, color: Colors.green, size: 20)),
           const SizedBox(width: 10),
-          Text('Fee Details', style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontWeight: FontWeight.bold, fontSize: 16)),
+          Expanded(
+            child: Text('Fee Details', style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontWeight: FontWeight.bold, fontSize: 16)),
+          ),
+          if (_paidAmount > 0)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+              decoration: BoxDecoration(
+                color: Colors.green.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.green.withValues(alpha: 0.4)),
+              ),
+              child: Text('Paid Rs. ${_paidAmount.toStringAsFixed(0)}/-',
+                style: const TextStyle(color: Colors.green, fontSize: 12, fontWeight: FontWeight.bold)),
+            ),
         ]),
         content: SingleChildScrollView(
           child: Column(mainAxisSize: MainAxisSize.min, children: [

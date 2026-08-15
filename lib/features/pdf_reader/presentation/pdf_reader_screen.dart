@@ -29,7 +29,8 @@ class PdfReaderScreen extends StatefulWidget {
   final String documentId;
   final String? folderId;
   final String? parentContentId;
-  const PdfReaderScreen({super.key, required this.documentId, this.folderId, this.parentContentId});
+  final String? title;
+  const PdfReaderScreen({super.key, required this.documentId, this.folderId, this.parentContentId, this.title});
 
   @override
   State<PdfReaderScreen> createState() => _PdfReaderScreenState();
@@ -70,14 +71,32 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
 
       final rawName = url.split('/').last.split('?').first.split('#').first;
       _fileName = rawName.replaceAll(RegExp(r'[%&+:?/#\\]'), '_');
-      _fileName = _fileName!.replaceFirst(RegExp(r'^\d+_'), '');
+      if (widget.title != null && widget.title!.isNotEmpty) {
+        _fileName = widget.title;
+      } else {
+        _fileName = _fileName!.replaceFirst(RegExp(r'^v\d+_'), '');
+        _fileName = _fileName!.replaceFirst(RegExp(r'^\d+_'), '');
+      }
 
       if (kIsWeb) {
-        // On web: show PDF immediately from URL (PDF.js loads directly).
-        // Only create blob if direct load fails (CORS).
-        _localPath = url;
-        _isLoading = false;
-        if (mounted) setState(() {});
+        final proxyUrl = Uri.parse('/api/download-file?url=${Uri.encodeComponent(url)}');
+        final headers = <String, String>{};
+        if (url.contains('supabase.co') && FirebaseService.serviceRoleKey.isNotEmpty) {
+          headers['Authorization'] = 'Bearer ${FirebaseService.serviceRoleKey}';
+        }
+        final response = await http.get(proxyUrl, headers: headers);
+        if (response.statusCode == 200) {
+          final ct = response.headers['content-type'] ?? '';
+          if (ct.contains('text/html') || ct.contains('text/plain')) {
+            setState(() { _error = 'Failed to load PDF'; _isLoading = false; });
+            return;
+          }
+          _localPath = createBlobUrl(response.bodyBytes, 'application/pdf');
+          _isLoading = false;
+          if (mounted) setState(() {});
+        } else {
+          setState(() { _error = 'Failed to download PDF (${response.statusCode})'; _isLoading = false; });
+        }
         return;
       }
 
@@ -88,6 +107,11 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
         if (!await localFile.exists()) {
           final response = await http.get(Uri.parse(url));
           if (response.statusCode == 200) {
+            final contentType = response.headers['content-type'] ?? '';
+            if (contentType.contains('text/html') || contentType.contains('text/plain')) {
+              setState(() { _error = 'Failed to load PDF — server returned an error page'; _isLoading = false; });
+              return;
+            }
             await localFile.writeAsBytes(response.bodyBytes);
           } else {
             setState(() { _error = 'Failed to download PDF'; _isLoading = false; });
@@ -203,6 +227,12 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             const Padding(
               padding: EdgeInsets.only(right: 16),
               child: SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white70)),
+            ),
+          if (_localPath != null)
+            IconButton(
+              icon: const Icon(Icons.note_add_rounded, size: 18, color: Colors.teal),
+              tooltip: 'Save to Notes',
+              onPressed: _saveAnnotationsToNotes,
             ),
           if (_localPath != null)
             IconButton(

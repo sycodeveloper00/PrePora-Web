@@ -245,7 +245,8 @@ class AppRouter {
           final extra = s.extra as Map<String, dynamic>?;
           return VideoPlayerScreen(
             videoId: s.pathParameters['id']!,
-            lectureName: extra?['folderName'] as String? ?? extra?['name'] as String? ?? 'Lecture',
+            lectureName: extra?['name'] as String? ?? 'Lecture',
+            subFolderName: extra?['folderName'] as String?,
             folderId: extra?['folderId'] as String?,
             parentContentId: extra?['parentContentId'] as String?,
           );
@@ -259,6 +260,7 @@ class AppRouter {
             documentId: extra?['url'] as String? ?? '',
             folderId: extra?['folderId'] as String?,
             parentContentId: extra?['parentContentId'] as String?,
+            title: extra?['title'] as String?,
           );
         },
       ),

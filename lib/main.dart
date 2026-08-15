@@ -55,6 +55,10 @@ class _AppLifecycleState extends State<_AppLifecycle> with WidgetsBindingObserve
         NotificationService.startListeningForNotifications(FirebaseService.currentUser!.uid);
       }
       _startSessionIfAdminOrAssistant();
+      FirebaseService.startTokenWatchdog(onSessionExpired: () {
+        SessionManager.stop();
+        AppRouter.router.go('/auth/login');
+      });
     });
   }
 
@@ -87,38 +91,15 @@ class _AppLifecycleState extends State<_AppLifecycle> with WidgetsBindingObserve
     role ??= await FirebaseService.getUserRole(user.uid);
     FirebaseService.cachedRole = role;
     if (role == 'admin' || role == 'Assistant') {
+      final isQrDomain = Uri.base.host.contains('prepora-web');
+      SessionManager.configure(
+        timeout: isQrDomain ? const Duration(hours: 1) : const Duration(minutes: 20),
+        redirectPath: isQrDomain ? '/link-web' : '/auth/login',
+      );
       SessionManager.start(onExpiredCallback: () async {
-        if (AppRouter.rootNavigatorKey.currentContext != null) {
-          showDialog(
-            context: AppRouter.rootNavigatorKey.currentContext!,
-            barrierDismissible: false,
-            builder: (ctx) => AlertDialog(
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-              title: const Row(children: [
-                Icon(Icons.access_time_filled_rounded, color: Colors.orange, size: 24),
-                SizedBox(width: 10),
-                Text('Session Expired'),
-              ]),
-              content: const Text('Your session has expired due to inactivity. Please login again to continue.'),
-              actions: [
-                ElevatedButton(
-                  onPressed: () async {
-                    Navigator.pop(ctx);
-                    AppRouter.router.go('/auth/login');
-                    await Future.delayed(const Duration(milliseconds: 500));
-                    await FirebaseService.signOut();
-                  },
-                  style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A148C)),
-                  child: const Text('Login', style: TextStyle(color: Colors.white)),
-                ),
-              ],
-            ),
-          );
-        } else {
-          AppRouter.router.go('/auth/login');
-          await Future.delayed(const Duration(milliseconds: 500));
-          await FirebaseService.signOut();
-        }
+        AppRouter.router.go(SessionManager.redirectPath);
+        await Future.delayed(const Duration(milliseconds: 500));
+        await FirebaseService.signOut();
       });
     }
   }

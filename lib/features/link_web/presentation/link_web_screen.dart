@@ -8,6 +8,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:firebase_auth/firebase_auth.dart' as fb_auth;
 import 'package:http/http.dart' as http;
 import 'dart:html' as html;
+import '../../../core/services/firebase_service.dart';
 
 class LinkWebScreen extends StatefulWidget {
   const LinkWebScreen({super.key});
@@ -117,6 +118,9 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     if (ua.contains('edg/')) return 'Edge';
     if (ua.contains('opr') || ua.contains('opera')) return 'Opera';
     if (ua.contains('brave')) return 'Brave';
+    if (ua.contains('baiduboxapp') || ua.contains('baidubrowser') || ua.contains('baidu')) return 'Baidu';
+    if (ua.contains('ucbrowser')) return 'UC Browser';
+    if (ua.contains('samsungbrowser')) return 'Samsung Internet';
     if (ua.contains('chrome') && !ua.contains('edg/')) return 'Chrome';
     if (ua.contains('firefox')) return 'Firefox';
     if (ua.contains('safari') && !ua.contains('chrome')) return 'Safari';
@@ -156,6 +160,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
               email: data['userEmail'] ?? '',
               role: data['userRole'] ?? 'student',
             );
+            bool signedIn = false;
             try {
               final response = await http.post(
                 Uri.parse('/api/generate-token'),
@@ -167,6 +172,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
                 final customToken = body['customToken'] as String?;
                 if (customToken != null) {
                   await fb_auth.FirebaseAuth.instance.signInWithCustomToken(customToken);
+                  signedIn = true;
                 }
               } else {
                 print('[generate-token restore] Failed: ${response.statusCode}');
@@ -174,6 +180,16 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
             } catch (e) {
               print('[generate-token restore] Error: $e');
             }
+
+            if (!signedIn) {
+              html.window.localStorage.remove(_sessionKey);
+              _generateSession();
+              return;
+            }
+
+            final role = data['userRole'] ?? 'student';
+            FirebaseService.cachedRole = role;
+
             _sessionSub = FirebaseFirestore.instance
                 .collection('web_sessions')
                 .doc(sessionId)
@@ -223,7 +239,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
         'status': 'waiting',
         'createdAt': Timestamp.fromDate(_createdAt!),
         'lastActive': Timestamp.fromDate(_createdAt!),
-        'browser': _detectBrowser(),
+        'webBrowser': _detectBrowser(),
       });
     } catch (e) {
       print('[generateSession] Firestore write failed: $e');
@@ -294,6 +310,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
       role: role,
     );
 
+    bool signedIn = false;
     try {
       final response = await http.post(
         Uri.parse('/api/generate-token'),
@@ -305,6 +322,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
         final customToken = body['customToken'] as String?;
         if (customToken != null) {
           await fb_auth.FirebaseAuth.instance.signInWithCustomToken(customToken);
+          signedIn = true;
         }
       } else {
         print('[generate-token] Failed: ${response.statusCode} ${response.body}');
@@ -312,6 +330,17 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     } catch (e) {
       print('[generate-token] Error: $e');
     }
+
+    if (!signedIn) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to connect. Please scan QR again.'), backgroundColor: Colors.redAccent),
+        );
+      }
+      return;
+    }
+
+    FirebaseService.cachedRole = role;
 
     html.window.localStorage[_sessionKey] = json.encode({'sessionId': _sessionId});
     _startActivityTracking();
@@ -371,7 +400,18 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
   Future<void> _cleanupSession() async {
     if (_sessionId.isEmpty) return;
     try {
-      await FirebaseFirestore.instance.collection('web_sessions').doc(_sessionId).delete();
+      final docRef = FirebaseFirestore.instance.collection('web_sessions').doc(_sessionId);
+      final snap = await docRef.get();
+      final data = snap.data();
+      final hadUid = data?['uid'] is String && (data?['uid'] as String? ?? '').isNotEmpty;
+      if (hadUid) {
+        await docRef.update({
+          'status': 'disconnected',
+          'disconnectedAt': Timestamp.fromDate(DateTime.now()),
+        });
+      } else {
+        await docRef.delete();
+      }
     } catch (_) {}
   }
 

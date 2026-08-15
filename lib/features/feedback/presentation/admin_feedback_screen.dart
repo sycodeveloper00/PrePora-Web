@@ -63,6 +63,7 @@ class _AdminFeedbackScreenState extends State<AdminFeedbackScreen> {
         var items = feedbacks;
         Set<String> updatingIds = {};
         Map<String, String?> selectedStatusPerTicket = {};
+        final Map<String, TextEditingController> amountCtrls = {};
         return StatefulBuilder(builder: (ctx, setLocal) {
           final ctxIsDark = Theme.of(ctx).brightness == Brightness.dark;
           return DraggableScrollableSheet(
@@ -136,7 +137,7 @@ class _AdminFeedbackScreenState extends State<AdminFeedbackScreen> {
                                     tooltip: 'Reply',
                                     onPressed: () => _showReplyDialog(ctx, setLocal, data, uid, items),
                                   ),
-                                  _buildFeedbackActions(ctx, setLocal, data, uid, isUpdating, updatingIds, isBlocked, isVerified, items, selectedStatusPerTicket, data['id'] as String),
+                                  _buildFeedbackActions(ctx, setLocal, data, uid, isUpdating, updatingIds, isBlocked, isVerified, items, selectedStatusPerTicket, data['id'] as String, amountCtrls: amountCtrls),
                                 ]),
                               ],
                             ]),
@@ -152,7 +153,7 @@ class _AdminFeedbackScreenState extends State<AdminFeedbackScreen> {
     );
   }
 
-  Widget _buildFeedbackActions(BuildContext ctx, StateSetter setLocal, Map<String, dynamic> data, String uid, bool isUpdating, Set<String> updatingIds, bool isBlocked, bool isVerified, List<Map<String, dynamic>> items, Map<String, String?> selectedStatusPerTicket, String ticketId) {
+  Widget _buildFeedbackActions(BuildContext ctx, StateSetter setLocal, Map<String, dynamic> data, String uid, bool isUpdating, Set<String> updatingIds, bool isBlocked, bool isVerified, List<Map<String, dynamic>> items, Map<String, String?> selectedStatusPerTicket, String ticketId, {Map<String, TextEditingController>? amountCtrls}) {
     final id = data['id'] as String;
     final ticketSelected = selectedStatusPerTicket[ticketId];
     final locked = ticketSelected != null;
@@ -167,48 +168,91 @@ class _AdminFeedbackScreenState extends State<AdminFeedbackScreen> {
         ('Rejected', Colors.redAccent, 'rejected', null),
       ], selectedStatus: ticketSelected, locked: locked, onSelected: (s) {
         setLocal(() => selectedStatusPerTicket[ticketId] = s);
-      }, selectedStatusPerTicket: selectedStatusPerTicket, ticketId: ticketId);
+      }, selectedStatusPerTicket: selectedStatusPerTicket, ticketId: ticketId, amountCtrls: amountCtrls);
     }
     if (!isVerified) {
       return _buildActionButtonRow(ctx, setLocal, data, uid, isUpdating, updatingIds, items, [
-        ('Verified', Colors.teal, 'verified', () async {
-          await FirebaseService.toggleStudentVerified(uid, true);
-        }),
+        ('Verified', Colors.teal, 'verified', null),
         ('Rejected', Colors.redAccent, 'rejected', null),
       ], selectedStatus: ticketSelected, locked: locked, onSelected: (s) {
         setLocal(() => selectedStatusPerTicket[ticketId] = s);
-      }, selectedStatusPerTicket: selectedStatusPerTicket, ticketId: ticketId);
+      }, selectedStatusPerTicket: selectedStatusPerTicket, ticketId: ticketId, amountCtrls: amountCtrls, requireAmountFor: 'verified');
     }
     return _buildActionButtonRow(ctx, setLocal, data, uid, isUpdating, updatingIds, items, [
       ('Completed', Colors.green, 'completed', null),
       ('Rejected', Colors.redAccent, 'rejected', null),
     ], selectedStatus: ticketSelected, locked: locked, onSelected: (s) {
       setLocal(() => selectedStatusPerTicket[ticketId] = s);
-    }, selectedStatusPerTicket: selectedStatusPerTicket, ticketId: ticketId);
+    }, selectedStatusPerTicket: selectedStatusPerTicket, ticketId: ticketId, amountCtrls: amountCtrls);
   }
 
-  Widget _buildActionButtonRow(BuildContext ctx, StateSetter setLocal, Map<String, dynamic> data, String uid, bool isUpdating, Set<String> updatingIds, List<Map<String, dynamic>> items, List<(String label, Color color, String status, Future<void> Function()? extra)> actions, {String? selectedStatus, bool locked = false, void Function(String)? onSelected, Map<String, String?>? selectedStatusPerTicket, String? ticketId}) {
-    return Row(mainAxisAlignment: MainAxisAlignment.end, children: actions.map((a) {
-      final (label, color, status, extra) = a;
-      final isSelected = selectedStatus == status;
-      return Padding(
-        padding: const EdgeInsets.only(left: 10),
-        child: _buildActionButton(
-          label: label, color: color, isUpdating: isUpdating, isSelected: isSelected,
-          onPressed: (isUpdating || locked) ? null : () async {
-            if (!debounce('fb_action_$status')) return;
-            if (onSelected != null) onSelected(status);
-            final id = data['id'] as String;
-            setLocal(() => updatingIds.add(id));
-            await FirebaseService.updateFeedbackStatus(id, status);
-            if (extra != null) await extra();
-            NotificationService.clearBadge();
-            final updated = await FirebaseService.getStudentFeedbacksOnce(uid);
-            if (ctx.mounted) setLocal(() { items = updated; updatingIds.remove(id); if (selectedStatusPerTicket != null && ticketId != null) selectedStatusPerTicket[ticketId] = null; });
-          },
+  Widget _buildActionButtonRow(BuildContext ctx, StateSetter setLocal, Map<String, dynamic> data, String uid, bool isUpdating, Set<String> updatingIds, List<Map<String, dynamic>> items, List<(String label, Color color, String status, Future<void> Function()? extra)> actions, {String? selectedStatus, bool locked = false, void Function(String)? onSelected, Map<String, String?>? selectedStatusPerTicket, String? ticketId, Map<String, TextEditingController>? amountCtrls, String? requireAmountFor}) {
+    final amountCtrl = amountCtrls?.putIfAbsent(ticketId ?? '', () => TextEditingController());
+    final rowIsDark = Theme.of(ctx).brightness == Brightness.dark;
+    return Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+      if (requireAmountFor != null) ...[
+        SizedBox(
+          width: 110,
+          child: TextField(
+            controller: amountCtrl,
+            keyboardType: TextInputType.number,
+            style: TextStyle(fontSize: 12, color: rowIsDark ? Colors.white : Colors.black87),
+            decoration: InputDecoration(
+              isDense: true,
+              hintText: 'Amount',
+              hintStyle: TextStyle(fontSize: 11, color: rowIsDark ? Colors.white38 : Colors.black38),
+              prefixText: 'Rs ',
+              prefixStyle: TextStyle(fontSize: 11, color: rowIsDark ? Colors.white54 : Colors.black54),
+              filled: true,
+              fillColor: (rowIsDark ? Colors.white : Colors.black).withValues(alpha: 0.05),
+              contentPadding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(8), borderSide: BorderSide.none),
+            ),
+          ),
         ),
-      );
-    }).toList());
+        const SizedBox(width: 8),
+      ],
+      ...actions.map((a) {
+        final (label, color, status, extra) = a;
+        final isSelected = selectedStatus == status;
+        return Padding(
+          padding: const EdgeInsets.only(left: 10),
+          child: _buildActionButton(
+            label: label, color: color, isUpdating: isUpdating, isSelected: isSelected,
+            onPressed: (isUpdating || locked) ? null : () async {
+              if (!debounce('fb_action_$status')) return;
+              final id = data['id'] as String;
+              if (requireAmountFor == status) {
+                final amountText = amountCtrl?.text.trim() ?? '';
+                final amount = double.tryParse(amountText);
+                if (amount == null || amount <= 0) {
+                  if (ctx.mounted) {
+                    ScaffoldMessenger.of(ctx).showSnackBar(
+                      const SnackBar(content: Text('Please enter the paid amount before verifying.'), backgroundColor: Colors.orange, behavior: SnackBarBehavior.floating),
+                    );
+                  }
+                  return;
+                }
+                setLocal(() => updatingIds.add(id));
+                await FirebaseService.updateFeedbackStatus(id, status);
+                await FirebaseService.toggleStudentVerified(uid, true, paidAmount: amount);
+                NotificationService.clearBadge();
+                final updated = await FirebaseService.getStudentFeedbacksOnce(uid);
+                if (ctx.mounted) setLocal(() { items = updated; updatingIds.remove(id); if (selectedStatusPerTicket != null && ticketId != null) selectedStatusPerTicket[ticketId] = null; });
+                return;
+              }
+              if (onSelected != null) onSelected(status);
+              setLocal(() => updatingIds.add(id));
+              await FirebaseService.updateFeedbackStatus(id, status);
+              if (extra != null) await extra();
+              NotificationService.clearBadge();
+              final updated = await FirebaseService.getStudentFeedbacksOnce(uid);
+              if (ctx.mounted) setLocal(() { items = updated; updatingIds.remove(id); if (selectedStatusPerTicket != null && ticketId != null) selectedStatusPerTicket[ticketId] = null; });
+            },
+          ),
+        );
+      }).toList(),
+    ]);
   }
 
   void _showReplyDialog(BuildContext ctx, StateSetter setLocal, Map<String, dynamic> data, String uid, List<Map<String, dynamic>> items) {

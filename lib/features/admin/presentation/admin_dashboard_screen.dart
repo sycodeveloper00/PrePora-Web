@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart' as fb_auth;
 import 'package:file_picker/file_picker.dart';
 import '../../../core/widgets/glassmorphic_container.dart';
 import '../../../core/widgets/animated_pressable.dart';
@@ -28,6 +29,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   StreamSubscription? _feedbackSub;
   Timer? _feedbackDebounce;
   Timer? _tokenRefreshTimer;
+  StreamSubscription? _idTokenSub;
+  bool _isReconnecting = false;
   // Cached stream to prevent folder list from blinking on each rebuild
   late Stream<QuerySnapshot> _folderStream;
   // Local docs for optimistic reorder — avoids snap-back on drag
@@ -42,14 +45,40 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     _loadPendingCount();
     _listenNewFeedbacks();
     _startTokenRefreshTimer();
+    _listenTokenChanges();
   }
 
   void _startTokenRefreshTimer() {
-    _tokenRefreshTimer = Timer.periodic(const Duration(minutes: 30), (_) async {
+    _tokenRefreshTimer = Timer.periodic(const Duration(minutes: 15), (_) async {
+      await _refreshAuthToken();
+    });
+  }
+
+  Future<void> _refreshAuthToken() async {
+    for (int attempt = 0; attempt < 3; attempt++) {
       try {
         final user = FirebaseService.currentUser;
-        if (user != null) await user.getIdToken(true);
-      } catch (_) {}
+        if (user != null) {
+          await user.getIdToken(true);
+          return;
+        }
+      } catch (_) {
+        if (attempt < 2) await Future.delayed(const Duration(seconds: 2));
+      }
+    }
+  }
+
+  void _listenTokenChanges() {
+    _idTokenSub = fb_auth.FirebaseAuth.instance.idTokenChanges().listen((user) {
+      if (mounted) {
+        if (user == null) {
+          _refreshFolderStream();
+        } else {
+          _refreshAuthToken().then((_) {
+            if (mounted) _refreshFolderStream();
+          });
+        }
+      }
     });
   }
 
@@ -112,6 +141,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   @override
   void dispose() {
     _tokenRefreshTimer?.cancel();
+    _idTokenSub?.cancel();
     _feedbackSub?.cancel();
     _feedbackDebounce?.cancel();
     _folderNameController.dispose();
@@ -339,6 +369,12 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                             ),
                             const SizedBox(width: 8),
                             IconButton(
+                              icon: const Icon(Icons.password_rounded, color: Colors.cyan, size: 20),
+                              tooltip: 'Change Password',
+                              onPressed: () => _showChangePasswordDialog(ctx, uid, name),
+                            ),
+                            const SizedBox(width: 8),
+                            IconButton(
                               icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
                               onPressed: () async {
                                 final confirm = await showDialog<bool>(context: ctx, builder: (d) => AlertDialog(
@@ -368,6 +404,77 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           });
         },
       ),
+    );
+  }
+
+  void _showChangePasswordDialog(BuildContext ctx, String uid, String name) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final baseColor = isDark ? Colors.white : Colors.black87;
+    final dimColor = isDark ? Colors.white38 : Colors.black54;
+    final fillColor = isDark ? Colors.white10 : Colors.black12;
+    final bgColor = isDark ? const Color(0xFF1A0533) : Colors.white;
+    final ctrl = TextEditingController();
+    bool saving = false;
+    String? error;
+    showDialog(
+      context: ctx,
+      builder: (d) => StatefulBuilder(builder: (d, setLocal) {
+        Future<void> prefill() async {
+          final old = await FirebaseService.getUserStoredPassword(uid);
+          if (old.isNotEmpty && ctrl.text.isEmpty && d.mounted) {
+            setLocal(() => ctrl.text = old);
+          }
+        }
+        prefill();
+        return AlertDialog(
+          backgroundColor: bgColor,
+          title: Text('Change Password - $name', style: TextStyle(color: baseColor)),
+          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            if (error != null) ...[
+              Text(error!, style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
+              const SizedBox(height: 8),
+            ],
+            TextField(
+              controller: ctrl, obscureText: true,
+              style: TextStyle(color: baseColor),
+              decoration: InputDecoration(
+                labelText: 'Old Password (overtype to change)', labelStyle: TextStyle(color: dimColor),
+                hintText: ctrl.text.isEmpty ? 'No stored password - enter new' : null,
+                hintStyle: TextStyle(color: dimColor),
+                filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(d), child: Text('Cancel', style: TextStyle(color: dimColor))),
+            ElevatedButton(
+              onPressed: saving
+                  ? null
+                  : () async {
+                      final pwd = ctrl.text.trim();
+                      if (pwd.length < 6) {
+                        setLocal(() => error = 'Password must be at least 6 characters');
+                        return;
+                      }
+                      setLocal(() { saving = true; error = null; });
+                      final ok = await FirebaseService.updateUserPassword(uid, pwd);
+                      if (!d.mounted) return;
+                      setLocal(() => saving = false);
+                      if (ok) {
+                        Navigator.pop(d);
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Password updated'), backgroundColor: Colors.green));
+                        }
+                      } else {
+                        setLocal(() => error = 'Failed to update password. Try again.');
+                      }
+                    },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.cyan),
+              child: const Text('Save', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        );
+      }),
     );
   }
 
@@ -1809,19 +1916,32 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             builder: (context, snapshot) {
               if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: ProfessionalLoader());
               if (snapshot.hasError) {
+                if (!_isReconnecting) {
+                  _isReconnecting = true;
+                  Future.delayed(const Duration(seconds: 3), () async {
+                    try {
+                      final user = FirebaseService.currentUser;
+                      if (user == null) {
+                        if (mounted) context.go('/auth/login');
+                        return;
+                      }
+                      await _refreshAuthToken();
+                    } catch (_) {
+                      if (FirebaseService.currentUser == null && mounted) {
+                        context.go('/auth/login');
+                        return;
+                      }
+                    }
+                    if (mounted) {
+                      _isReconnecting = false;
+                      _refreshFolderStream();
+                    }
+                  });
+                }
                 return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                  Icon(Icons.error_outline_rounded, size: 60, color: Colors.redAccent.withValues(alpha: 0.6)),
+                  const SizedBox(width: 36, height: 36, child: CircularProgressIndicator(strokeWidth: 3, color: Colors.deepPurple)),
                   const SizedBox(height: 16),
-                  const Text('Something went wrong', style: TextStyle(color: Colors.white38, fontSize: 16)),
-                  const SizedBox(height: 8),
-                  Text('${snapshot.error}', style: TextStyle(color: Colors.white24, fontSize: 11), textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis),
-                  const SizedBox(height: 16),
-                  ElevatedButton.icon(
-                    onPressed: () => _refreshFolderStream(),
-                    icon: const Icon(Icons.refresh_rounded, size: 16),
-                    label: const Text('Retry'),
-                    style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple),
-                  ),
+                  const Text('Reconnecting...', style: TextStyle(color: Colors.white38, fontSize: 16)),
                 ]));
               }
               if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {

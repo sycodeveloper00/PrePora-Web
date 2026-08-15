@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -23,11 +24,39 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
   String _accountTitle = '';
   String _accountNo = '';
   String _bankName = '';
+  DateTime? _trialEnd;
+  bool _trialLoading = true;
+  Timer? _trialTimer;
+  Duration _remaining = Duration.zero;
 
   @override
   void initState() {
     super.initState();
     _load();
+    _loadTrial();
+    _trialTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() {
+        if (_trialEnd != null) {
+          _remaining = _trialEnd!.difference(DateTime.now());
+          if (_remaining.isNegative) _remaining = Duration.zero;
+        }
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _trialTimer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadTrial() async {
+    final end = await FirebaseService.getActiveTrialEndTime();
+    if (mounted) setState(() {
+      _trialEnd = end;
+      _trialLoading = false;
+    });
   }
 
   Future<void> _load() async {
@@ -40,6 +69,15 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
       _bankName = settings['bankName'] as String? ?? '';
       _loading = false;
     });
+  }
+
+  String _trialSubtitle() {
+    if (_paidAccess) return 'Turn OFF Paid Access to enable';
+    if (_trialLoading) return 'Checking trial status...';
+    final end = _trialEnd;
+    if (end == null) return 'Give unverified students free trial';
+    if (!end.isAfter(DateTime.now())) return 'Trial ended - Give free trial';
+    return 'Active - Ends: ${_formatTrialEndDate(end)}';
   }
 
   @override
@@ -64,6 +102,7 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
                     value: _paidAccess, activeColor: Colors.blue,
                     onChanged: (v) async { await FirebaseService.updateSetting('paidAccess', v); if (mounted) setState(() => _paidAccess = v); },
                   )),
+                  _ctrlTile(context, Icons.timer_rounded, Colors.orange, 'Free Trial', _trialSubtitle(), onTap: _paidAccess || _trialLoading ? null : () => _showFreeTrialDialog(context)),
                   _ctrlTile(context, Icons.attach_money_rounded, Colors.green, 'Set Price', 'Current: Rs.${_price.toStringAsFixed(0)}', onTap: () => _showSetPriceDialog(context)),
                   _ctrlTile(context, Icons.account_balance_rounded, Colors.teal, 'Account Info', _accountTitle.isNotEmpty ? '$_accountTitle - $_bankName' : 'Add bank details', onTap: () => _showAccountInfoDialog(context)),
                 ]),
@@ -188,6 +227,142 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
       ],
     ));
   }
+
+  // ─── Free Trial Dialog ────────────────────────────────────────────────
+
+  void _showFreeTrialDialog(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final dimColor = isDark ? Colors.white38 : Colors.black54;
+    final baseColor = isDark ? Colors.white : Colors.black87;
+    final fillColor = isDark ? Colors.white10 : Colors.black12;
+    final bgColor = isDark ? const Color(0xFF1A0533) : Colors.white;
+    bool hasActiveTrial = _trialEnd != null && _trialEnd!.isAfter(DateTime.now());
+    DateTime selectedEnd = DateTime.now().add(const Duration(days: 3));
+
+    Future<void> _pickDateTime() async {
+      final date = await showDatePicker(
+        context: context,
+        initialDate: selectedEnd,
+        firstDate: DateTime.now(),
+        lastDate: DateTime.now().add(const Duration(days: 365)),
+        builder: (ctx, child) => Theme(data: Theme.of(ctx).copyWith(
+          colorScheme: ColorScheme.dark(primary: Colors.orange, surface: bgColor, onSurface: baseColor),
+          dialogBackgroundColor: bgColor,
+        ), child: child!),
+      );
+      if (date == null) return;
+      final time = await showTimePicker(
+        context: context,
+        initialTime: TimeOfDay.fromDateTime(selectedEnd),
+        builder: (ctx, child) => Theme(data: Theme.of(ctx).copyWith(
+          colorScheme: ColorScheme.dark(primary: Colors.orange, surface: bgColor, onSurface: baseColor),
+          dialogBackgroundColor: bgColor,
+        ), child: child!),
+      );
+      if (time != null) {
+        selectedEnd = DateTime(date.year, date.month, date.day, time.hour, time.minute);
+        // The dialog will show the selected date via StatefulBuilder
+      }
+    }
+
+    showDialog(context: context, builder: (d) => StatefulBuilder(builder: (ctx, setDialog) {
+      return AlertDialog(
+        backgroundColor: bgColor,
+        title: Text('Free Trial', style: TextStyle(color: baseColor)),
+        content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          if (hasActiveTrial) ...[
+            Text('Free trial is active for unverified students.', style: TextStyle(color: dimColor, fontSize: 12)),
+            const SizedBox(height: 8),
+            Text('Ends: ${_formatTrialEndDate(_trialEnd!)}', style: TextStyle(color: Colors.orange, fontSize: 14, fontWeight: FontWeight.w600)),
+            const SizedBox(height: 4),
+            Text('Remaining: ${_trialRemainingText()}', style: TextStyle(color: baseColor, fontSize: 12)),
+            const SizedBox(height: 16),
+            const Divider(),
+            const SizedBox(height: 8),
+          ],
+          Text(hasActiveTrial
+              ? 'Extend the current trial by selecting a new end date/time below.'
+              : 'Give unverified students free access until the selected date/time. When the trial ends, Paid Access turns ON automatically.',
+              style: TextStyle(color: dimColor, fontSize: 12)),
+          const SizedBox(height: 16),
+          InkWell(
+            onTap: () async {
+              await _pickDateTime();
+              setDialog(() {});
+            },
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              decoration: BoxDecoration(
+                color: fillColor,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: isDark ? Colors.white24 : Colors.black12),
+              ),
+              child: Row(children: [
+                Icon(Icons.calendar_today_rounded, color: Colors.orange, size: 20),
+                const SizedBox(width: 12),
+                Expanded(child: Text('End: ${_formatTrialEndDate(selectedEnd)}', style: TextStyle(color: baseColor, fontSize: 14, fontWeight: FontWeight.w500))),
+                Icon(Icons.edit_rounded, color: dimColor, size: 18),
+              ]),
+            ),
+          ),
+        ]),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(d), child: Text('Close', style: TextStyle(color: dimColor))),
+          ElevatedButton(onPressed: () async {
+            final now = DateTime.now();
+            if (!selectedEnd.isAfter(now)) {
+              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('End date/time must be in the future'), backgroundColor: Colors.orange));
+              return;
+            }
+            final diff = selectedEnd.difference(now);
+            final days = diff.inDays;
+            final hours = diff.inHours % 24;
+            // Auto-set Paid Access OFF when trial starts
+            await FirebaseService.updateSetting('paidAccess', false);
+            if (mounted) setState(() => _paidAccess = false);
+            final count = await FirebaseService.startFreeTrialForAll(days: days, hours: hours);
+            if (d.mounted) Navigator.pop(d);
+            await _loadTrial();
+            if (mounted) {
+              ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                content: Text(count > 0 ? 'Free trial started for $count student(s) — Paid Access turned OFF' : 'No unverified students found'),
+                backgroundColor: Colors.green,
+              ));
+            }
+          }, child: Text(hasActiveTrial ? 'Extend Trial' : 'Start Trial')),
+        ],
+      );
+    }));
+  }
+
+  String _formatTrialEndDate(DateTime dt) {
+    final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    final month = months[dt.month - 1];
+    final day = dt.day;
+    final year = dt.year;
+    final hour = dt.hour;
+    final minute = dt.minute.toString().padLeft(2, '0');
+    final period = hour >= 12 ? 'PM' : 'AM';
+    final hour12 = hour == 0 ? 12 : (hour > 12 ? hour - 12 : hour);
+    return '$day $month $year, $hour12:$minute $period';
+  }
+
+  String _trialRemainingText() {
+    final r = _remaining;
+    if (r.inSeconds <= 0) return '0s';
+    final d = r.inDays;
+    final h = r.inHours % 24;
+    final m = r.inMinutes % 60;
+    final s = r.inSeconds % 60;
+    final parts = <String>[
+      if (d > 0) '$d d',
+      if (h > 0) '$h h',
+      if (m > 0) '$m m',
+      if (s > 0) '$s s',
+    ];
+    return parts.join(' ');
+  }
+
 
   // ─── Student List for Panel ───────────────────────────────────────────
 
@@ -319,29 +494,36 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
                             if (!verified) ...[const SizedBox(width: 4), Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1), decoration: BoxDecoration(color: Colors.orange, borderRadius: BorderRadius.circular(4)), child: const Text('UNVERIFIED', style: TextStyle(color: Colors.white, fontSize: 9, fontWeight: FontWeight.bold)))],
                           ]),
                           subtitle: Text(email, style: TextStyle(color: dimColor, fontSize: 12)),
-                          trailing: IconButton(
-                            icon: Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
-                            onPressed: () async {
-                              final uid = s['id'] as String? ?? '';
-                              final confirm = await showDialog<bool>(
-                                context: ctx,
-                                builder: (d) => AlertDialog(
-                                  backgroundColor: isDark ? const Color(0xFF1A0533) : Colors.white,
-                                  title: Text('Delete Student?', style: TextStyle(color: baseColor)),
-                                  content: Text('Delete "$name"? This cannot be undone.', style: TextStyle(color: isDark ? Colors.white70 : Colors.black54)),
-                                  actions: [
-                                    TextButton(onPressed: () => Navigator.pop(d, false), child: Text('Cancel', style: TextStyle(color: isDark ? Colors.white70 : Colors.black54))),
-                                    ElevatedButton(onPressed: () => Navigator.pop(d, true), style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent), child: const Text('Delete', style: TextStyle(color: Colors.white))),
-                                  ],
-                                ),
-                              );
-                              if (confirm == true && uid.isNotEmpty) {
-                                await FirebaseService.firestore.collection('users').doc(uid).delete();
-                                await FirebaseService.deleteUserFromAuth(uid);
-                                if (ctx.mounted) Navigator.pop(ctx);
-                              }
-                            },
-                          ),
+                          trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                            IconButton(
+                              icon: Icon(Icons.password_rounded, color: Colors.cyan, size: 20),
+                              tooltip: 'Change Password',
+                              onPressed: () => _showStudentPasswordDialog(ctx, s['id'] as String? ?? '', name),
+                            ),
+                            IconButton(
+                              icon: Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
+                              onPressed: () async {
+                                final uid = s['id'] as String? ?? '';
+                                final confirm = await showDialog<bool>(
+                                  context: ctx,
+                                  builder: (d) => AlertDialog(
+                                    backgroundColor: isDark ? const Color(0xFF1A0533) : Colors.white,
+                                    title: Text('Delete Student?', style: TextStyle(color: baseColor)),
+                                    content: Text('Delete "$name"? This cannot be undone.', style: TextStyle(color: isDark ? Colors.white70 : Colors.black54)),
+                                    actions: [
+                                      TextButton(onPressed: () => Navigator.pop(d, false), child: Text('Cancel', style: TextStyle(color: isDark ? Colors.white70 : Colors.black54))),
+                                      ElevatedButton(onPressed: () => Navigator.pop(d, true), style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent), child: const Text('Delete', style: TextStyle(color: Colors.white))),
+                                    ],
+                                  ),
+                                );
+                                if (confirm == true && uid.isNotEmpty) {
+                                  await FirebaseService.firestore.collection('users').doc(uid).delete();
+                                  await FirebaseService.deleteUserFromAuth(uid);
+                                  if (ctx.mounted) Navigator.pop(ctx);
+                                }
+                              },
+                            ),
+                          ]),
                         ),
                       );
                     },
@@ -514,6 +696,11 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
                           Text(email, style: const TextStyle(color: Colors.teal, fontSize: 12)),
                         ])),
                         IconButton(
+                          icon: const Icon(Icons.password_rounded, color: Colors.cyan, size: 20),
+                          tooltip: 'Change Password',
+                          onPressed: () => _showAssistantPasswordDialog(context, name, docs[i].id),
+                        ),
+                        IconButton(
                           icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
                           onPressed: () async {
                             final uid = docs[i].id;
@@ -544,6 +731,148 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
           ),
         ]),
       ),
+    );
+  }
+
+  void _showAssistantPasswordDialog(BuildContext context, String name, String uid) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final baseColor = isDark ? Colors.white : Colors.black87;
+    final dimColor = isDark ? Colors.white38 : Colors.black54;
+    final fillColor = isDark ? Colors.white10 : Colors.black12;
+    final bgColor = isDark ? const Color(0xFF1A0533) : Colors.white;
+    final ctrl = TextEditingController();
+    bool saving = false;
+    String? error;
+    showDialog(
+      context: context,
+      builder: (d) => StatefulBuilder(builder: (d, setLocal) {
+        Future<void> prefill() async {
+          final old = await FirebaseService.getUserStoredPassword(uid);
+          if (old.isNotEmpty && ctrl.text.isEmpty && d.mounted) {
+            setLocal(() => ctrl.text = old);
+          }
+        }
+        prefill();
+        return AlertDialog(
+          backgroundColor: bgColor,
+          title: Text('Change Password - $name', style: TextStyle(color: baseColor)),
+          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            if (error != null) ...[
+              Text(error!, style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
+              const SizedBox(height: 8),
+            ],
+            TextField(
+              controller: ctrl, obscureText: true,
+              style: TextStyle(color: baseColor),
+              decoration: InputDecoration(
+                labelText: 'Old Password (overtype to change)', labelStyle: TextStyle(color: dimColor),
+                hintText: ctrl.text.isEmpty ? 'No stored password - enter new' : null,
+                hintStyle: TextStyle(color: dimColor),
+                filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(d), child: Text('Cancel', style: TextStyle(color: dimColor))),
+            ElevatedButton(
+              onPressed: saving
+                  ? null
+                  : () async {
+                      final pwd = ctrl.text.trim();
+                      if (pwd.length < 6) {
+                        setLocal(() => error = 'Password must be at least 6 characters');
+                        return;
+                      }
+                      setLocal(() { saving = true; error = null; });
+                      final ok = await FirebaseService.updateUserPassword(uid, pwd);
+                      if (!d.mounted) return;
+                      setLocal(() => saving = false);
+                      if (ok) {
+                        Navigator.pop(d);
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Password updated'), backgroundColor: Colors.green));
+                        }
+                      } else {
+                        setLocal(() => error = 'Failed to update password. Try again.');
+                      }
+                    },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.cyan),
+              child: const Text('Save', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        );
+      }),
+    );
+  }
+
+  void _showStudentPasswordDialog(BuildContext context, String uid, String name) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final baseColor = isDark ? Colors.white : Colors.black87;
+    final dimColor = isDark ? Colors.white38 : Colors.black54;
+    final fillColor = isDark ? Colors.white10 : Colors.black12;
+    final bgColor = isDark ? const Color(0xFF1A0533) : Colors.white;
+    final ctrl = TextEditingController();
+    bool saving = false;
+    String? error;
+    showDialog(
+      context: context,
+      builder: (d) => StatefulBuilder(builder: (d, setLocal) {
+        Future<void> prefill() async {
+          final old = await FirebaseService.getUserStoredPassword(uid);
+          if (old.isNotEmpty && ctrl.text.isEmpty && d.mounted) {
+            setLocal(() => ctrl.text = old);
+          }
+        }
+        prefill();
+        return AlertDialog(
+          backgroundColor: bgColor,
+          title: Text('Change Password - $name', style: TextStyle(color: baseColor)),
+          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            if (error != null) ...[
+              Text(error!, style: const TextStyle(color: Colors.redAccent, fontSize: 12)),
+              const SizedBox(height: 8),
+            ],
+            TextField(
+              controller: ctrl, obscureText: true,
+              style: TextStyle(color: baseColor),
+              decoration: InputDecoration(
+                labelText: 'Old Password (overtype to change)', labelStyle: TextStyle(color: dimColor),
+                hintText: ctrl.text.isEmpty ? 'No stored password - enter new' : null,
+                hintStyle: TextStyle(color: dimColor),
+                filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(d), child: Text('Cancel', style: TextStyle(color: dimColor))),
+            ElevatedButton(
+              onPressed: saving
+                  ? null
+                  : () async {
+                      final pwd = ctrl.text.trim();
+                      if (pwd.length < 6) {
+                        setLocal(() => error = 'Password must be at least 6 characters');
+                        return;
+                      }
+                      setLocal(() { saving = true; error = null; });
+                      final ok = await FirebaseService.updateUserPassword(uid, pwd);
+                      if (!d.mounted) return;
+                      setLocal(() => saving = false);
+                      if (ok) {
+                        Navigator.pop(d);
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Password updated'), backgroundColor: Colors.green));
+                        }
+                      } else {
+                        setLocal(() => error = 'Failed to update password. Try again.');
+                      }
+                    },
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.cyan),
+              child: const Text('Save', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        );
+      }),
     );
   }
 
@@ -749,6 +1078,13 @@ class _StudentActivityPageState extends State<StudentActivityPage> {
           const SizedBox(width: 8),
           Text('Student Activity', style: TextStyle(color: widget.baseColor, fontWeight: FontWeight.bold, fontSize: 16)),
         ]),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.campaign_rounded, color: Colors.orange),
+            tooltip: 'Send Notification to All Students',
+            onPressed: () => _showSendToAllDialog(context),
+          ),
+        ],
       ),
       body: Column(
       children: [
@@ -826,6 +1162,47 @@ class _StudentActivityPageState extends State<StudentActivityPage> {
         bgColor: widget.bgColor, cardBg: widget.cardBg,
       ),
     ));
+  }
+
+  void _showSendToAllDialog(BuildContext context) {
+    final msgCtrl = TextEditingController();
+    final baseColor = widget.baseColor;
+    final dimColor = widget.dimColor;
+    final fillColor = widget.isDark ? Colors.white10 : Colors.black12;
+    showDialog(
+      context: context,
+      builder: (d) => AlertDialog(
+        backgroundColor: widget.bgColor,
+        title: Text('Notify All Students', style: TextStyle(color: baseColor, fontSize: 16)),
+        content: TextField(
+          controller: msgCtrl, maxLines: 3,
+          style: TextStyle(color: baseColor),
+          decoration: InputDecoration(
+            hintText: 'Type your notification message...', hintStyle: TextStyle(color: dimColor),
+            filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(d), child: Text('Cancel', style: TextStyle(color: dimColor))),
+          ElevatedButton(
+            onPressed: () async {
+              final msg = msgCtrl.text.trim();
+              if (msg.isEmpty) return;
+              final count = await FirebaseService.addNotificationToAllStudents(msg);
+              if (d.mounted) Navigator.pop(d);
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+                  content: Text('Notification sent to $count student(s)'),
+                  backgroundColor: Colors.green,
+                ));
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+            child: const Text('Send to All', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showSendNotificationDialog(String uid, String name) {
@@ -951,6 +1328,9 @@ class _StudentDevicePageState extends State<_StudentDevicePage> with SingleTicke
           .snapshots(),
       builder: (ctx, loginSnap) {
         if (loginSnap.hasError) {
+          if (FirebaseService.currentUser == null) {
+            ctx.go('/auth/login');
+          }
           return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
             Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 32),
             const SizedBox(height: 8),
@@ -983,10 +1363,12 @@ class _StudentDevicePageState extends State<_StudentDevicePage> with SingleTicke
         return StreamBuilder<QuerySnapshot>(
           stream: FirebaseService.firestore.collection('web_sessions')
               .where('uid', isEqualTo: widget.uid)
-              .where('status', isEqualTo: 'connected')
               .snapshots(),
           builder: (ctx, webSnap) {
-            final activeWebSessions = webSnap.hasData ? webSnap.data!.docs : [];
+            final allWebSessions = webSnap.hasData ? webSnap.data!.docs : [];
+            final activeWebSessions = allWebSessions
+                .where((doc) => (doc.data() as Map<String, dynamic>)['status'] == 'connected')
+                .toList();
             return ListView.separated(
               padding: const EdgeInsets.all(16),
               itemCount: loginLogs.length,
@@ -1089,6 +1471,9 @@ class _StudentDevicePageState extends State<_StudentDevicePage> with SingleTicke
           .snapshots(),
       builder: (ctx, snap) {
         if (snap.hasError) {
+          if (FirebaseService.currentUser == null) {
+            ctx.go('/auth/login');
+          }
           return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
             Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 32),
             const SizedBox(height: 8),
@@ -1251,6 +1636,9 @@ class _AdminLinkHistoryScreenState extends State<_AdminLinkHistoryScreen> {
                   .snapshots(),
               builder: (ctx, snap) {
                 if (snap.hasError) {
+                  if (FirebaseService.currentUser == null) {
+                    ctx.go('/auth/login');
+                  }
                   return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                     Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 32),
                     const SizedBox(height: 8),
@@ -1270,6 +1658,11 @@ class _AdminLinkHistoryScreenState extends State<_AdminLinkHistoryScreen> {
                   if (bT == null) return -1;
                   return bT.compareTo(aT);
                 });
+                sessions = sessions.where((doc) {
+                  final data = doc.data() as Map<String, dynamic>;
+                  final devId = data['androidDeviceId'] as String? ?? '';
+                  return devId == widget.deviceId;
+                }).toList();
                 if (sessions.isEmpty) {
                   return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                     Icon(Icons.language_rounded, size: 48, color: widget.dimColor.withValues(alpha: 0.3)),
@@ -1288,7 +1681,7 @@ class _AdminLinkHistoryScreenState extends State<_AdminLinkHistoryScreen> {
                     final disconnectedAt = (d['disconnectedAt'] as Timestamp?)?.toDate();
                     final status = d['status'] ?? 'disconnected';
                     final isActive = status == 'connected';
-                    final deviceInfo = d['deviceInfo'] as String? ?? 'Web Browser';
+                    final deviceInfo = (d['webBrowser'] as String?) ?? 'Web Browser';
                     return Container(
                       margin: const EdgeInsets.only(bottom: 12),
                       decoration: BoxDecoration(

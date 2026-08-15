@@ -47,8 +47,13 @@ class _LoginScreenState extends State<LoginScreen> {
           AuthGuard.setUserRole(role);
         }
         if (role == 'admin' || role == 'Assistant') {
+          final isQrDomain = Uri.base.host.contains('prepora-web');
+          SessionManager.configure(
+            timeout: isQrDomain ? const Duration(hours: 1) : const Duration(minutes: 20),
+            redirectPath: isQrDomain ? '/link-web' : '/auth/login',
+          );
           SessionManager.start(onExpiredCallback: () async {
-            if (context.mounted) context.go('/auth/login');
+            if (context.mounted) context.go(SessionManager.redirectPath);
             await Future.delayed(const Duration(milliseconds: 500));
             await FirebaseService.signOut();
           });

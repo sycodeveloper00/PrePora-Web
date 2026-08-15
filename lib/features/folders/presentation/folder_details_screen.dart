@@ -8,6 +8,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:open_filex/open_filex.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:http/http.dart' as http;
+import '../../../core/services/upload_manager.dart';
 import '../../../core/widgets/glassmorphic_container.dart';
 import '../../../core/widgets/professional_loader.dart';
 import '../../../core/services/firebase_service.dart';
@@ -46,6 +47,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   bool _isBlocked = false;
   bool _isVerified = true;
   bool _isPaidAccess = false;
+  bool _isFreeTrialActive = false;
   final Map<String, int> _localOrderMap = {};
   bool _hasLocalOrder = false;
   Set<String> _selectedIds = {};
@@ -53,12 +55,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   List<String> _visibleContentIds = [];
   String? _groupLink;
   String _sortMode = 'custom';
-  final Map<String, double> _uploadProgress = {};
-  bool _isUploading = false;
-  final Map<String, bool> _filePaused = {};
-  List<Map<String, dynamic>> _uploadQueue = [];
-  int _currentUploadIndex = -1;
-  DateTime? _uploadStartTime;
+  final Set<String> _expandedDescriptions = {};
 
   int _naturalCompare(String a, String b) {
     final aLower = a.toLowerCase();
@@ -98,10 +95,14 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   // ─── Cached futures & streams to prevent blinking rebuild loops ───
   late Future<DocumentSnapshot> _folderFuture;
   late Stream<QuerySnapshot> _contentsStream;
+  bool _isReconnecting = false;
 
   @override
   void initState() {
     super.initState();
+    UploadManager.instance.addListener(_onUploadChanged);
+    UploadManager.instance.onContentSaved = _saveUploadedContent;
+    UploadManager.instance.onBatchComplete = _handleBatchComplete;
     if (widget.assistantContentAccess != null) {
       _assistantAccess = widget.assistantContentAccess!;
     }
@@ -116,6 +117,77 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     _loadSubfolderName();
     _loadGroupLink();
     _loadSortMode();
+    UploadManager.instance.resumePending();
+  }
+
+  @override
+  void dispose() {
+    if (UploadManager.instance.onContentSaved == _saveUploadedContent) {
+      UploadManager.instance.onContentSaved = null;
+    }
+    if (UploadManager.instance.onBatchComplete == _handleBatchComplete) {
+      UploadManager.instance.onBatchComplete = null;
+    }
+    UploadManager.instance.removeListener(_onUploadChanged);
+    super.dispose();
+  }
+
+  void _onUploadChanged() {
+    if (mounted) setState(() {});
+  }
+
+  bool _descExceedsLines(String text, BuildContext context) {
+    final tp = TextPainter(
+      text: TextSpan(text: text, style: TextStyle(fontSize: 12, height: 1.4)),
+      maxLines: 6,
+      textDirection: Directionality.of(context),
+    )..layout(maxWidth: 260);
+    return tp.didExceedMaxLines;
+  }
+
+  void _handleBatchComplete(Map<String, Map<String, int>> results) {
+    final res = results[widget.folderId];
+    if (res == null || !mounted) return;
+    final completed = res['completed'] ?? 0;
+    final failed = res['failed'] ?? 0;
+    final cancelled = res['cancelled'] ?? 0;
+    final msg = StringBuffer('$completed uploaded');
+    if (failed > 0) msg.write(', $failed failed');
+    if (cancelled > 0) msg.write(', $cancelled cancelled');
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+      content: Text(msg.toString()),
+      backgroundColor: completed > 0 ? Colors.green : Colors.orange,
+    ));
+  }
+
+  Future<void> _saveUploadedContent(
+    String folderId,
+    String name,
+    String downloadUrl,
+    String? parentContentId,
+  ) async {
+    try {
+      final provider = await FirebaseService.getStorageProvider();
+      final actualProvider = provider == 'both'
+          ? (downloadUrl.contains('cloudinary.com') ? 'cloudinary' : 'supabase')
+          : provider;
+      final data = <String, dynamic>{'type': 'file', 'name': name, 'url': downloadUrl, 'source': 'storage', 'provider': actualProvider};
+      if (actualProvider == 'cloudinary') data['cloudAccount'] = await FirebaseService.getActiveCloudinaryAccountName();
+      if (parentContentId != null) data['parentContentId'] = parentContentId;
+      final newId = await FirebaseService.addFolderContent(folderId, data);
+      if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
+      await _sendScopedNotification('Uploaded file: $name', parentContentId: parentContentId);
+    } catch (_) {}
+  }
+
+  void _refreshContentsStream() {
+    setState(() {
+      _contentsStream = FirebaseService.firestore
+          .collection('folders')
+          .doc(widget.folderId)
+          .collection('contents')
+          .snapshots();
+    });
   }
 
   void _loadSubfolderName() async {
@@ -138,11 +210,18 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
       final blocked = await FirebaseService.isStudentBlocked(uid);
       final settings = await FirebaseService.getSettings();
       final paidAccess = settings['paidAccess'] as bool? ?? false;
-      final verified = paidAccess ? await FirebaseService.isStudentVerified(uid) : true;
+      final verified = await FirebaseService.isStudentVerified(uid);
+      final trial = await FirebaseService.getFreeTrial(uid);
+      final trialEnd = trial['endsAt'] as DateTime?;
+      final trialActive = trial['active'] == true;
+      if (trialActive && trialEnd != null && !trialEnd.isAfter(DateTime.now())) {
+        await FirebaseService.expireFreeTrial(uid);
+      }
       if (mounted) setState(() {
         _isBlocked = blocked;
         _isVerified = verified;
         _isPaidAccess = paidAccess;
+        _isFreeTrialActive = trialActive && (trialEnd?.isAfter(DateTime.now()) ?? false);
       });
     }
   }
@@ -464,33 +543,49 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
 
   void _addSubFolder(BuildContext ctx) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final ctrl = TextEditingController();
+    final nameCtrl = TextEditingController();
+    final descCtrl = TextEditingController();
     showDialog(
       context: context,
       builder: (d) => AlertDialog(
         backgroundColor: isDark ? const Color(0xFF1A0533) : Colors.white,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
         title: Text('New Sub-Folder', style: TextStyle(color: isDark ? Colors.white : Colors.black87)),
-        content: SingleChildScrollView(child: TextField(
-          controller: ctrl, autofocus: true,
-          style: TextStyle(color: isDark ? Colors.white : Colors.black87),
-          decoration: InputDecoration(
-            hintText: 'Sub-folder name...', hintStyle: TextStyle(color: isDark ? Colors.white38 : Colors.black38),
-            filled: true, fillColor: isDark ? Colors.white10 : Colors.black12,
-            border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+        content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
+          TextField(
+            controller: nameCtrl, autofocus: true,
+            style: TextStyle(color: isDark ? Colors.white : Colors.black87),
+            decoration: InputDecoration(
+              hintText: 'Sub-folder name...', hintStyle: TextStyle(color: isDark ? Colors.white38 : Colors.black38),
+              filled: true, fillColor: isDark ? Colors.white10 : Colors.black12,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+            ),
           ),
-        )),
+          const SizedBox(height: 12),
+          TextField(
+            controller: descCtrl, maxLines: null, minLines: 2,
+            style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 13),
+            decoration: InputDecoration(
+              hintText: 'Description (optional)...', hintStyle: TextStyle(color: isDark ? Colors.white38 : Colors.black38),
+              filled: true, fillColor: isDark ? Colors.white10 : Colors.black12,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none),
+              contentPadding: const EdgeInsets.all(14),
+            ),
+          ),
+        ])),
         actions: [
           TextButton(onPressed: () => Navigator.pop(d), child: Text('Cancel', style: TextStyle(color: isDark ? Colors.white70 : Colors.black54))),
           ElevatedButton(
             onPressed: () async {
-              if (ctrl.text.trim().isEmpty) return;
+              if (nameCtrl.text.trim().isEmpty) return;
               Navigator.pop(d);
-              final data = {'type': 'subfolder', 'name': ctrl.text.trim(), 'level': (widget.parentContentId != null) ? 1 : 0};
+              final data = <String, dynamic>{'type': 'subfolder', 'name': nameCtrl.text.trim(), 'level': (widget.parentContentId != null) ? 1 : 0};
+              final desc = descCtrl.text.trim();
+              if (desc.isNotEmpty) data['description'] = desc;
               if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
               final newId = await FirebaseService.addFolderContent(widget.folderId, data);
               if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
-              await _sendScopedNotification('Created sub-folder: ${ctrl.text.trim()}', parentContentId: widget.parentContentId);
+              await _sendScopedNotification('Created sub-folder: ${nameCtrl.text.trim()}', parentContentId: widget.parentContentId);
               _refreshAssistantAccess();
             },
             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A148C)),
@@ -586,7 +681,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
       final result = await FilePicker.platform.pickFiles(type: FileType.any, allowMultiple: true, withData: true);
       if (result != null && result.files.isNotEmpty) {
         SessionManager.pause();
-        _uploadQueue = [];
+        final files = <Map<String, dynamic>>[];
         for (final file in result.files) {
           final bytes = file.bytes ?? (!kIsWeb && file.path != null ? File(file.path!).readAsBytesSync() : null);
           if (bytes == null) continue;
@@ -599,7 +694,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
             }
             continue;
           }
-          _uploadQueue.add({
+          files.add({
             'name': file.name,
             'bytes': bytes,
             'totalBytes': bytes.length,
@@ -608,90 +703,19 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
             'url': null,
           });
         }
-        if (_uploadQueue.isEmpty) return;
-        if (mounted) setState(() {
-          _isUploading = true;
-          _currentUploadIndex = 0;
-          _uploadStartTime = DateTime.now();
-          _filePaused.clear();
-          for (final q in _uploadQueue) { _filePaused[q['name'] as String] = false; }
-        });
-        SessionManager.setUploading(true);
-        await _processUploadQueue();
+        if (files.isEmpty) return;
+        UploadManager.instance.startUpload(
+          folderId: widget.folderId,
+          parentContentId: widget.parentContentId,
+          files: files,
+        );
       }
     } catch (e) {
       if (ctx.mounted) {
         ScaffoldMessenger.of(ctx).showSnackBar(SnackBar(content: Text('Error: $e'), backgroundColor: Colors.redAccent, duration: const Duration(seconds: 5)));
       }
-    } finally {
+} finally {
       SessionManager.resume();
-    }
-  }
-
-  Future<void> _processUploadQueue() async {
-    while (_currentUploadIndex < _uploadQueue.length) {
-      if (!mounted) return;
-      final item = _uploadQueue[_currentUploadIndex];
-      final name = item['name'] as String;
-      if (item['status'] != 'pending') {
-        _currentUploadIndex++;
-        continue;
-      }
-      while (_filePaused[name] == true && mounted) {
-        await Future.delayed(const Duration(milliseconds: 200));
-      }
-      if (!mounted) return;
-      if (mounted) setState(() {
-        item['status'] = 'uploading';
-        item['uploadStartedAt'] = DateTime.now().millisecondsSinceEpoch;
-        _uploadProgress[name] = 0;
-      });
-      try {
-        final bytes = item['bytes'] as Uint8List;
-        final downloadUrl = await FirebaseService.uploadFile(bytes, name, onProgress: (p) {
-          if (mounted) setState(() {
-            _uploadProgress[name] = p;
-            item['uploadedBytes'] = ((item['totalBytes'] as int) * p).toInt();
-          });
-        });
-        final provider = await FirebaseService.getStorageProvider();
-        final actualProvider = provider == 'both'
-            ? (downloadUrl.contains('cloudinary.com') ? 'cloudinary' : 'supabase')
-            : provider;
-        final data = <String, dynamic>{'type': 'file', 'name': name, 'url': downloadUrl, 'source': 'storage', 'provider': actualProvider};
-        if (actualProvider == 'cloudinary') data['cloudAccount'] = await FirebaseService.getActiveCloudinaryAccountName();
-        if (widget.parentContentId != null) data['parentContentId'] = widget.parentContentId!;
-        final newId = await FirebaseService.addFolderContent(widget.folderId, data);
-        if (newId != null && !widget.isAdmin) { _assistantAccess.add(newId); _pendingOptimistic.add(newId); }
-        await _sendScopedNotification('Uploaded file: $name', parentContentId: widget.parentContentId);
-        if (mounted) setState(() {
-          item['status'] = 'completed';
-          item['url'] = downloadUrl;
-          _uploadProgress.remove(name);
-        });
-      } catch (e) {
-        if (mounted) setState(() {
-          item['status'] = 'failed';
-          item['error'] = e.toString();
-          _uploadProgress.remove(name);
-        });
-      }
-      _currentUploadIndex++;
-    }
-    _refreshAssistantAccess();
-    if (mounted) {
-      final completed = _uploadQueue.where((q) => q['status'] == 'completed').length;
-      final failed = _uploadQueue.where((q) => q['status'] == 'failed').length;
-      final cancelled = _uploadQueue.where((q) => q['status'] == 'cancelled').length;
-      final msg = StringBuffer('$completed uploaded');
-      if (failed > 0) msg.write(', $failed failed');
-      if (cancelled > 0) msg.write(', $cancelled cancelled');
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg.toString()), backgroundColor: completed > 0 ? Colors.green : Colors.orange));
-      SessionManager.setUploading(false);
-      setState(() {
-        _isUploading = false;
-        _uploadStartTime = null;
-      });
     }
   }
 
@@ -920,13 +944,13 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               ? file.name.substring(0, file.name.lastIndexOf('.'))
               : file.name;
 
-          if (mounted) setState(() => _uploadProgress[file.name] = 0);
+          UploadManager.instance.updateProgress(file.name, 0, 0);
 
           try {
             final downloadUrl = await FirebaseService.uploadFile(bytes, file.name, onProgress: (p) {
-              if (mounted) setState(() => _uploadProgress[file.name] = p);
+              UploadManager.instance.updateProgress(file.name, p, ((bytes.length) * p).toInt());
             });
-            if (mounted) setState(() => _uploadProgress.remove(file.name));
+            UploadManager.instance.progress.remove(file.name);
 
             final provider = await FirebaseService.getStorageProvider();
             final actualProvider = provider == 'both'
@@ -947,7 +971,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
             await _sendScopedNotification('Uploaded mock test file: $displayName', parentContentId: widget.parentContentId);
             count++;
           } catch (e) {
-            if (mounted) setState(() => _uploadProgress.remove(file.name));
+            UploadManager.instance.progress.remove(file.name);
             rethrow;
           }
         }
@@ -1040,6 +1064,54 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
             },
             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A148C)),
             child: const Text('Rename', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showEditSubfolderDialog(String contentId, String currentName, String? currentDescription) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final baseColor = isDark ? Colors.white : Colors.black87;
+    final dimColor = isDark ? Colors.white38 : Colors.black38;
+    final fillColor = isDark ? Colors.white10 : Colors.black12;
+    final nameCtrl = TextEditingController(text: currentName);
+    final descCtrl = TextEditingController(text: currentDescription ?? '');
+    showDialog(
+      context: context,
+      builder: (d) => AlertDialog(
+        backgroundColor: isDark ? const Color(0xFF1A0533) : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: Text('Edit Sub-Folder', style: TextStyle(color: baseColor)),
+        content: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text('Title', style: TextStyle(color: isDark ? Colors.white70 : Colors.black54, fontSize: 12, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 6),
+          TextField(controller: nameCtrl, autofocus: true, style: TextStyle(color: baseColor, fontWeight: FontWeight.bold, fontSize: 14),
+            decoration: InputDecoration(hintText: 'Sub-folder name...', hintStyle: TextStyle(color: dimColor), filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none), contentPadding: const EdgeInsets.all(14))),
+          const SizedBox(height: 16),
+          Text('Description', style: TextStyle(color: isDark ? Colors.white70 : Colors.black54, fontSize: 12, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 6),
+          TextField(controller: descCtrl, maxLines: null, minLines: 3, style: TextStyle(color: baseColor, fontSize: 13),
+            decoration: InputDecoration(hintText: 'Add a description...', hintStyle: TextStyle(color: dimColor), filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12), borderSide: BorderSide.none), contentPadding: const EdgeInsets.all(14))),
+        ])),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(d), child: Text('Cancel', style: TextStyle(color: isDark ? Colors.white70 : Colors.black54))),
+          ElevatedButton(
+            onPressed: () async {
+              if (nameCtrl.text.trim().isEmpty) return;
+              Navigator.pop(d);
+              await FirebaseService.renameFolderContent(widget.folderId, contentId, nameCtrl.text.trim());
+              final newDesc = descCtrl.text.trim();
+              if (newDesc.isEmpty) {
+                await FirebaseService.firestore.collection('folders').doc(widget.folderId).collection('contents').doc(contentId).update({
+                  'description': FieldValue.delete(),
+                });
+              } else {
+                await FirebaseService.updateContentField(widget.folderId, contentId, 'description', newDesc);
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A148C)),
+            child: const Text('Save', style: TextStyle(color: Colors.white)),
           ),
         ],
       ),
@@ -1233,7 +1305,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
   }
 
   Future<void> _openContent(Map<String, dynamic> data, {String? folderName}) async {
-    folderName ??= _folderName;
+    folderName ??= _subfolderName.isNotEmpty ? _subfolderName : _folderName;
     final type = data['type'] as String? ?? 'file';
     final name = FirebaseService.cleanTitle(data['name'] as String? ?? '');
     final locked = data['locked'] as bool? ?? false;
@@ -1294,7 +1366,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
         final fileType = data['fileType'] as String? ?? 'pdf';
         if (url.isNotEmpty) {
           if (fileType == 'pdf') {
-            context.push('/pdf_reader/view', extra: {'url': url, 'folderId': widget.folderId, 'parentContentId': widget.parentContentId}).then((_) {
+            context.push('/pdf_reader/view', extra: {'url': url, 'folderId': widget.folderId, 'parentContentId': widget.parentContentId, 'title': name}).then((_) {
               if (activityId != null) FirebaseService.endActivity(activityId!);
             });
           } else {
@@ -1343,7 +1415,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
         if (activityId != null) FirebaseService.endActivity(activityId);
       });
     } else if (ext == 'pdf') {
-      context.push('/pdf_reader/view', extra: {'url': url, 'folderId': widget.folderId, 'parentContentId': widget.parentContentId}).then((_) {
+      context.push('/pdf_reader/view', extra: {'url': url, 'folderId': widget.folderId, 'parentContentId': widget.parentContentId, 'title': name}).then((_) {
         if (activityId != null) FirebaseService.endActivity(activityId);
       });
     } else if (['mp4', 'avi', 'mkv', 'mov', 'wmv', 'flv', 'webm'].contains(ext)) {
@@ -1497,7 +1569,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                       ),
                     ],
                   ),
-                  if (_isUploading) ...[
+                  if (UploadManager.instance.activeFolderIds.contains(widget.folderId)) ...[
                     const SizedBox(width: 8),
                     GestureDetector(
                       onTap: () => _showUploadPopup(),
@@ -1515,7 +1587,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                           ),
                           const SizedBox(width: 6),
                           Text(
-                            'Uploading (${_uploadQueue.where((q) => q['status'] == 'completed').length}/${_uploadQueue.length})',
+                            'Uploading (${UploadManager.instance.completedCountForFolder(widget.folderId)}/${UploadManager.instance.totalCountForFolder(widget.folderId)})',
                             style: const TextStyle(color: Colors.green, fontSize: 12, fontWeight: FontWeight.w600),
                           ),
                         ]),
@@ -1530,6 +1602,35 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                   stream: _contentsStream,
                   builder: (context, snapshot) {
                     if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: ProfessionalLoader());
+                    if (snapshot.hasError) {
+                      if (!_isReconnecting) {
+                        _isReconnecting = true;
+                        Future.delayed(const Duration(seconds: 3), () async {
+                          try {
+                            final user = FirebaseService.currentUser;
+                            if (user == null) {
+                              if (mounted) context.go('/auth/login');
+                              return;
+                            }
+                            await user.getIdToken(true);
+                          } catch (_) {
+                            if (FirebaseService.currentUser == null && mounted) {
+                              context.go('/auth/login');
+                              return;
+                            }
+                          }
+                          if (mounted) {
+                            _isReconnecting = false;
+                            _refreshContentsStream();
+                          }
+                        });
+                      }
+                      return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                        const SizedBox(width: 36, height: 36, child: CircularProgressIndicator(strokeWidth: 3, color: Colors.deepPurple)),
+                        const SizedBox(height: 16),
+                        const Text('Reconnecting...', style: TextStyle(color: Colors.white38, fontSize: 16)),
+                      ]));
+                    }
                     if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
                       return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                         const Icon(Icons.folder_open_rounded, size: 80, color: Colors.white12),
@@ -1694,7 +1795,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                   onPressed: () => _showUploadOptions(context),
                   child: const Icon(Icons.add, color: Colors.white),
                 )
-              : (_isBlocked || (_isPaidAccess && !_isVerified))
+              : (_isBlocked || (_isPaidAccess && !_isVerified && !_isFreeTrialActive))
                   ? const SizedBox.shrink()
                   : FutureBuilder<String?>(
                       future: FirebaseService.getGroupLinkForLevel(widget.folderId, parentContentId: widget.parentContentId ?? 'root'),
@@ -1940,16 +2041,18 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
           refreshTimer = Timer.periodic(const Duration(seconds: 1), (_) {
             if (ctx.mounted) refreshDialog(); else refreshTimer?.cancel();
           });
-          final completed = _uploadQueue.where((q) => q['status'] == 'completed').length;
-          final failed = _uploadQueue.where((q) => q['status'] == 'failed').length;
-          final cancelled = _uploadQueue.where((q) => q['status'] == 'cancelled').length;
-          final uploading = _uploadQueue.where((q) => q['status'] == 'uploading').length;
-          final total = _uploadQueue.length;
+          final mgr = UploadManager.instance;
+          final folderFiles = mgr.filesForFolder(widget.folderId);
+          final completed = mgr.completedCountForFolder(widget.folderId);
+          final failed = folderFiles.where((q) => q['status'] == 'failed').length;
+          final cancelled = folderFiles.where((q) => q['status'] == 'cancelled').length;
+          final uploading = folderFiles.where((q) => q['status'] == 'uploading').length;
+          final total = mgr.totalCountForFolder(widget.folderId);
           final done = completed + failed + cancelled;
           String? etaText;
-          if (_uploadStartTime != null && done > 0 && done < total) {
-            final elapsed = DateTime.now().difference(_uploadStartTime!).inSeconds;
-            if (elapsed > 0) {
+          if (mgr.startTime != null && uploading > 0 && done >= 0 && total > 0) {
+            final elapsed = DateTime.now().difference(mgr.startTime!).inSeconds;
+            if (elapsed > 0 && done > 0) {
               final perFile = elapsed / done;
               final remaining = ((total - done) * perFile).round();
               etaText = remaining >= 60 ? '${(remaining / 60).floor()}m ${remaining % 60}s left' : '${remaining}s left';
@@ -1985,13 +2088,14 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                 Flexible(
                   child: ListView.builder(
                     padding: const EdgeInsets.symmetric(vertical: 8),
-                    itemCount: _uploadQueue.length,
+                    itemCount: folderFiles.length,
                     itemBuilder: (_, i) {
-                      final item = _uploadQueue[i];
+                      final item = folderFiles[i];
                       final name = item['name'] as String;
                       final totalBytes = item['totalBytes'] as int;
                       final status = item['status'] as String;
-                      final progress = _uploadProgress[name] ?? 0.0;
+                      final fileId = item['id'] as String?;
+                      final progress = fileId != null ? (mgr.progress[fileId] ?? 0.0) : 0.0;
                       final uploadedBytes = (totalBytes * progress).toInt();
                       final sizeStr = totalBytes > 1024 * 1024 ? '${(totalBytes / 1024 / 1024).toStringAsFixed(1)} MB' : '${(totalBytes / 1024).toStringAsFixed(0)} KB';
                       final uploadedStr = uploadedBytes > 1024 * 1024 ? '${(uploadedBytes / 1024 / 1024).toStringAsFixed(1)} MB' : '${(uploadedBytes / 1024).toStringAsFixed(0)} KB';
@@ -2037,17 +2141,21 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                           const SizedBox(width: 8),
                           if (status == 'uploading') ...[
                             _popupFileBtn(
-                              _filePaused[name] == true ? Icons.play_arrow_rounded : Icons.pause_rounded,
-                              _filePaused[name] == true ? Colors.green : Colors.orange,
+                              mgr.filePaused[fileId] == true ? Icons.play_arrow_rounded : Icons.pause_rounded,
+                              mgr.filePaused[fileId] == true ? Colors.green : Colors.orange,
                               () {
-                                _filePaused[name] = !(_filePaused[name] ?? false);
+                                if (mgr.filePaused[fileId] == true) {
+                                  mgr.resumeFile(fileId!);
+                                } else {
+                                  mgr.pauseFile(fileId!);
+                                }
                                 refreshDialog();
                               },
                             ),
                             const SizedBox(width: 4),
                             _popupFileBtn(Icons.close_rounded, Colors.redAccent, () {
                               setState(() {
-                                _filePaused[name] = false;
+                                mgr.resumeFile(fileId!);
                                 item['status'] = 'cancelled';
                               });
                               refreshDialog();
@@ -2199,7 +2307,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                         _showContentAssistantSheet(id, name);
                       case 'edit':
                         if (data['type'] == 'subfolder') {
-                          _showRenameContentDialog(id, name);
+                          _showEditSubfolderDialog(id, name, data['description'] as String?);
                         } else {
                           _showEditContentDialog(id, name, data['type'] as String? ?? 'file', data);
                         }
@@ -2241,7 +2349,10 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
 
   Widget _buildSubFolderCard(BuildContext context, String id, Map<String, dynamic> data, bool locked, bool updating, bool invisible, int index) {
     final name = FirebaseService.cleanTitle(data['name'] as String? ?? 'Sub-Folder');
+    final description = data['description'] as String?;
+    final hasDesc = description != null && description.trim().isNotEmpty;
     final disabled = _isDisabled(data, id);
+    final isDark = Theme.of(context).brightness == Brightness.dark;
     return GestureDetector(
       onLongPress: ((!widget.isAdmin && !widget.canEdit) || disabled) ? null : () => _onContentSelect(id),
       child: Container(
@@ -2259,19 +2370,39 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                 if (widget.assistantContentAccess != null) 'assistantContentAccess': widget.assistantContentAccess!.toList(),
               });
             },
-            child: Row(children: [
+            child: Row(crossAxisAlignment: hasDesc ? CrossAxisAlignment.start : CrossAxisAlignment.center, children: [
               if (widget.isAdmin && (_sortMode == 'custom' || _sortMode == 'custom_asc' || _sortMode == 'custom_desc'))
                 Padding(
                   padding: const EdgeInsets.only(right: 8),
                   child: ReorderableDragStartListener(
                     index: index,
-                    child: Icon(Icons.drag_indicator, size: 20, color: Theme.of(context).brightness == Brightness.dark ? Colors.white24 : Colors.black26),
+                    child: Icon(Icons.drag_indicator, size: 20, color: isDark ? Colors.white24 : Colors.black26),
                   ),
                 ),
               Icon(Icons.folder_rounded, color: disabled ? Colors.grey : (updating ? Colors.orange : Colors.blue), size: 36),
               const SizedBox(width: 14),
               Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(name, style: TextStyle(color: disabled ? Colors.grey : null, fontWeight: FontWeight.bold, fontSize: 14)),
+                if (hasDesc) ...[
+                  const SizedBox(height: 6),
+                  Text(description.trim(), style: TextStyle(color: isDark ? Colors.white54 : Colors.black45, fontSize: 12, height: 1.4), maxLines: _expandedDescriptions.contains(id) ? null : 6, overflow: _expandedDescriptions.contains(id) ? TextOverflow.visible : TextOverflow.ellipsis),
+                  if (hasDesc && _descExceedsLines(description.trim(), context) && !_expandedDescriptions.contains(id))
+                    GestureDetector(
+                      onTap: () => setState(() => _expandedDescriptions.add(id)),
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text('See more', style: TextStyle(color: isDark ? Colors.cyanAccent : const Color(0xFF4A148C), fontSize: 11, fontWeight: FontWeight.w600)),
+                      ),
+                    )
+                  else if (_expandedDescriptions.contains(id))
+                    GestureDetector(
+                      onTap: () => setState(() => _expandedDescriptions.remove(id)),
+                      child: Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text('See less', style: TextStyle(color: isDark ? Colors.cyanAccent : const Color(0xFF4A148C), fontSize: 11, fontWeight: FontWeight.w600)),
+                      ),
+                    ),
+                ],
                 if (updating)
                   const Row(children: [Icon(Icons.update_rounded, color: Colors.orange, size: 12), SizedBox(width: 4), Text('Updating...', style: TextStyle(color: Colors.orange, fontSize: 11))]),
                 if (locked && !updating)
@@ -2281,8 +2412,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
               ])),
               if (widget.isAdmin || widget.canEdit) ...[
                 PopupMenuButton<String>(
-                  icon: Icon(Icons.more_vert, size: 20, color: Theme.of(context).brightness == Brightness.dark ? Colors.white : Colors.black87),
-                  color: Theme.of(context).brightness == Brightness.dark ? const Color(0xFF2D2D2D) : Colors.white,
+                  icon: Icon(Icons.more_vert, size: 20, color: isDark ? Colors.white : Colors.black87),
+                  color: isDark ? const Color(0xFF2D2D2D) : Colors.white,
                   onSelected: (value) {
                     switch (value) {
                       case 'lock':
@@ -2292,11 +2423,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                       case 'group':
                         _showGroupLinkDialogForContent(id);
                       case 'edit':
-                        if (data['type'] == 'subfolder') {
-                          _showRenameContentDialog(id, name);
-                        } else {
-                          _showEditContentDialog(id, name, data['type'] as String? ?? 'file', data);
-                        }
+                        _showEditSubfolderDialog(id, name, description);
                       case 'rename':
                         _showRenameContentDialog(id, name);
                       case 'delete':
@@ -2384,7 +2511,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                         _showContentAssistantSheet(id, name);
                       case 'edit':
                         if (data['type'] == 'subfolder') {
-                          _showRenameContentDialog(id, name);
+                          _showEditSubfolderDialog(id, name, data['description'] as String?);
                         } else {
                           _showEditContentDialog(id, name, data['type'] as String? ?? 'file', data);
                         }
@@ -2471,7 +2598,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                         _showContentAssistantSheet(id, name);
                       case 'edit':
                         if (data['type'] == 'subfolder') {
-                          _showRenameContentDialog(id, name);
+                          _showEditSubfolderDialog(id, name, data['description'] as String?);
                         } else {
                           _showEditContentDialog(id, name, data['type'] as String? ?? 'file', data);
                         }
@@ -2646,7 +2773,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                         _showContentAssistantSheet(id, name);
                       case 'edit':
                         if (data['type'] == 'subfolder') {
-                          _showRenameContentDialog(id, name);
+                          _showEditSubfolderDialog(id, name, data['description'] as String?);
                         } else {
                           _showEditContentDialog(id, name, data['type'] as String? ?? 'file', data);
                         }

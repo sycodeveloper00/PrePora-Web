@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../../core/widgets/glassmorphic_container.dart';
 import '../../../core/widgets/animated_pressable.dart';
 import '../../../core/services/firebase_service.dart';
@@ -51,6 +52,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   bool _isBlocked = false;
   bool _isVerified = true;
   bool _isPaidAccess = false;
+  bool _isFreeTrialActive = false;
   double _price = 0;
   String _accountTitle = '';
   String _accountNo = '';
@@ -58,6 +60,7 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   // Real-time listener for user verification/blocked status
   StreamSubscription? _userStatusSub;
+  StreamSubscription? _settingsSub;
   Stream<QuerySnapshot>? _notificationStream;
   int _streakCount = 0;
   int _totalActiveDays = 0;
@@ -67,6 +70,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     super.initState();
     _checkStatus();
     _listenUserStatus();
+    _listenSettings();
     _startTypingAnimation();
     _checkForUpdates();
     _rebuildNotificationStream();
@@ -88,7 +92,13 @@ class _DashboardScreenState extends State<DashboardScreen>
     final blocked = await FirebaseService.isStudentBlocked(uid);
     final settings = await FirebaseService.getSettings();
     final paidAccess = settings['paidAccess'] as bool? ?? false;
-    final verified = paidAccess ? await FirebaseService.isStudentVerified(uid) : true;
+    final verified = await FirebaseService.isStudentVerified(uid);
+    final trial = await FirebaseService.getFreeTrial(uid);
+    final trialActive = trial['active'] == true;
+    final trialEnd = trial['endsAt'] as DateTime?;
+    if (trialActive && trialEnd != null && !trialEnd.isAfter(DateTime.now())) {
+      await FirebaseService.expireFreeTrial(uid);
+    }
     final user = FirebaseService.currentUser;
     final userDoc = await FirebaseService.getUser(uid);
     final createdAt = (userDoc?.data() as Map<String, dynamic>?)?['createdAt'] as Timestamp?;
@@ -96,6 +106,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       _isBlocked = blocked;
       _isVerified = verified;
       _isPaidAccess = paidAccess;
+      _isFreeTrialActive = trialActive && (trialEnd?.isAfter(DateTime.now()) ?? false);
       _price = (settings['price'] as num?)?.toDouble() ?? 0;
       _accountTitle = settings['accountTitle'] as String? ?? '';
       _accountNo = settings['accountNo'] as String? ?? '';
@@ -135,11 +146,39 @@ class _DashboardScreenState extends State<DashboardScreen>
       final blocked = data['blocked'] as bool? ?? false;
       final settings = await FirebaseService.getSettings();
       final paidAccess = settings['paidAccess'] as bool? ?? false;
-      final verified = paidAccess ? (data['verified'] as bool? ?? false) : true;
+      final verified = data['verified'] as bool? ?? false;
+      final trialActive = data['freeTrialActive'] == true;
+      final endsAt = data['freeTrialEndsAt'];
+      final trialEnd = endsAt is Timestamp ? endsAt.toDate() : null;
+      if (trialActive && trialEnd != null && !trialEnd.isAfter(DateTime.now())) {
+        await FirebaseService.expireFreeTrial(uid);
+      }
       if (mounted) setState(() {
         _isBlocked = blocked;
         _isVerified = verified;
         _isPaidAccess = paidAccess;
+        _isFreeTrialActive = trialActive && (trialEnd?.isAfter(DateTime.now()) ?? false);
+      });
+    });
+  }
+
+  /// Listens to the global `settings/general` document in real-time so that when
+  /// the admin toggles `paidAccess` (or changes price/account info), unverified
+  /// student panels reflect the change immediately WITHOUT restarting the app.
+  void _listenSettings() {
+    _settingsSub = FirebaseService.firestore
+        .collection('settings')
+        .doc('general')
+        .snapshots()
+        .listen((snap) {
+      if (!snap.exists || !mounted) return;
+      final data = snap.data() as Map<String, dynamic>;
+      setState(() {
+        _isPaidAccess = data['paidAccess'] as bool? ?? false;
+        _price = (data['price'] as num?)?.toDouble() ?? 0;
+        _accountTitle = data['accountTitle'] as String? ?? '';
+        _accountNo = data['accountNo'] as String? ?? '';
+        _bankName = data['bankName'] as String? ?? '';
       });
     });
   }
@@ -181,6 +220,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   void dispose() {
     _typingTimer?.cancel();
     _userStatusSub?.cancel();
+    _settingsSub?.cancel();
     _floatController.dispose();
     _searchController.dispose();
     _searchDebounce?.cancel();
@@ -1174,7 +1214,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                 border: Border.all(color: (isDark ? Colors.white : Colors.black87).withValues(alpha: 0.1)),
               ),
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('After payment, submit feedback with:', style: TextStyle(color: (isDark ? Colors.white : Colors.black87).withValues(alpha: 0.7), fontSize: 13, fontWeight: FontWeight.bold)),
+                Text('After payment, submit Fee Detail with:', style: TextStyle(color: (isDark ? Colors.white : Colors.black87).withValues(alpha: 0.7), fontSize: 13, fontWeight: FontWeight.bold)),
                 const SizedBox(height: 14),
                 _bannerField('Your Name', '______', Icons.badge_rounded, Colors.greenAccent),
                 const SizedBox(height: 10),
@@ -1196,9 +1236,9 @@ class _DashboardScreenState extends State<DashboardScreen>
               ]),
             ),
             const SizedBox(height: 12),
-            _bannerLine('Your account will be verified within 24-48 hours after feedback submission.', Icons.access_time_rounded, Colors.yellowAccent, 13),
+            _bannerLine('Your account will be verified within 24-48 hours after Fee Detail submission.', Icons.access_time_rounded, Colors.yellowAccent, 13),
             const SizedBox(height: 24),
-            // Submit feedback button
+            // Submit Fee Detail button
             GestureDetector(
               onTap: () => _handleFeedback(context),
               child: Container(
@@ -1209,9 +1249,9 @@ class _DashboardScreenState extends State<DashboardScreen>
                   boxShadow: [BoxShadow(color: const Color(0xFF00B8D4).withValues(alpha: 0.3), blurRadius: 12, spreadRadius: 1)],
                 ),
                 child: const Row(mainAxisSize: MainAxisSize.min, children: [
-                  Icon(Icons.feedback_rounded, color: Colors.white, size: 20),
+                  Icon(Icons.receipt_rounded, color: Colors.white, size: 20),
                   SizedBox(width: 10),
-                  Text('Submit Feedback', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
+                  Text('Submit Fee Detail', style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 16)),
                 ]),
               ),
             ),
@@ -1264,10 +1304,18 @@ class _DashboardScreenState extends State<DashboardScreen>
     showDialog(context: context, builder: (_) => const Center(child: ProfessionalLoader()), barrierDismissible: false);
     try {
       final isVerified = await FirebaseService.isStudentVerified(uid);
+      final trial = await FirebaseService.getFreeTrial(uid);
+      final trialEnd = trial['endsAt'] as DateTime?;
+      final inTrial = trial['active'] == true && (trialEnd?.isAfter(DateTime.now()) ?? false);
       if (!mounted) return;
       if (context.mounted) Navigator.pop(context);
       if (!mounted) return;
       if (isVerified) {
+        _showFeedbackListDialog(context, uid);
+        return;
+      }
+      if (inTrial) {
+        // Students on an active free trial get the simple ticket box (no fee form).
         _showFeedbackListDialog(context, uid);
         return;
       }
@@ -1315,7 +1363,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       builder: (d) => StatefulBuilder(
         builder: (ctx, setDState) => AlertDialog(
           backgroundColor: bgColor,
-          title: Text('Submit Feedback', style: TextStyle(color: baseColor)),
+          title: Text('Submit Fee Detail', style: TextStyle(color: baseColor)),
           content: SingleChildScrollView(
             child: Column(mainAxisSize: MainAxisSize.min, children: [
               TextField(controller: nameCtrl, style: TextStyle(color: baseColor),
@@ -1472,10 +1520,16 @@ class _DashboardScreenState extends State<DashboardScreen>
                       'July', 'August', 'September', 'October', 'November', 'December'];
                   final timeStr = '${selHour > 9 ? selHour : '0$selHour'}:${selMinute < 10 ? '0$selMinute' : '$selMinute'} ${isPM ? 'PM' : 'AM'}';
                   final dateStr = '${selDay < 10 ? '0$selDay' : '$selDay'} ${months[selMonth - 1]} $selYear';
-                  await FirebaseService.submitFeedback(
+                  final docId = await FirebaseService.submitFeedback(
                     'Name: ${nameCtrl.text.trim()}\nEmail: ${emailCtrl.text.trim()}\nOwner: ${ownerCtrl.text.trim()}\nAccNo: ${accNoCtrl.text.trim()}\nBank: ${bankCtrl.text.trim()}\nReceipt: ${receiptCtrl.text.trim()}\nCity: ${cityCtrl.text.trim()}\nProvince: ${provinceCtrl.text.trim()}\nCourse: ${courseCtrl.text.trim()}\nDate: $dateStr\nTime: $timeStr'
                   );
                   if (d.mounted) Navigator.pop(d);
+                  if (docId != null && context.mounted) {
+                    final ticketNo = docId.substring(0, 6).toUpperCase();
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Fee Detail submitted! Ticket ID: #$ticketNo'), backgroundColor: const Color(0xFF4A148C)),
+                    );
+                  }
                 },
                 style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A148C)),
                 child: Text(sending ? 'Sending...' : 'Send', style: const TextStyle(color: Colors.white)),
@@ -1516,8 +1570,14 @@ class _DashboardScreenState extends State<DashboardScreen>
                 if (sending) return;
                 if (ctrl.text.trim().isEmpty) return;
                 setBtn(() => sending = true);
-                await FirebaseService.submitFeedback(ctrl.text.trim());
+                final docId = await FirebaseService.submitFeedback(ctrl.text.trim());
                 if (d.mounted) Navigator.pop(d);
+                if (docId != null && context.mounted) {
+                  final ticketNo = docId.substring(0, 6).toUpperCase();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(content: Text('Message sent! Your ticket ID: #$ticketNo'), backgroundColor: const Color(0xFF4A148C)),
+                  );
+                }
               },
               style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A148C)),
               child: Text(sending ? 'Sending...' : 'Send', style: const TextStyle(color: Colors.white)),
@@ -1664,7 +1724,7 @@ class _DashboardScreenState extends State<DashboardScreen>
   @override
   Widget build(BuildContext context) {
     if (_isBlocked) return _buildBlockedScreen(context);
-    if (_isPaidAccess && !_isVerified) return _buildPaymentBanner();
+    if (_isPaidAccess && !_isVerified && !_isFreeTrialActive) return _buildPaymentBanner();
     if (!_hasStarted) return SizedBox.expand(child: _buildIntroScreen());
     return Stack(
       children: [
@@ -1713,8 +1773,11 @@ class _DashboardScreenState extends State<DashboardScreen>
           actions: [
             if (_latestUpdateLink != null && _latestUpdateLink!.isNotEmpty)
               ElevatedButton(
-                onPressed: () {
-                  context.push('/webview', extra: {'url': _latestUpdateLink, 'title': 'Update v$_latestUpdateVersion'});
+                onPressed: () async {
+                  final uri = Uri.parse(_latestUpdateLink!);
+                  if (await canLaunchUrl(uri)) {
+                    await launchUrl(uri, mode: LaunchMode.externalApplication);
+                  }
                 },
                 style: ElevatedButton.styleFrom(
                   backgroundColor: const Color(0xFF4A148C),
@@ -1779,6 +1842,7 @@ class _DashboardGrid extends StatefulWidget {
 
 class _DashboardGridState extends State<_DashboardGrid> {
   late Stream<QuerySnapshot> _folderStream;
+  bool _isReconnecting = false;
 
   @override
   void initState() {
@@ -1801,18 +1865,33 @@ class _DashboardGridState extends State<_DashboardGrid> {
           return const Center(child: ProfessionalLoader());
         }
         if (snapshot.hasError) {
+          if (!_isReconnecting) {
+            _isReconnecting = true;
+            Future.delayed(const Duration(seconds: 3), () async {
+              try {
+                final user = FirebaseService.currentUser;
+                if (user == null) {
+                  if (mounted) context.go('/auth/login');
+                  return;
+                }
+                await user.getIdToken(true);
+              } catch (_) {
+                if (FirebaseService.currentUser == null && mounted) {
+                  context.go('/auth/login');
+                  return;
+                }
+              }
+              if (mounted) {
+                _isReconnecting = false;
+                _refreshFolderStream();
+              }
+            });
+          }
           final isDark = Theme.of(context).brightness == Brightness.dark;
           return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-            Icon(Icons.error_outline_rounded, size: 60, color: Colors.redAccent.withValues(alpha: 0.6)),
+            const SizedBox(width: 36, height: 36, child: CircularProgressIndicator(strokeWidth: 3, color: Colors.deepPurple)),
             const SizedBox(height: 16),
-            Text('Something went wrong', style: TextStyle(color: isDark ? Colors.white38 : Colors.black45, fontSize: 16)),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: () => _refreshFolderStream(),
-              icon: const Icon(Icons.refresh_rounded, size: 16),
-              label: const Text('Retry'),
-              style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple),
-            ),
+            Text('Reconnecting...', style: TextStyle(color: isDark ? Colors.white38 : Colors.black45, fontSize: 16)),
           ]));
         }
         if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {

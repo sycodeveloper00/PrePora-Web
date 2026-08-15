@@ -25,6 +25,14 @@ class _AssistantDashboardScreenState extends State<AssistantDashboardScreen> {
   void initState() {
     super.initState();
     _loadContentAccess();
+    _selectStorage();
+  }
+
+  Future<void> _selectStorage() async {
+    final user = FirebaseService.currentUser;
+    if (user != null) {
+      await FirebaseService.selectStorageAccountForUser(user.uid);
+    }
   }
 
   Future<void> _loadContentAccess() async {
