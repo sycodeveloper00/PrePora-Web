@@ -16,17 +16,18 @@ module.exports = async (req, res) => {
     return res.status(401).json({ error: 'Missing Authorization header' });
   }
 
-  const { model, messages, max_tokens, temperature, stream, enable_thinking } = req.body;
+  const { model, messages, max_tokens, temperature, stream, enable_thinking, baseUrl } = req.body;
+  const targetBase = baseUrl || 'https://bazaarlink.ai/api/v1';
 
   try {
-    const apiRes = await fetch('https://bazaarlink.ai/api/v1/chat/completions', {
+    const apiRes = await fetch(`${targetBase}/chat/completions`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: model || 'auto:free',
+        model: model || 'qwen/qwen3.7-flash:free',
         messages,
         max_tokens: max_tokens || 4096,
         temperature: temperature ?? 0.3,
@@ -36,6 +37,15 @@ module.exports = async (req, res) => {
     });
 
     if (stream) {
+      if (!apiRes.ok) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        let errBody = '';
+        try { errBody = await apiRes.text(); } catch (_) {}
+        res.write(`data: ${JSON.stringify({ error: true, status: apiRes.status, details: errBody })}\n\n`);
+        return res.end();
+      }
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');

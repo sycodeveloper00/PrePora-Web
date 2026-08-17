@@ -5,9 +5,42 @@ import 'package:http/http.dart' as http;
 import '../services/firebase_service.dart';
 
 class AiService {
-  static const String _apiKey =
+  static const String _defaultApiKey =
       'sk-bl-foHbeBqqZJM8O6gYEmmouGtftnSBdpPNqvy_aRc-BTEW7Qfr';
-  static const String _baseUrl = 'https://bazaarlink.ai/api/v1';
+  static const String _defaultBaseUrl = 'https://bazaarlink.ai/api/v1';
+  static const String _defaultModel = 'qwen/qwen3.7-flash:free';
+
+  // Loaded from the active AI API key in Firestore (admin-managed).
+  static String _apiKey = _defaultApiKey;
+  static String _baseUrl = _defaultBaseUrl;
+  static String _model = _defaultModel;
+  static String _provider = 'openai';
+  static bool _keyLoaded = false;
+
+  /// Loads the active AI API key config from Firestore (once). Falls back to
+  /// the built-in defaults when no key is configured yet.
+  static Future<void> loadActiveKey() async {
+    if (_keyLoaded) return;
+    try {
+      final key = await FirebaseService.getActiveAiApiKey();
+      if (key != null) {
+        _apiKey = (key['apiKey'] as String?)?.trim() ?? _defaultApiKey;
+        _baseUrl = (key['baseUrl'] as String?)?.trim() ?? _defaultBaseUrl;
+        _model = (key['model'] as String?)?.trim() ?? _defaultModel;
+        _provider = (key['provider'] as String?)?.trim() ?? 'openai';
+      }
+    } catch (_) {
+      // keep defaults on error
+    } finally {
+      _keyLoaded = true;
+    }
+  }
+
+  /// Force reload after an admin edits API keys.
+  static void refreshKey() {
+    _keyLoaded = false;
+    loadActiveKey();
+  }
 
   static const String _baseSystemPrompt =
       'You are PrePora AI — an advanced, professional, and highly capable study assistant '
@@ -149,24 +182,51 @@ class AiService {
     _messages.add({'role': 'system', 'content': _baseSystemPrompt});
   }
 
-  String get _apiUrl => kIsWeb ? '/api/proxy' : '$_baseUrl/chat/completions';
+  String get _apiUrl {
+    if (kIsWeb) return '/api/proxy';
+    if (_provider == 'gemini') return '$_baseUrl/v1beta/models/$_model:generateContent';
+    return '$_baseUrl/chat/completions';
+  }
 
   Map<String, String> _headers({bool withAuth = true}) {
     final h = <String, String>{'Content-Type': 'application/json'};
-    if (withAuth) h['Authorization'] = 'Bearer $_apiKey';
+    if (withAuth) {
+      if (_provider == 'gemini') {
+        h['x-goog-api-key'] = _apiKey;
+      } else {
+        h['Authorization'] = 'Bearer $_apiKey';
+      }
+    }
     return h;
   }
 
-  Map<String, dynamic> _body({required bool stream}) => {
-        'model': 'auto:free',
-        'messages': _messages,
-        'max_tokens': 4096,
-        'temperature': 0.3,
-        'stream': stream,
-        'enable_thinking': false,
+  Map<String, dynamic> _body({required bool stream}) {
+    if (_provider == 'gemini') {
+      return {
+        'contents': [
+          for (final m in _messages)
+            {'role': m['role'] == 'assistant' ? 'model' : m['role'], 'parts': [{'text': m['content']}]}
+        ],
+        'systemInstruction': {'parts': [{'text': _baseSystemPrompt}]},
+        'generationConfig': {
+          'maxOutputTokens': 4096,
+          'temperature': 0.3,
+        },
       };
+    }
+    return {
+      'model': _model,
+      'messages': _messages,
+      'max_tokens': 4096,
+      'temperature': 0.3,
+      'stream': stream,
+      'enable_thinking': false,
+      'baseUrl': _baseUrl,
+    };
+  }
 
   Future<String> sendMessage(String message) async {
+    await loadActiveKey();
     _messages.add({'role': 'user', 'content': message});
 
     if (_messages.length > 21) {
@@ -181,8 +241,15 @@ class AiService {
       );
 
       if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final reply = data['choices'][0]['message']['content'] as String;
+        String reply;
+        if (_provider == 'gemini') {
+          final data = jsonDecode(response.body);
+          reply = ((data['candidates'] as List<dynamic>?)?.firstOrNull
+              as Map<String, dynamic>?)?['content']?['parts']?.firstOrNull?['text'] as String? ?? '';
+        } else {
+          final data = jsonDecode(response.body);
+          reply = data['choices'][0]['message']['content'] as String;
+        }
         _messages.add({'role': 'assistant', 'content': reply});
         return reply;
       }
@@ -540,9 +607,16 @@ class AiService {
 
   /// Streams a response chunk-by-chunk via SSE for a live typing effect.
   Stream<String> sendMessageStream(String message) async* {
+    await loadActiveKey();
     _messages.add({'role': 'user', 'content': message});
     if (_messages.length > 21) {
       _messages.removeRange(1, _messages.length - 20);
+    }
+
+    // Gemini: direct SSE streaming (Google API allows browser CORS).
+    if (_provider == 'gemini') {
+      yield* _streamGemini();
+      return;
     }
 
     // Web: use Vercel serverless proxy with SSE streaming.
@@ -565,6 +639,17 @@ class AiService {
             if (data == '[DONE]') break;
             try {
               final json = jsonDecode(data) as Map<String, dynamic>;
+              if (json['error'] == true) {
+                final status = json['status'] as int?;
+                if (status == 429) {
+                  yield '🤖 AI daily free quota is finished for today. Please try again tomorrow, or contact the admin to switch the API key.';
+                } else if (status == 401) {
+                  yield '⚠️ API key issue detected. Please contact the admin to get a valid API key.';
+                } else {
+                  yield '⚠️ AI service error. Please try again later.';
+                }
+                return;
+              }
               final delta = ((json['choices'] as List<dynamic>?)?.firstOrNull
                   as Map<String, dynamic>?)?['delta'] as Map<String, dynamic>?;
               final raw = delta?['content'] as String?;
@@ -636,6 +721,52 @@ class AiService {
     }
 
     // Save full response to history
+    final full = fullBuffer.toString();
+    if (full.isNotEmpty) {
+      _messages.add({'role': 'assistant', 'content': full});
+    }
+  }
+
+  /// Gemini native SSE streaming (works on web + mobile without a proxy).
+  Stream<String> _streamGemini() async* {
+    final fullBuffer = StringBuffer();
+    http.Client? client;
+    try {
+      final uri = Uri.parse('$_baseUrl/v1beta/models/$_model:streamGenerateContent?alt=sse');
+      final request = http.Request('POST', uri);
+      request.headers.addAll(_headers());
+      request.body = jsonEncode(_body(stream: true));
+      client = http.Client();
+      final streamed = await client.send(request).timeout(const Duration(seconds: 90));
+
+      await for (final chunk in streamed.stream
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())) {
+        if (!chunk.startsWith('data: ')) continue;
+        final data = chunk.substring(6).trim();
+        if (data.isEmpty) continue;
+        try {
+          final json = jsonDecode(data) as Map<String, dynamic>;
+          final parts = (((json['candidates'] as List<dynamic>?)?.firstOrNull
+              as Map<String, dynamic>?)?['content'] as Map<String, dynamic>?)?['parts'] as List<dynamic>?;
+          if (parts == null || parts.isEmpty) continue;
+          final raw = (parts.first as Map<String, dynamic>)['text'] as String?;
+          if (raw != null && raw.isNotEmpty) {
+            fullBuffer.write(raw);
+            yield raw;
+          }
+        } catch (_) {
+          // skip malformed chunks
+        }
+      }
+    } on TimeoutException catch (_) {
+      yield '\n\n⚠️ The AI server is not responding (timeout). Please try again in a few moments.';
+    } catch (_) {
+      yield '\n\n❌ No internet connection. Please check your network and try again.';
+    } finally {
+      client?.close();
+    }
+
     final full = fullBuffer.toString();
     if (full.isNotEmpty) {
       _messages.add({'role': 'assistant', 'content': full});

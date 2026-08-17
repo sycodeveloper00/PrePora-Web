@@ -52,6 +52,7 @@ build_log.txt
 
 # Functions dependencies
 functions/node_modules/
+api/node_modules/
 
 # Cloudflare cache
 .wrangler/

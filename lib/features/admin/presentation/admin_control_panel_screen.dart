@@ -120,6 +120,7 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
                 const SizedBox(height: 8),
                 _ctrlSection(context, 'App', [
                   _ctrlTile(context, Icons.cloud_upload_rounded, Colors.deepPurple, 'Storage Settings', 'Manage Supabase, Cloudinary & upload providers', onTap: () => context.push('/admin/storage-settings')),
+                  _ctrlTile(context, Icons.auto_awesome_rounded, Colors.indigo, 'AI API Keys', 'Add & manage AI provider keys (BazaarLink, Groq, Gemini)', onTap: () => context.push('/admin/ai-api-keys')),
                   _ctrlTile(context, Icons.update_rounded, Colors.cyanAccent, 'App Updates', 'Manage version & update banner', onTap: () => _showAppUpdates(context)),
                 ]),
               ],
@@ -314,13 +315,10 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('End date/time must be in the future'), backgroundColor: Colors.orange));
               return;
             }
-            final diff = selectedEnd.difference(now);
-            final days = diff.inDays;
-            final hours = diff.inHours % 24;
             // Auto-set Paid Access OFF when trial starts
             await FirebaseService.updateSetting('paidAccess', false);
             if (mounted) setState(() => _paidAccess = false);
-            final count = await FirebaseService.startFreeTrialForAll(days: days, hours: hours);
+            final count = await FirebaseService.startFreeTrialForAll(end: selectedEnd);
             if (d.mounted) Navigator.pop(d);
             await _loadTrial();
             if (mounted) {

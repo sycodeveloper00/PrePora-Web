@@ -397,17 +397,18 @@ class FirebaseService {
     }
   }
 
-  /// Starts a free trial of [days]+[hours] for every UNVERIFIED student.
+  /// Starts a free trial for every UNVERIFIED student ending at the given
+  /// [end] date/time (preserves minutes — no truncation).
   /// Returns the number of students the trial was applied to.
-  static Future<int> startFreeTrialForAll({required int days, required int hours}) async {
+  static Future<int> startFreeTrialForAll({required DateTime end}) async {
     final snap = await firestore.collection('users').where('role', isEqualTo: 'student').get();
-    final end = Timestamp.fromDate(DateTime.now().add(Duration(days: days, hours: hours)));
+    final endTimestamp = Timestamp.fromDate(end);
     final batch = firestore.batch();
     int count = 0;
     for (final doc in snap.docs) {
       final data = doc.data();
       if (data['verified'] == true) continue;
-      batch.update(doc.reference, {'freeTrialActive': true, 'freeTrialEndsAt': end});
+      batch.update(doc.reference, {'freeTrialActive': true, 'freeTrialEndsAt': endTimestamp});
       count++;
     }
     if (count > 0) await batch.commit();
@@ -955,6 +956,79 @@ class FirebaseService {
 
   static Future<void> deleteSupabaseAccount(String id) async {
     await firestore.collection('supabase_accounts').doc(id).delete();
+  }
+
+  // ─── AI API Keys ───────────────────────────────────────────────────────────
+
+  static Future<List<Map<String, dynamic>>> getAiApiKeys() async {
+    final snap = await firestore.collection('ai_api_keys').orderBy('createdAt', descending: false).get();
+    return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
+  }
+
+  static Future<Map<String, dynamic>?> getActiveAiApiKey() async {
+    try {
+      final snap = await firestore.collection('ai_api_keys').where('isActive', isEqualTo: true).limit(1).get();
+      if (snap.docs.isEmpty) return null;
+      return {'id': snap.docs.first.id, ...snap.docs.first.data()};
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<String> addAiApiKey({
+    required String name,
+    required String provider,
+    required String baseUrl,
+    required String apiKey,
+    required String model,
+    bool isActive = true,
+  }) async {
+    final doc = await firestore.collection('ai_api_keys').add({
+      'name': name.trim(),
+      'provider': provider.trim(),
+      'baseUrl': baseUrl.trim(),
+      'apiKey': apiKey.trim(),
+      'model': model.trim(),
+      'isActive': isActive,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    if (isActive) {
+      final snap = await firestore.collection('ai_api_keys').get();
+      final batch = firestore.batch();
+      for (final d in snap.docs) {
+        if (d.id != doc.id) batch.update(d.reference, {'isActive': false});
+      }
+      await batch.commit();
+    }
+    return doc.id;
+  }
+
+  static Future<void> updateAiApiKey(String id, {String? name, String? provider, String? baseUrl, String? apiKey, String? model, bool? isActive}) async {
+    if (isActive == true) {
+      final snap = await firestore.collection('ai_api_keys').get();
+      final batch = firestore.batch();
+      for (final doc in snap.docs) {
+        if (doc.id != id) {
+          batch.update(doc.reference, {'isActive': false});
+        } else {
+          batch.update(doc.reference, {'isActive': true});
+        }
+      }
+      await batch.commit();
+    } else if (isActive == false) {
+      await firestore.collection('ai_api_keys').doc(id).update({'isActive': false});
+    }
+    final data = <String, dynamic>{};
+    if (name != null) data['name'] = name.trim();
+    if (provider != null) data['provider'] = provider.trim();
+    if (baseUrl != null) data['baseUrl'] = baseUrl.trim();
+    if (apiKey != null) data['apiKey'] = apiKey.trim();
+    if (model != null) data['model'] = model.trim();
+    if (data.isNotEmpty) await firestore.collection('ai_api_keys').doc(id).update(data);
+  }
+
+  static Future<void> deleteAiApiKey(String id) async {
+    await firestore.collection('ai_api_keys').doc(id).delete();
   }
 
   static Future<Map<String, dynamic>> retryBucketCreation(String accountId) async {
