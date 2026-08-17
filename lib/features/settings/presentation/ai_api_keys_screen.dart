@@ -233,7 +233,7 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
             const SizedBox(height: 12),
             TextField(controller: keyCtrl, style: TextStyle(color: baseColor), maxLines: 3, decoration: InputDecoration(labelText: 'API Key', hintText: provider == 'gemini' ? 'AIza...' : 'sk-...', labelStyle: TextStyle(color: dimColor), hintStyle: TextStyle(color: dimColor), filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
             const SizedBox(height: 12),
-            TextField(controller: modelCtrl, style: TextStyle(color: baseColor), decoration: InputDecoration(labelText: 'Model', hintText: provider == 'gemini' ? 'gemini-2.5-flash' : 'qwen/qwen3.7-flash:free', labelStyle: TextStyle(color: dimColor), hintStyle: TextStyle(color: dimColor), filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
+            TextField(controller: modelCtrl, style: TextStyle(color: baseColor), decoration: InputDecoration(labelText: 'Model', hintText: provider == 'gemini' ? 'gemini-3.6-flash' : 'qwen/qwen3.7-flash:free', labelStyle: TextStyle(color: dimColor), hintStyle: TextStyle(color: dimColor), filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
             const SizedBox(height: 12),
             Text('Free providers: Groq (api.groq.com/openai/v1, llama-3.3-70b-versatile) \u00b7 OpenRouter (openrouter.ai/api/v1, meta-llama/llama-3.1-8b-instruct:free) \u00b7 Gemini (generativelanguage.googleapis.com)', style: TextStyle(color: dimColor, fontSize: 11, height: 1.4)),
           ])),

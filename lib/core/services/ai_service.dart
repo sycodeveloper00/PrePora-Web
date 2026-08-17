@@ -188,10 +188,17 @@ class AiService {
     return '$_baseUrl/chat/completions';
   }
 
+  /// On web, Gemini must go through the proxy using Google's OpenAI-compatible
+  /// endpoint because browsers block direct CORS requests to googleapis.com.
+  static String get _geminiOpenAICompatBase =>
+      'https://generativelanguage.googleapis.com/v1beta/openai';
+
   Map<String, String> _headers({bool withAuth = true}) {
     final h = <String, String>{'Content-Type': 'application/json'};
     if (withAuth) {
-      if (_provider == 'gemini') {
+      // On web, ALL requests go through the proxy which expects Authorization.
+      // Native Gemini format (mobile only) uses x-goog-api-key.
+      if (!kIsWeb && _provider == 'gemini') {
         h['x-goog-api-key'] = _apiKey;
       } else {
         h['Authorization'] = 'Bearer $_apiKey';
@@ -201,6 +208,20 @@ class AiService {
   }
 
   Map<String, dynamic> _body({required bool stream}) {
+    // On web, ALL providers go through the proxy as OpenAI-compatible format.
+    // Gemini uses Google's OpenAI-compat endpoint via proxy (CORS fix).
+    if (kIsWeb) {
+      return {
+        'model': _model,
+        'messages': _messages,
+        'max_tokens': 4096,
+        'temperature': 0.3,
+        'stream': stream,
+        'baseUrl': _provider == 'gemini' ? _geminiOpenAICompatBase : _baseUrl,
+      };
+    }
+
+    // Mobile: use native Gemini format
     if (_provider == 'gemini') {
       return {
         'contents': [
@@ -214,13 +235,14 @@ class AiService {
         },
       };
     }
+
+    // Mobile: OpenAI-compatible format
     return {
       'model': _model,
       'messages': _messages,
       'max_tokens': 4096,
       'temperature': 0.3,
       'stream': stream,
-      'enable_thinking': false,
       'baseUrl': _baseUrl,
     };
   }
@@ -242,7 +264,9 @@ class AiService {
 
       if (response.statusCode == 200) {
         String reply;
-        if (_provider == 'gemini') {
+        // On web, ALL providers return OpenAI format (via proxy).
+        // On mobile, Gemini returns native format.
+        if (!kIsWeb && _provider == 'gemini') {
           final data = jsonDecode(response.body);
           reply = ((data['candidates'] as List<dynamic>?)?.firstOrNull
               as Map<String, dynamic>?)?['content']?['parts']?.firstOrNull?['text'] as String? ?? '';
@@ -614,7 +638,8 @@ class AiService {
     }
 
     // Gemini: direct SSE streaming (Google API allows browser CORS).
-    if (_provider == 'gemini') {
+    // Only on mobile. On web, Gemini goes through proxy (see _body for baseUrl).
+    if (!kIsWeb && _provider == 'gemini') {
       yield* _streamGemini();
       return;
     }
@@ -631,6 +656,13 @@ class AiService {
         request.body = jsonEncode(_body(stream: true));
         final streamed = await client.send(request).timeout(const Duration(seconds: 90));
 
+        final contentType = streamed.headers['content-type'] ?? '';
+        if (!contentType.contains('text/event-stream') && !contentType.contains('application/json')) {
+          yield '⚠️ AI service is not available on this domain. Please use the student app or contact admin.';
+          client.close();
+          return;
+        }
+
         await for (final chunk in streamed.stream
             .transform(utf8.decoder)
             .transform(const LineSplitter())) {
@@ -646,7 +678,7 @@ class AiService {
                 } else if (status == 401) {
                   yield '⚠️ API key issue detected. Please contact the admin to get a valid API key.';
                 } else {
-                  yield '⚠️ AI service error. Please try again later.';
+                  yield '⚠️ AI service error (status $status). Please try again later.';
                 }
                 return;
               }
@@ -660,7 +692,9 @@ class AiService {
             } catch (_) {}
           }
         }
-        if (fullBuffer.isNotEmpty) {
+        if (fullBuffer.isEmpty) {
+          yield '⚠️ AI returned an empty response. Please try again.';
+        } else {
           _messages.add({'role': 'assistant', 'content': fullBuffer.toString()});
         }
         client.close();
@@ -722,7 +756,9 @@ class AiService {
 
     // Save full response to history
     final full = fullBuffer.toString();
-    if (full.isNotEmpty) {
+    if (full.isEmpty) {
+      yield '⚠️ AI returned an empty response. Please try again.';
+    } else {
       _messages.add({'role': 'assistant', 'content': full});
     }
   }

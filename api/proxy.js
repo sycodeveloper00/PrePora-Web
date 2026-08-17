@@ -16,7 +16,7 @@ module.exports = async (req, res) => {
     return res.status(401).json({ error: 'Missing Authorization header' });
   }
 
-  const { model, messages, max_tokens, temperature, stream, enable_thinking, baseUrl } = req.body;
+  const { model, messages, max_tokens, temperature, stream, baseUrl } = req.body;
   const targetBase = baseUrl || 'https://bazaarlink.ai/api/v1';
 
   try {
@@ -27,12 +27,11 @@ module.exports = async (req, res) => {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: model || 'qwen/qwen3.7-flash:free',
+        model: model || 'openrouter/free',
         messages,
         max_tokens: max_tokens || 4096,
         temperature: temperature ?? 0.3,
         stream: stream || false,
-        enable_thinking: enable_thinking !== undefined ? enable_thinking : false,
       }),
     });
 
