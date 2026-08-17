@@ -60,7 +60,7 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
     _sessionId = DateTime.now().millisecondsSinceEpoch.toString();
     _aiService.setContext(widget.folderContext ?? 'New chat');
     _messages.add(_Message(
-      text: "Welcome to PrePora AI! \u{1F44B}\n\nI am your AI-powered learning assistant. I can help you understand concepts, solve problems, and prepare for exams. Feel free to ask me anything!",
+      text: "Welcome to PrePora AI! \u{1F44B}\n\nI am your AI-powered learning assistant. I can help you in your studies and with the preparation for your tests. Feel free to ask me anything!",
       isUser: false,
     ));
     _scrollController.addListener(_onScroll);
