@@ -183,22 +183,17 @@ class AiService {
   }
 
   String get _apiUrl {
-    if (kIsWeb) return '/api/proxy';
+    // Gemini calls Google API directly (native), on both web and mobile.
     if (_provider == 'gemini') return '$_baseUrl/v1beta/models/$_model:generateContent';
+    if (kIsWeb) return '/api/proxy';
     return '$_baseUrl/chat/completions';
   }
-
-  /// On web, Gemini must go through the proxy using Google's OpenAI-compatible
-  /// endpoint because browsers block direct CORS requests to googleapis.com.
-  static String get _geminiOpenAICompatBase =>
-      'https://generativelanguage.googleapis.com/v1beta/openai';
 
   Map<String, String> _headers({bool withAuth = true}) {
     final h = <String, String>{'Content-Type': 'application/json'};
     if (withAuth) {
-      // On web, ALL requests go through the proxy which expects Authorization.
-      // Native Gemini format (mobile only) uses x-goog-api-key.
-      if (!kIsWeb && _provider == 'gemini') {
+      // Gemini uses x-goog-api-key header (native API, no proxy needed).
+      if (_provider == 'gemini') {
         h['x-goog-api-key'] = _apiKey;
       } else {
         h['Authorization'] = 'Bearer $_apiKey';
@@ -208,20 +203,9 @@ class AiService {
   }
 
   Map<String, dynamic> _body({required bool stream}) {
-    // On web, ALL providers go through the proxy as OpenAI-compatible format.
-    // Gemini uses Google's OpenAI-compat endpoint via proxy (CORS fix).
-    if (kIsWeb) {
-      return {
-        'model': _model,
-        'messages': _messages,
-        'max_tokens': 4096,
-        'temperature': 0.3,
-        'stream': stream,
-        'baseUrl': _provider == 'gemini' ? _geminiOpenAICompatBase : _baseUrl,
-      };
-    }
-
-    // Mobile: use native Gemini format
+    // Gemini: use native format everywhere (Google allows browser CORS, so it
+    // works on both web and mobile WITHOUT the proxy). On web, only
+    // OpenAI-compatible providers (BazaarLink/OpenRouter/DeepSeek) use the proxy.
     if (_provider == 'gemini') {
       return {
         'contents': [
@@ -233,6 +217,18 @@ class AiService {
           'maxOutputTokens': 4096,
           'temperature': 0.3,
         },
+      };
+    }
+
+    // Web: OpenAI-compatible providers go through the proxy.
+    if (kIsWeb) {
+      return {
+        'model': _model,
+        'messages': _messages,
+        'max_tokens': 4096,
+        'temperature': 0.3,
+        'stream': stream,
+        'baseUrl': _baseUrl,
       };
     }
 
@@ -264,9 +260,7 @@ class AiService {
 
       if (response.statusCode == 200) {
         String reply;
-        // On web, ALL providers return OpenAI format (via proxy).
-        // On mobile, Gemini returns native format.
-        if (!kIsWeb && _provider == 'gemini') {
+        if (_provider == 'gemini') {
           final data = jsonDecode(response.body);
           reply = ((data['candidates'] as List<dynamic>?)?.firstOrNull
               as Map<String, dynamic>?)?['content']?['parts']?.firstOrNull?['text'] as String? ?? '';
@@ -279,15 +273,14 @@ class AiService {
       }
 
       if (response.statusCode == 401) {
-        return '⚠️ API key issue detected. Please contact the admin to get a valid API key.';
+        return '⚠️ The AI service needs a moment to refresh. Please try again in a few minutes.';
       }
 
       if (response.statusCode == 429) {
-        return '🤖 AI service is temporarily busy. Please wait a moment and try again.';
+        return '🤖 The AI is very popular right now and reached its daily limit. Please try again tomorrow.';
       }
 
-      return '⚠️ AI Error: ${response.statusCode}\n\n'
-          'Please check your internet connection and try again.';
+      return '🤖 The AI service is a bit busy right now. Please try again in a moment.';
 
     } catch (e) {
       return '❌ No internet connection. Please check your network and try again.';
@@ -638,8 +631,8 @@ class AiService {
     }
 
     // Gemini: direct SSE streaming (Google API allows browser CORS).
-    // Only on mobile. On web, Gemini goes through proxy (see _body for baseUrl).
-    if (!kIsWeb && _provider == 'gemini') {
+    // Works on web AND mobile without the proxy.
+    if (_provider == 'gemini') {
       yield* _streamGemini();
       return;
     }
@@ -658,7 +651,7 @@ class AiService {
 
         final contentType = streamed.headers['content-type'] ?? '';
         if (!contentType.contains('text/event-stream') && !contentType.contains('application/json')) {
-          yield '⚠️ AI service is not available on this domain. Please use the student app or contact admin.';
+          yield '🤖 The AI service is taking a short break. Please try again in a moment.';
           client.close();
           return;
         }
@@ -674,11 +667,11 @@ class AiService {
               if (json['error'] == true) {
                 final status = json['status'] as int?;
                 if (status == 429) {
-                  yield '🤖 AI daily free quota is finished for today. Please try again tomorrow, or contact the admin to switch the API key.';
+                  yield '🤖 The AI is very popular right now and reached its daily limit. Please try again tomorrow.';
                 } else if (status == 401) {
-                  yield '⚠️ API key issue detected. Please contact the admin to get a valid API key.';
+                  yield '⚠️ The AI service needs a moment to refresh. Please try again in a few minutes.';
                 } else {
-                  yield '⚠️ AI service error (status $status). Please try again later.';
+                  yield '🤖 The AI service is a bit busy right now. Please try again in a moment.';
                 }
                 return;
               }
@@ -775,6 +768,17 @@ class AiService {
       client = http.Client();
       final streamed = await client.send(request).timeout(const Duration(seconds: 90));
 
+      if (streamed.statusCode != 200) {
+        if (streamed.statusCode == 429) {
+          yield '🤖 The AI is very popular right now and reached its daily limit. Please try again tomorrow.';
+        } else if (streamed.statusCode == 400 || streamed.statusCode == 404) {
+          yield '🤖 The AI needs a quick configuration update. Please try again later.';
+        } else {
+          yield '🤖 The AI service is a bit busy right now. Please try again in a moment.';
+        }
+        return;
+      }
+
       await for (final chunk in streamed.stream
           .transform(utf8.decoder)
           .transform(const LineSplitter())) {
@@ -806,6 +810,8 @@ class AiService {
     final full = fullBuffer.toString();
     if (full.isNotEmpty) {
       _messages.add({'role': 'assistant', 'content': full});
+    } else if (full.isEmpty) {
+      yield '🤖 The AI returned an empty response. Please try again.';
     }
   }
 
