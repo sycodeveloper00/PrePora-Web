@@ -185,9 +185,15 @@ class AiService {
   String get _apiUrl {
     // Gemini calls Google API directly (native), on both web and mobile.
     if (_provider == 'gemini') return '$_baseUrl/v1beta/models/$_model:generateContent';
-    if (kIsWeb) return '/api/proxy';
+    if (kIsWeb) return _webProxyUrl;
     return '$_baseUrl/chat/completions';
   }
+
+  /// On web, OpenAI-compatible providers go through the proxy. We use the
+  /// absolute Vercel proxy URL so it also works from Cloudflare Pages
+  /// (admin-prepora.pages.dev) where there is no local /api/proxy.
+  static String get _webProxyUrl =>
+      'https://prepora-web.vercel.app/api/proxy';
 
   Map<String, String> _headers({bool withAuth = true}) {
     final h = <String, String>{'Content-Type': 'application/json'};
@@ -280,7 +286,7 @@ class AiService {
         return '🤖 The AI is very popular right now and reached its daily limit. Please try again tomorrow.';
       }
 
-      return '🤖 The AI service is a bit busy right now. Please try again in a moment.';
+      return '🤖 AI server is unavailable right now. Please try later.';
 
     } catch (e) {
       return '❌ No internet connection. Please check your network and try again.';
@@ -651,7 +657,7 @@ class AiService {
 
         final contentType = streamed.headers['content-type'] ?? '';
         if (!contentType.contains('text/event-stream') && !contentType.contains('application/json')) {
-          yield '🤖 The AI service is taking a short break. Please try again in a moment.';
+          yield '🤖 AI server is unavailable right now. Please try later.';
           client.close();
           return;
         }
@@ -671,7 +677,7 @@ class AiService {
                 } else if (status == 401) {
                   yield '⚠️ The AI service needs a moment to refresh. Please try again in a few minutes.';
                 } else {
-                  yield '🤖 The AI service is a bit busy right now. Please try again in a moment.';
+                  yield '🤖 AI server is unavailable right now. Please try later.';
                 }
                 return;
               }
@@ -774,7 +780,7 @@ class AiService {
         } else if (streamed.statusCode == 400 || streamed.statusCode == 404) {
           yield '🤖 The AI needs a quick configuration update. Please try again later.';
         } else {
-          yield '🤖 The AI service is a bit busy right now. Please try again in a moment.';
+          yield '🤖 AI server is unavailable right now. Please try later.';
         }
         return;
       }
