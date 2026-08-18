@@ -565,7 +565,10 @@ class FirebaseService {
   }
 
   static Stream<QuerySnapshot> getAllAssistant() {
-    return SupabaseReadService.streamUsersByRole('Assistant').map((rows) => _MirrorQuerySnapshot(rows));
+    return _mirrorOrFirestore(
+      SupabaseReadService.streamUsersByRole('Assistant'),
+      firestoreQuery: () => firestore.collection('users').where('role', isEqualTo: 'Assistant').get(),
+    );
   }
 
   static Future<void> deleteAssistantAccount(String uid) async {
@@ -1409,7 +1412,19 @@ class FirebaseService {
   // ─── Folders ───────────────────────────────────────────────────────────────────
 
   static Stream<QuerySnapshot> getAllFolders() {
-    return SupabaseReadService.streamFolders().map((rows) => _MirrorQuerySnapshot(rows));
+    // Mirror-first (zero Firestore reads). When the mirror is empty — because a
+    // backfill hasn't run yet — fall back to Firestore once so the real folder
+    // list still appears the moment Firestore reads are available again.
+    return SupabaseReadService.streamFolders().asyncExpand((rows) async* {
+      if (rows.isNotEmpty) {
+        yield _MirrorQuerySnapshot(rows);
+        return;
+      }
+      try {
+        final snap = await firestore.collection('folders').orderBy('createdAt', descending: false).get();
+        if (snap.docs.isNotEmpty) yield snap;
+      } catch (_) {}
+    });
   }
 
   static Future<String?> createRootFolder({required String name, String? icon, String? color}) async {
@@ -1466,6 +1481,7 @@ class FirebaseService {
 
   static Future<void> toggleFolderLock(String folderId, String field, dynamic value) async {
     await firestore.collection('folders').doc(folderId).update({field: value});
+    await _mirrorWrite('folders', folderId, {field: value});
   }
 
   /// Async: check content-level group_link first, fall back to root folder doc.
@@ -1602,7 +1618,23 @@ class FirebaseService {
   // ─── Folder Contents ───────────────────────────────────────────────────────────
 
   static Stream<QuerySnapshot> getContentsForFolder(String folderId) {
-    return SupabaseReadService.streamContents(folderId).map((rows) => _MirrorQuerySnapshot(rows));
+    // Mirror-first; fall back to Firestore once when the mirror is empty so a
+    // folder whose contents weren't backfilled still shows its real items.
+    return SupabaseReadService.streamContents(folderId).asyncExpand((rows) async* {
+      if (rows.isNotEmpty) {
+        yield _MirrorQuerySnapshot(rows);
+        return;
+      }
+      try {
+        final snap = await firestore
+            .collection('folders')
+            .doc(folderId)
+            .collection('contents')
+            .orderBy('createdAt', descending: false)
+            .get();
+        if (snap.docs.isNotEmpty) yield snap;
+      } catch (_) {}
+    });
   }
 
   static Future<String?> addFolderContent(String folderId, Map<String, dynamic> data) async {
@@ -2106,7 +2138,10 @@ class FirebaseService {
   }
 
   static Stream<QuerySnapshot> getPendingFeedbacks() {
-    return SupabaseReadService.streamPendingFeedbacks().map((rows) => _MirrorQuerySnapshot(rows));
+    return _mirrorOrFirestore(
+      SupabaseReadService.streamPendingFeedbacks(),
+      firestoreQuery: () => firestore.collection('feedbacks').where('status', isEqualTo: 'pending').orderBy('createdAt', descending: true).get(),
+    );
   }
 
   static Future<int> getPendingFeedbackCount() async {
@@ -2418,11 +2453,17 @@ class FirebaseService {
   static const String appVersion = '12.1.7';
 
   static Stream<QuerySnapshot> getAppUpdates() {
-    return SupabaseReadService.streamAppUpdates().map((rows) => _MirrorQuerySnapshot(rows));
+    return _mirrorOrFirestore(
+      SupabaseReadService.streamAppUpdates(),
+      firestoreQuery: () => firestore.collection('app_updates').orderBy('createdAt', descending: true).get(),
+    );
   }
 
   static Stream<QuerySnapshot> getLoginHistory(String uid) {
-    return SupabaseReadService.streamLoginHistory(uid).map((rows) => _MirrorQuerySnapshot(rows));
+    return _mirrorOrFirestore(
+      SupabaseReadService.streamLoginHistory(uid),
+      firestoreQuery: () => firestore.collection('login_history').where('uid', isEqualTo: uid).orderBy('timestamp', descending: true).get(),
+    );
   }
 
   /// Mirror-first single-folder read (returns an adapter snapshot so callers
@@ -2440,7 +2481,21 @@ class FirebaseService {
   }
 
   static Stream<QuerySnapshot> getContentsStream(String folderId) {
-    return SupabaseReadService.streamContents(folderId).map((rows) => _MirrorQuerySnapshot(rows));
+    return SupabaseReadService.streamContents(folderId).asyncExpand((rows) async* {
+      if (rows.isNotEmpty) {
+        yield _MirrorQuerySnapshot(rows);
+        return;
+      }
+      try {
+        final snap = await firestore
+            .collection('folders')
+            .doc(folderId)
+            .collection('contents')
+            .orderBy('createdAt', descending: false)
+            .get();
+        if (snap.docs.isNotEmpty) yield snap;
+      } catch (_) {}
+    });
   }
 
   static Future<Map<String, dynamic>?> getContentDoc(String folderId, String contentId) async {
@@ -2458,15 +2513,44 @@ class FirebaseService {
   }
 
   static Stream<QuerySnapshot> getLoginAttemptsForUser(String uid) {
-    return SupabaseReadService.streamLoginAttemptsForUser(uid).map((rows) => _MirrorQuerySnapshot(rows));
+    return _mirrorOrFirestore(
+      SupabaseReadService.streamLoginAttemptsForUser(uid),
+      firestoreQuery: () => firestore.collection('login_attempts').where('uid', isEqualTo: uid).orderBy('timestamp', descending: true).get(),
+    );
   }
 
   static Stream<QuerySnapshot> getWebSessionsForUser(String uid) {
-    return SupabaseReadService.streamWebSessionsForUser(uid).map((rows) => _MirrorQuerySnapshot(rows));
+    return _mirrorOrFirestore(
+      SupabaseReadService.streamWebSessionsForUser(uid),
+      firestoreQuery: () => firestore.collection('web_sessions').where('uid', isEqualTo: uid).orderBy('timestamp', descending: true).get(),
+    );
   }
 
   static Stream<QuerySnapshot> getTargetedNotificationsForUser(String uid) {
-    return SupabaseReadService.streamTargetedNotificationsForUser(uid).map((rows) => _MirrorQuerySnapshot(rows));
+    return _mirrorOrFirestore(
+      SupabaseReadService.streamTargetedNotificationsForUser(uid),
+      firestoreQuery: () => firestore.collection('notifications').where('uid', isEqualTo: uid).orderBy('createdAt', descending: true).get(),
+    );
+  }
+
+  /// Mirror-first stream that falls back to a real Firestore query whenever the
+  /// mirror returns EMPTY rows (e.g. a table whose backfill hasn't run yet).
+  /// Lets panels like Admin Control / Assistant access / App updates keep
+  /// working with real data the moment Firestore reads are available again.
+  static Stream<QuerySnapshot> _mirrorOrFirestore(
+    Stream<List<Map<String, dynamic>>> mirror, {
+    required Future<QuerySnapshot> Function() firestoreQuery,
+  }) async* {
+    await for (final rows in mirror) {
+      if (rows.isNotEmpty) {
+        yield _MirrorQuerySnapshot(rows);
+        continue;
+      }
+      try {
+        final snap = await firestoreQuery();
+        if (snap.docs.isNotEmpty) yield snap;
+      } catch (_) {}
+    }
   }
 }
 

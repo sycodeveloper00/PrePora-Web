@@ -108,7 +108,6 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
                               },
                               onEdit: () => _showEditKeyDialog(k),
                               onDelete: () => _showDeleteKeyDialog(k),
-                              onAddModel: () => _showAddModelDialog(k),
                               onRemoveModel: (m) => _removeModel(k, m),
                               onMoveModel: (m, delta) => _moveModel(k, m, delta),
                             );
@@ -145,7 +144,7 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
     required Map<String, dynamic> k, required bool isActive,
     required Color textColor, required Color hintColor, required bool isDark,
     required VoidCallback onToggle, required VoidCallback onEdit, required VoidCallback onDelete,
-    required VoidCallback onAddModel, required void Function(String) onRemoveModel,
+    required void Function(String) onRemoveModel,
     required void Function(String, int) onMoveModel,
   }) {
     final name = k['name'] as String? ?? 'AI Key';
@@ -208,14 +207,6 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
                       ),
                     ]),
                   ),
-                ActionChip(
-                  avatar: const Icon(Icons.add_rounded, size: 16, color: Colors.deepPurple),
-                  label: const Text('Model', style: TextStyle(fontSize: 10, color: Colors.deepPurple)),
-                  visualDensity: VisualDensity.compact,
-                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                  onPressed: onAddModel,
-                  backgroundColor: Colors.deepPurple.withValues(alpha: 0.1),
-                ),
               ],
             ),
           ]),
@@ -405,73 +396,6 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
     }));
   }
 
-  void _showAddModelDialog(Map<String, dynamic> k) {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
-    final baseColor = isDark ? Colors.white : Colors.black87;
-    final dimColor = isDark ? Colors.white38 : Colors.black54;
-    final fillColor = isDark ? Colors.white10 : Colors.black12;
-    final bgColor = isDark ? const Color(0xFF1A0533) : Colors.white;
-    final modelCtrl = TextEditingController();
-    bool isLoading = false;
-    String? errorMsg;
-
-    showDialog(context: context, builder: (d) => StatefulBuilder(builder: (ctx, setDialog) {
-      return AlertDialog(
-        backgroundColor: bgColor,
-        title: Row(children: [const Icon(Icons.library_add_rounded, color: Colors.deepPurple, size: 22), const SizedBox(width: 8), Text('Add Model to Pool', style: TextStyle(color: baseColor, fontSize: 16))]),
-        content: SizedBox(
-          width: 500,
-          child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Text('Models are tried in order. If one hits its daily limit or becomes unavailable, the next model is used automatically.', style: TextStyle(color: dimColor, fontSize: 12, height: 1.4)),
-            const SizedBox(height: 12),
-            if (errorMsg != null) ...[
-              Container(
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(color: Colors.redAccent.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
-                child: Row(children: [const Icon(Icons.error_outline, color: Colors.redAccent, size: 16), const SizedBox(width: 8), Expanded(child: Text(errorMsg!, style: const TextStyle(color: Colors.redAccent, fontSize: 12)))]),
-              ),
-              const SizedBox(height: 12),
-            ],
-            TextField(controller: modelCtrl, style: TextStyle(color: baseColor), decoration: InputDecoration(labelText: 'Model', hintText: 'e.g. nvidia/nemotron-3-super-120b-a12b:free', labelStyle: TextStyle(color: dimColor), hintStyle: TextStyle(color: dimColor), filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
-            const SizedBox(height: 12),
-            Text('OpenRouter free models:\nnvidia/nemotron-3-super-120b-a12b:free \u00b7 google/gemma-4-26b-a4b-it:free \u00b7 nvidia/nemotron-3-nano-30b-a3b:free \u00b7 nvidia/nemotron-nano-12b-v2-vl:free \u00b7 cohere/north-mini-code:free \u00b7 dots-studio/dots-3-note-preview:free', style: TextStyle(color: dimColor, fontSize: 11, height: 1.4)),
-          ])),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(d), child: Text('Cancel', style: TextStyle(color: dimColor))),
-          ElevatedButton(
-            onPressed: isLoading ? null : () async {
-              final m = modelCtrl.text.trim();
-              if (m.isEmpty) return;
-              final rawModels = k['models'];
-              final List<String> models = rawModels is List
-                  ? rawModels.map((x) => x.toString()).toList()
-                  : (rawModels is String && rawModels.trim().isNotEmpty ? [rawModels] : <String>[]);
-              if (models.contains(m)) {
-                setDialog(() { errorMsg = 'This model is already in the pool.'; });
-                return;
-              }
-              models.add(m);
-              setDialog(() { isLoading = true; errorMsg = null; });
-              try {
-                await FirebaseService.updateAiApiKey(k['id'], models: models);
-                setState(() { k['models'] = models; });
-                AiService.refreshKey();
-                if (d.mounted) Navigator.pop(d);
-              } catch (e) {
-                setDialog(() { isLoading = false; errorMsg = 'Failed to add model: $e'; });
-              }
-            },
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple),
-            child: isLoading
-                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                : const Text('Add', style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      );
-    }));
-  }
-
   void _removeModel(Map<String, dynamic> k, String m) {
     final rawModels = k['models'];
     final List<String> models = rawModels is List
@@ -548,102 +472,111 @@ class _ModelsEditor extends StatefulWidget {
 }
 
 class _ModelsEditorState extends State<_ModelsEditor> {
-  late List<String> _models;
-  final TextEditingController _ctrl = TextEditingController();
+  late final List<TextEditingController> _boxes;
 
   @override
   void initState() {
     super.initState();
-    _models = [...widget.initial];
+    _boxes = [...widget.initial.map((m) => m.trim()).where((m) => m.isNotEmpty),
+              if (widget.initial.every((m) => m.trim().isEmpty)) '']
+        .map((m) => TextEditingController(text: m))
+        .toList();
+    if (_boxes.isEmpty) _boxes.add(TextEditingController());
   }
 
   void _emit() {
-    widget.onChanged(List.of(_models));
-    setState(() {});
+    widget.onChanged(_boxes.map((c) => c.text.trim()).where((s) => s.isNotEmpty).toList());
   }
 
-  void _add() {
-    final m = _ctrl.text.trim();
-    if (m.isEmpty || _models.contains(m)) return;
-    _models.add(m);
-    _ctrl.clear();
+  void _addBox() {
+    setState(() => _boxes.add(TextEditingController()));
+  }
+
+  void _removeBox(int i) {
+    setState(() {
+      _boxes.removeAt(i).dispose();
+      if (_boxes.isEmpty) _boxes.add(TextEditingController());
+    });
     _emit();
   }
 
   void _move(int i, int delta) {
     final j = i + delta;
-    if (j < 0 || j >= _models.length) return;
-    final t = _models.removeAt(i);
-    _models.insert(j, t);
+    if (j < 0 || j >= _boxes.length) return;
+    setState(() {
+      final t = _boxes.removeAt(i);
+      _boxes.insert(j, t);
+    });
     _emit();
   }
 
-  void _remove(int i) {
-    _models.removeAt(i);
-    _emit();
+  @override
+  void dispose() {
+    for (final c in _boxes) {
+      c.dispose();
+    }
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final isDark = widget.baseColor == Colors.white;
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(children: [
-        Expanded(
-          child: TextField(
-            controller: _ctrl,
-            style: TextStyle(color: widget.baseColor),
-            onSubmitted: (_) => _add(),
-            decoration: InputDecoration(
-              labelText: 'Model',
-              hintText: 'e.g. qwen/qwen3.7-flash:free',
-              labelStyle: TextStyle(color: widget.dimColor),
-              hintStyle: TextStyle(color: widget.dimColor),
-              filled: true,
-              fillColor: widget.fillColor,
-              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-            ),
-          ),
-        ),
-        const SizedBox(width: 8),
-        IconButton(
-          icon: const Icon(Icons.add_circle_rounded, color: Colors.deepPurple),
-          onPressed: _add,
-          tooltip: 'Add model',
-        ),
-      ]),
-      const SizedBox(height: 4),
-      Text('Models are tried in this order (top = first). Add, remove, or reorder with the arrows.', style: TextStyle(color: widget.dimColor, fontSize: 11, height: 1.4)),
-      const SizedBox(height: 8),
-      if (_models.isEmpty)
-        Text('No models yet — add at least one.', style: TextStyle(color: widget.dimColor, fontSize: 12))
-      else
-        Wrap(
-          spacing: 6,
-          runSpacing: 6,
-          children: [
-            for (var i = 0; i < _models.length; i++)
-              InputChip(
-                label: Text(_models[i], style: const TextStyle(fontSize: 10)),
-                visualDensity: VisualDensity.compact,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                backgroundColor: isDark ? Colors.white12 : Colors.deepPurple.withValues(alpha: 0.08),
-                side: BorderSide(color: isDark ? Colors.white24 : Colors.deepPurple.withValues(alpha: 0.3)),
-                labelStyle: TextStyle(color: isDark ? Colors.white70 : Colors.deepPurple),
-                deleteIconColor: Colors.redAccent,
-                onDeleted: () => _remove(i),
-                avatar: Row(mainAxisSize: MainAxisSize.min, children: [
-                  InkWell(
-                    onTap: () => _move(i, -1),
-                    child: const Icon(Icons.keyboard_arrow_up_rounded, size: 16, color: Colors.deepPurple),
-                  ),
-                  InkWell(
-                    onTap: () => _move(i, 1),
-                    child: const Icon(Icons.keyboard_arrow_down_rounded, size: 16, color: Colors.deepPurple),
-                  ),
-                ]),
+      Text('Models in order of preference (top = tried first). Har box mein ek model likhein.', style: TextStyle(color: widget.dimColor, fontSize: 11, height: 1.4)),
+      const SizedBox(height: 10),
+      for (var i = 0; i < _boxes.length; i++)
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Row(children: [
+            Expanded(
+              child: TextField(
+                controller: _boxes[i],
+                style: TextStyle(color: widget.baseColor),
+                onChanged: (_) => _emit(),
+                decoration: InputDecoration(
+                  labelText: 'Model ${i + 1}',
+                  hintText: 'e.g. qwen/qwen3.7-flash:free',
+                  labelStyle: TextStyle(color: widget.dimColor),
+                  hintStyle: TextStyle(color: widget.dimColor),
+                  filled: true,
+                  fillColor: widget.fillColor,
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                ),
               ),
-          ],
+            ),
+            IconButton(
+              icon: const Icon(Icons.keyboard_arrow_up_rounded, color: Colors.deepPurple),
+              visualDensity: VisualDensity.compact,
+              onPressed: i == 0 ? null : () => _move(i, -1),
+              tooltip: 'Higher priority',
+            ),
+            IconButton(
+              icon: const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.deepPurple),
+              visualDensity: VisualDensity.compact,
+              onPressed: i == _boxes.length - 1 ? null : () => _move(i, 1),
+              tooltip: 'Lower priority',
+            ),
+            IconButton(
+              icon: const Icon(Icons.close_rounded, color: Colors.redAccent),
+              visualDensity: VisualDensity.compact,
+              onPressed: () => _removeBox(i),
+              tooltip: 'Remove model',
+            ),
+          ]),
         ),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          IconButton(
+            icon: const Icon(Icons.add_circle_rounded, color: Colors.deepPurple),
+            onPressed: _addBox,
+            tooltip: 'Add model box',
+          ),
+          Text('Add Model Box', style: TextStyle(color: isDark ? Colors.deepPurple.shade200 : Colors.deepPurple, fontSize: 12)),
+        ]),
+      ),
+      const SizedBox(height: 4),
+      Text('OpenRouter free models:\nnvidia/nemotron-3-super-120b-a12b:free \u00b7 google/gemma-4-26b-a4b-it:free \u00b7 nvidia/nemotron-3-nano-30b-a3b:free \u00b7 nvidia/nemotron-nano-12b-v2-vl:free \u00b7 cohere/north-mini-code:free', style: TextStyle(color: widget.dimColor, fontSize: 11, height: 1.4)),
     ]);
   }
 }
