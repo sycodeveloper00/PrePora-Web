@@ -126,6 +126,15 @@ class FirebaseService {
 
   static Future<void> _loadActiveSupabaseAccount() async {
     try {
+      final mirror = await SupabaseReadService.getActiveSupabaseAccount();
+      if (mirror != null && (mirror['serviceRoleKey'] as String? ?? '').isNotEmpty) {
+        supabaseUrl = mirror['projectUrl'] as String? ?? '';
+        serviceRoleKey = mirror['serviceRoleKey'] as String? ?? '';
+        _supabaseAnonKey = mirror['anonKey'] as String? ?? '';
+        return;
+      }
+    } catch (_) {}
+    try {
       final snap = await firestore.collection('supabase_accounts').where('isActive', isEqualTo: true).limit(1).get();
       if (snap.docs.isNotEmpty) {
         final data = snap.docs.first.data();
@@ -140,6 +149,15 @@ class FirebaseService {
   /// assistants use their OWN storage buckets instead of the global one.
   /// Returns true when an assistant-specific account was found and applied.
   static Future<bool> _loadActiveAssistantSupabaseAccount(String assistantUid) async {
+    try {
+      final mirror = await SupabaseReadService.getActiveAssistantSupabaseAccount(assistantUid);
+      if (mirror != null && (mirror['serviceRoleKey'] as String? ?? '').isNotEmpty) {
+        supabaseUrl = mirror['projectUrl'] as String? ?? '';
+        serviceRoleKey = mirror['serviceRoleKey'] as String? ?? '';
+        _supabaseAnonKey = mirror['anonKey'] as String? ?? '';
+        return true;
+      }
+    } catch (_) {}
     try {
       final snap = await firestore
           .collection('assistant_supabase')
@@ -831,38 +849,53 @@ class FirebaseService {
       'isActive': true,
       'createdAt': FieldValue.serverTimestamp(),
     });
-    final snap = await firestore.collection('assistant_supabase').where('assistantUid', isEqualTo: assistantUid).get();
-    final batch = firestore.batch();
-    for (final d in snap.docs) {
-      if (d.id != doc.id) {
-        batch.update(d.reference, {'isActive': false});
+    try {
+      final snap = await firestore.collection('assistant_supabase').where('assistantUid', isEqualTo: assistantUid).get();
+      final batch = firestore.batch();
+      for (final d in snap.docs) {
+        if (d.id != doc.id) {
+          batch.update(d.reference, {'isActive': false});
+        }
       }
-    }
-    await batch.commit();
+      await batch.commit();
+    } catch (_) {}
     final bucketResult = await _autoCreateBuckets(projectUrl.trim(), serviceRoleKey.trim());
     await firestore.collection('assistant_supabase').doc(doc.id).update({
       'bucketStatus': bucketResult['status'],
       'failedBuckets': bucketResult['failedBuckets'],
+    });
+    await _mirrorWrite('settings', 'assistant_supabase:${doc.id}', {
+      'assistantUid': assistantUid,
+      'assistantName': assistantName,
+      'projectUrl': projectUrl.trim(),
+      'serviceRoleKey': serviceRoleKey.trim(),
+      'anonKey': anonKey.trim(),
+      'bucketStatus': bucketResult['status'],
+      'failedBuckets': bucketResult['failedBuckets'],
+      'isActive': true,
+      'createdAt': DateTime.now().toIso8601String(),
     });
     return doc.id;
   }
 
   static Future<void> updateAssistantSupabaseAccount(String id, {String? projectUrl, String? serviceRoleKey, String? anonKey, bool? isActive}) async {
     if (isActive == true) {
-      final docSnap = await firestore.collection('assistant_supabase').doc(id).get();
-      final assistantUid = (docSnap.data() as Map<String, dynamic>?)?['assistantUid'] as String?;
-      if (assistantUid != null) {
-        final snap = await firestore.collection('assistant_supabase').where('assistantUid', isEqualTo: assistantUid).get();
-        final batch = firestore.batch();
-        for (final doc in snap.docs) {
-          if (doc.id != id) {
-            batch.update(doc.reference, {'isActive': false});
-          } else {
-            batch.update(doc.reference, {'isActive': true});
+      try {
+        final docSnap = await firestore.collection('assistant_supabase').doc(id).get();
+        final assistantUid = (docSnap.data() as Map<String, dynamic>?)?['assistantUid'] as String?;
+        if (assistantUid != null) {
+          final snap = await firestore.collection('assistant_supabase').where('assistantUid', isEqualTo: assistantUid).get();
+          final batch = firestore.batch();
+          for (final doc in snap.docs) {
+            if (doc.id != id) {
+              batch.update(doc.reference, {'isActive': false});
+            } else {
+              batch.update(doc.reference, {'isActive': true});
+            }
           }
+          await batch.commit();
         }
-        await batch.commit();
-      }
+      } catch (_) {}
     } else if (isActive == false) {
       await firestore.collection('assistant_supabase').doc(id).update({'isActive': false});
     }
@@ -873,10 +906,21 @@ class FirebaseService {
       if (anonKey != null) data['anonKey'] = anonKey.trim();
       await firestore.collection('assistant_supabase').doc(id).update(data);
     }
+    try {
+      final existing = await SupabaseReadService.getSettings('assistant_supabase:$id') ?? {};
+      await _mirrorWrite('settings', 'assistant_supabase:$id', {
+        ...existing,
+        if (projectUrl != null) 'projectUrl': projectUrl.trim(),
+        if (serviceRoleKey != null) 'serviceRoleKey': serviceRoleKey.trim(),
+        if (anonKey != null) 'anonKey': anonKey.trim(),
+        if (isActive != null) 'isActive': isActive,
+      });
+    } catch (_) {}
   }
 
   static Future<void> deleteAssistantSupabaseAccount(String id) async {
     await firestore.collection('assistant_supabase').doc(id).delete();
+    await _mirrorWrite('settings', 'assistant_supabase:$id', const {}, delete: true);
   }
 
   static Future<Map<String, dynamic>> retryAssistantSupabaseBuckets(String accountId) async {
@@ -963,35 +1007,48 @@ class FirebaseService {
       'createdAt': FieldValue.serverTimestamp(),
     });
     if (isActive) {
-      final snap = await firestore.collection('supabase_accounts').get();
-      final batch = firestore.batch();
-      for (final d in snap.docs) {
-        if (d.id != doc.id) {
-          batch.update(d.reference, {'isActive': false});
+      try {
+        final snap = await firestore.collection('supabase_accounts').get();
+        final batch = firestore.batch();
+        for (final d in snap.docs) {
+          if (d.id != doc.id) {
+            batch.update(d.reference, {'isActive': false});
+          }
         }
-      }
-      await batch.commit();
+        await batch.commit();
+      } catch (_) {}
     }
     final bucketResult = await _autoCreateBuckets(projectUrl.trim(), serviceRoleKey.trim());
     await firestore.collection('supabase_accounts').doc(doc.id).update({
       'bucketStatus': bucketResult['status'],
       'failedBuckets': bucketResult['failedBuckets'],
     });
+    await _mirrorWrite('settings', 'supabase_account:${doc.id}', {
+      'projectUrl': projectUrl.trim(),
+      'serviceRoleKey': serviceRoleKey.trim(),
+      'anonKey': anonKey.trim(),
+      'bucketStatus': bucketResult['status'],
+      'failedBuckets': bucketResult['failedBuckets'],
+      'isActive': isActive,
+      'createdAt': DateTime.now().toIso8601String(),
+    });
     return doc.id;
   }
 
   static Future<void> updateSupabaseAccount(String id, {String? projectUrl, String? serviceRoleKey, String? anonKey, bool? isActive}) async {
     if (isActive == true) {
-      final snap = await firestore.collection('supabase_accounts').get();
-      final batch = firestore.batch();
-      for (final doc in snap.docs) {
-        if (doc.id != id) {
-          batch.update(doc.reference, {'isActive': false});
-        } else {
-          batch.update(doc.reference, {'isActive': true});
+      try {
+        final snap = await firestore.collection('supabase_accounts').get();
+        final batch = firestore.batch();
+        for (final doc in snap.docs) {
+          if (doc.id != id) {
+            batch.update(doc.reference, {'isActive': false});
+          } else {
+            batch.update(doc.reference, {'isActive': true});
+          }
         }
-      }
-      await batch.commit();
+        await batch.commit();
+      } catch (_) {}
     } else if (isActive == false) {
       await firestore.collection('supabase_accounts').doc(id).update({'isActive': false});
     }
@@ -1002,10 +1059,21 @@ class FirebaseService {
       if (anonKey != null) data['anonKey'] = anonKey.trim();
       await firestore.collection('supabase_accounts').doc(id).update(data);
     }
+    try {
+      final existing = await SupabaseReadService.getSettings('supabase_account:$id') ?? {};
+      await _mirrorWrite('settings', 'supabase_account:$id', {
+        ...existing,
+        if (projectUrl != null) 'projectUrl': projectUrl.trim(),
+        if (serviceRoleKey != null) 'serviceRoleKey': serviceRoleKey.trim(),
+        if (anonKey != null) 'anonKey': anonKey.trim(),
+        if (isActive != null) 'isActive': isActive,
+      });
+    } catch (_) {}
   }
 
   static Future<void> deleteSupabaseAccount(String id) async {
     await firestore.collection('supabase_accounts').doc(id).delete();
+    await _mirrorWrite('settings', 'supabase_account:$id', const {}, delete: true);
   }
 
   // ─── AI API Keys ───────────────────────────────────────────────────────────
@@ -1069,6 +1137,84 @@ class FirebaseService {
           )
           .timeout(const Duration(seconds: 10));
     } catch (_) {}
+  }
+
+  /// Best-effort bulk mirror operation (mark_all_read / clear / delete_filter).
+  /// Never throws — the mirror is only a read cache; Firestore stays canonical.
+  static Future<void> _mirrorBulk(String table, String action, {Map<String, dynamic>? filter}) async {
+    try {
+      await http
+          .post(
+            Uri.parse(_mirrorSyncEndpoint),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({
+              'table': table,
+              'action': action,
+              if (filter != null) 'filter': filter,
+            }),
+          )
+          .timeout(const Duration(seconds: 10));
+    } catch (_) {}
+  }
+
+  /// Public web_sessions mirror write (used by link-web / disconnect flows).
+  static Future<void> mirrorWebSession(String sessionId, Map<String, dynamic> data, {bool? delete}) =>
+      _mirrorWrite('web_sessions', sessionId, data, delete: delete);
+
+  /// Polls a single web session from the mirror so disconnects are detected
+  /// quickly even while the Firestore read quota is exhausted.
+  static Stream<Map<String, dynamic>?> streamWebSessionDoc(String sessionId) =>
+      SupabaseReadService.streamWebSession(sessionId);
+
+  /// Mirror-first read of a single web session.
+  static Future<Map<String, dynamic>?> getWebSessionDoc(String sessionId) async {
+    try {
+      final mirror = await SupabaseReadService.getWebSession(sessionId);
+      if (mirror != null) return mirror;
+    } catch (_) {}
+    try {
+      final doc = await firestore.collection('web_sessions').doc(sessionId).get();
+      if (!doc.exists) return null;
+      return {'id': doc.id, ...(doc.data() ?? {})};
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Mirror-first list of a user's connected web sessions.
+  static Future<List<Map<String, dynamic>>> getConnectedSessions(String uid) async {
+    try {
+      final mirror = await SupabaseReadService.getConnectedSessions(uid);
+      if (mirror != null) return mirror;
+    } catch (_) {}
+    try {
+      final snap = await firestore
+          .collection('web_sessions')
+          .where('uid', isEqualTo: uid)
+          .where('status', isEqualTo: 'connected')
+          .get();
+      return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// Marks every connected web session of [uid] as disconnected in Firestore
+  /// AND the mirror (so other tabs / the admin panel detect it immediately).
+  static Future<void> disconnectWebSessions(String uid) async {
+    final sessions = await getConnectedSessions(uid);
+    final now = DateTime.now();
+    for (final s in sessions) {
+      final id = s['id'] as String?;
+      if (id == null || id.isEmpty) continue;
+      try {
+        await firestore.collection('web_sessions').doc(id).update({
+          'status': 'disconnected',
+          'disconnectedAt': Timestamp.fromDate(now),
+        });
+      } catch (_) {}
+      await mirrorWebSession(id, {'status': 'disconnected', 'disconnectedAt': now.toIso8601String()});
+    }
   }
 
   static Future<String> addAiApiKey({
@@ -1511,24 +1657,34 @@ class FirebaseService {
   }
 
   static Future<void> grantContentAccess(String uid, String folderId, String contentId, String name) async {
-    await firestore.collection('content_Assistant_access').add({
+    final doc = await firestore.collection('content_Assistant_access').add({
       'content_id': contentId,
       'folder_id': folderId,
       'user_id': uid,
       'name': name,
       'createdAt': FieldValue.serverTimestamp(),
     });
+    await _mirrorWrite('content_assistant_access', doc.id, {
+      'userId': uid,
+      'folderId': folderId,
+      'contentId': contentId,
+      'name': name,
+      'createdAt': DateTime.now().toIso8601String(),
+    });
   }
 
   static Future<void> revokeContentAccess(String uid, String folderId, String contentId) async {
-    final snap = await firestore
-        .collection('content_Assistant_access')
-        .where('content_id', isEqualTo: contentId)
-        .where('user_id', isEqualTo: uid)
-        .get();
-    for (final d in snap.docs) {
-      await d.reference.delete();
-    }
+    try {
+      final snap = await firestore
+          .collection('content_Assistant_access')
+          .where('content_id', isEqualTo: contentId)
+          .where('user_id', isEqualTo: uid)
+          .get();
+      for (final d in snap.docs) {
+        await d.reference.delete();
+      }
+    } catch (_) {}
+    await _mirrorBulk('content_assistant_access', 'delete_filter', filter: {'user_id': uid, 'content_id': contentId});
   }
 
   // ─── Notices ────────────────────────────────────────────────────────────────────
@@ -1590,12 +1746,21 @@ class FirebaseService {
   // ─── Admin Notifications ───────────────────────────────────────────────────────
 
   static Future<void> addAdminNotification(String type, String message, {String? relatedUid}) async {
-    await firestore.collection('admin_notifications').add({
+    final id = 'n${DateTime.now().millisecondsSinceEpoch}';
+    final data = {
       'type': type,
       'message': message,
       'relatedUid': relatedUid,
       'read': false,
       'createdAt': FieldValue.serverTimestamp(),
+    };
+    await firestore.collection('admin_notifications').doc(id).set(data);
+    await _mirrorWrite('admin_notifications', id, {
+      'type': type,
+      'message': message,
+      'relatedUid': relatedUid,
+      'read': false,
+      'createdAt': DateTime.now().toIso8601String(),
     });
   }
 
@@ -1613,21 +1778,27 @@ class FirebaseService {
   }
 
   static Future<void> markAdminNotificationsRead() async {
-    final snap = await firestore.collection('admin_notifications').where('read', isEqualTo: false).get();
-    final batch = firestore.batch();
-    for (final d in snap.docs) {
-      batch.update(d.reference, {'read': true});
-    }
-    await batch.commit();
+    try {
+      final snap = await firestore.collection('admin_notifications').where('read', isEqualTo: false).get();
+      final batch = firestore.batch();
+      for (final d in snap.docs) {
+        batch.update(d.reference, {'read': true});
+      }
+      await batch.commit();
+    } catch (_) {}
+    await _mirrorBulk('admin_notifications', 'mark_all_read');
   }
 
   static Future<void> clearAdminNotifications() async {
-    final snap = await firestore.collection('admin_notifications').get();
-    final batch = firestore.batch();
-    for (final d in snap.docs) {
-      batch.delete(d.reference);
-    }
-    await batch.commit();
+    try {
+      final snap = await firestore.collection('admin_notifications').get();
+      final batch = firestore.batch();
+      for (final d in snap.docs) {
+        batch.delete(d.reference);
+      }
+      await batch.commit();
+    } catch (_) {}
+    await _mirrorBulk('admin_notifications', 'clear');
   }
 
   // ─── Login Tracking & Auto-Block ──────────────────────────────────────────────
@@ -1934,6 +2105,10 @@ class FirebaseService {
     return SupabaseReadService.streamAllFeedbacks().map((rows) => _MirrorQuerySnapshot(rows));
   }
 
+  static Stream<QuerySnapshot> getPendingFeedbacks() {
+    return SupabaseReadService.streamPendingFeedbacks().map((rows) => _MirrorQuerySnapshot(rows));
+  }
+
   static Future<int> getPendingFeedbackCount() async {
     try {
       final mirror = await SupabaseReadService.getPendingFeedbackCount();
@@ -2043,23 +2218,31 @@ class FirebaseService {
   }
 
   static Future<void> grantAssistantAccess(String uid, String folderId, String name) async {
-    await firestore.collection('Assistant_access').add({
+    final doc = await firestore.collection('Assistant_access').add({
       'uid': uid,
       'folderId': folderId,
       'name': name,
       'createdAt': FieldValue.serverTimestamp(),
     });
+    await _mirrorWrite('assistant_access', doc.id, {
+      'uid': uid,
+      'folderId': folderId,
+      'name': name,
+      'createdAt': DateTime.now().toIso8601String(),
+    });
   }
 
   static Future<void> revokeAssistantAccess(String uid, String folderId) async {
-    final snap = await firestore
-        .collection('Assistant_access')
-        .where('uid', isEqualTo: uid)
-        .where('folderId', isEqualTo: folderId)
-        .get();
-    for (final d in snap.docs) {
-      await d.reference.delete();
-    }
+    try {
+      final snap = await firestore
+          .collection('Assistant_access')
+          .where('uid', isEqualTo: uid)
+          .where('folderId', isEqualTo: folderId)
+          .get();
+      for (final d in snap.docs) {
+        await d.reference.delete();
+      }
+    } catch (_) {}
     // Cascade: also revoke content/subfolder access inside this folder so the
     // assistant loses access at every level that was granted under this folder.
     try {
@@ -2072,6 +2255,8 @@ class FirebaseService {
         await d.reference.delete();
       }
     } catch (_) {}
+    await _mirrorBulk('assistant_access', 'delete_filter', filter: {'uid': uid, 'folder_id': folderId});
+    await _mirrorBulk('content_assistant_access', 'delete_filter', filter: {'user_id': uid, 'folder_id': folderId});
   }
 
   static Future<List<Map<String, dynamic>>> getAssistantFolderIds(String uid) async {
@@ -2093,11 +2278,15 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getUidsWithFolderAccess(folderId);
       if (mirror != null) return mirror;
     } catch (_) {}
-    final snap = await firestore
-        .collection('Assistant_access')
-        .where('folderId', isEqualTo: folderId)
-        .get();
-    return snap.docs.map((d) => d.data()['uid'] as String).toSet();
+    try {
+      final snap = await firestore
+          .collection('Assistant_access')
+          .where('folderId', isEqualTo: folderId)
+          .get();
+      return snap.docs.map((d) => d.data()['uid'] as String).toSet();
+    } catch (_) {
+      return {};
+    }
   }
 
   static Future<Set<String>> getUidsWithContentAccess(String folderId, String contentId) async {
@@ -2105,12 +2294,16 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getUidsWithContentAccess(folderId, contentId);
       if (mirror != null) return mirror;
     } catch (_) {}
-    final snap = await firestore
-        .collection('content_Assistant_access')
-        .where('folder_id', isEqualTo: folderId)
-        .where('content_id', isEqualTo: contentId)
-        .get();
-    return snap.docs.map((d) => d.data()['user_id'] as String).toSet();
+    try {
+      final snap = await firestore
+          .collection('content_Assistant_access')
+          .where('folder_id', isEqualTo: folderId)
+          .where('content_id', isEqualTo: contentId)
+          .get();
+      return snap.docs.map((d) => d.data()['user_id'] as String).toSet();
+    } catch (_) {
+      return {};
+    }
   }
 
   // ─── Settings ──────────────────────────────────────────────────────────────────
@@ -2221,8 +2414,59 @@ class FirebaseService {
 
   // ─── App Updates ───────────────────────────────────────────────────────────────
 
+  /// The current app version shown in the UI (kept in sync with pubspec.yaml).
+  static const String appVersion = '12.1.7';
+
   static Stream<QuerySnapshot> getAppUpdates() {
     return SupabaseReadService.streamAppUpdates().map((rows) => _MirrorQuerySnapshot(rows));
+  }
+
+  static Stream<QuerySnapshot> getLoginHistory(String uid) {
+    return SupabaseReadService.streamLoginHistory(uid).map((rows) => _MirrorQuerySnapshot(rows));
+  }
+
+  /// Mirror-first single-folder read (returns an adapter snapshot so callers
+  /// that expect a [DocumentSnapshot] keep working without a Firestore read).
+  static Future<DocumentSnapshot> getFolderDoc(String folderId) async {
+    try {
+      final mirror = await SupabaseReadService.getFolder(folderId);
+      if (mirror != null) return _MirrorDocumentSnapshot(mirror);
+    } catch (_) {}
+    try {
+      return await firestore.collection('folders').doc(folderId).get();
+    } catch (_) {
+      return _MirrorDocumentSnapshot({'id': folderId});
+    }
+  }
+
+  static Stream<QuerySnapshot> getContentsStream(String folderId) {
+    return SupabaseReadService.streamContents(folderId).map((rows) => _MirrorQuerySnapshot(rows));
+  }
+
+  static Future<Map<String, dynamic>?> getContentDoc(String folderId, String contentId) async {
+    try {
+      final mirror = await SupabaseReadService.getContent(folderId, contentId);
+      if (mirror != null) return mirror;
+    } catch (_) {}
+    try {
+      final doc = await firestore.collection('folders').doc(folderId).collection('contents').doc(contentId).get();
+      if (!doc.exists) return null;
+      return {'id': doc.id, ...(doc.data() ?? {})};
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Stream<QuerySnapshot> getLoginAttemptsForUser(String uid) {
+    return SupabaseReadService.streamLoginAttemptsForUser(uid).map((rows) => _MirrorQuerySnapshot(rows));
+  }
+
+  static Stream<QuerySnapshot> getWebSessionsForUser(String uid) {
+    return SupabaseReadService.streamWebSessionsForUser(uid).map((rows) => _MirrorQuerySnapshot(rows));
+  }
+
+  static Stream<QuerySnapshot> getTargetedNotificationsForUser(String uid) {
+    return SupabaseReadService.streamTargetedNotificationsForUser(uid).map((rows) => _MirrorQuerySnapshot(rows));
   }
 }
 
@@ -2426,6 +2670,28 @@ class _MirrorDocumentSnapshot implements DocumentSnapshot<Map<String, dynamic>> 
 
   final Map<String, dynamic> _data;
 
+  static const Set<String> _dateKeys = {
+    'createdAt', 'updatedAt', 'timestamp', 'startedAt', 'lastLogin',
+    'lastActive', 'expiresAt', 'lastMessageAt', 'created_at', 'updated_at',
+  };
+
+  /// Mirror rows store dates as ISO strings; callers expect a [Timestamp].
+  /// Convert any date-keyed string that parses into a real [Timestamp] so UI
+  /// code such as `d['createdAt'] as Timestamp` stops crashing.
+  static Map<String, dynamic>? _convertDates(Map<String, dynamic>? src) {
+    if (src == null) return null;
+    final out = <String, dynamic>{};
+    for (final e in src.entries) {
+      var v = e.value;
+      if (_dateKeys.contains(e.key) && v is String) {
+        final dt = DateTime.tryParse(v);
+        if (dt != null) v = Timestamp.fromDate(dt);
+      }
+      out[e.key] = v;
+    }
+    return out;
+  }
+
   @override
   String get id => _data['id'] as String? ?? '';
 
@@ -2440,7 +2706,7 @@ class _MirrorDocumentSnapshot implements DocumentSnapshot<Map<String, dynamic>> 
   bool get exists => true;
 
   @override
-  Map<String, dynamic>? data() => _data;
+  Map<String, dynamic>? data() => _convertDates(_data);
 
   @override
   dynamic get(Object field) => _data[field];
@@ -2458,7 +2724,7 @@ class _MirrorQueryDocumentSnapshot extends _MirrorDocumentSnapshot
   bool get exists => true;
 
   @override
-  Map<String, dynamic> data() => _data;
+  Map<String, dynamic> data() => _MirrorDocumentSnapshot._convertDates(_data) ?? _data;
 }
 
 /// [QuerySnapshot] adapter so existing `StreamBuilder<QuerySnapshot>` widgets

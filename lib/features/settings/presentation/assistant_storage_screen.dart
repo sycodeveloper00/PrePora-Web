@@ -345,7 +345,7 @@ class _AssistantStorageScreenState extends State<AssistantStorageScreen> {
             ],
             if (scopedUid == null)
               StreamBuilder<QuerySnapshot>(
-                stream: FirebaseService.firestore.collection('users').where('role', isEqualTo: 'Assistant').snapshots(),
+                stream: FirebaseService.getAllAssistant(),
                 builder: (ctx, snap) {
                   if (!snap.hasData) return const Center(child: CircularProgressIndicator());
                   final docs = snap.data!.docs;

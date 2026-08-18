@@ -651,17 +651,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                   try {
                     final uid = FirebaseService.currentUser?.uid;
                     if (uid != null) {
-                      final sessions = await FirebaseService.firestore
-                          .collection('web_sessions')
-                          .where('uid', isEqualTo: uid)
-                          .where('status', isEqualTo: 'connected')
-                          .get();
-                      for (final doc in sessions.docs) {
-                        await doc.reference.update({
-                          'status': 'disconnected',
-                          'disconnectedAt': Timestamp.fromDate(DateTime.now()),
-                        });
-                      }
+                      await FirebaseService.disconnectWebSessions(uid);
                     }
                   } catch (_) {}
                   await FirebaseService.signOut();
@@ -1024,7 +1014,7 @@ class _DashboardScreenState extends State<DashboardScreen>
             ListTile(
               leading: const Icon(Icons.info_outline_rounded, color: Colors.grey),
               title: Text('Version', style: TextStyle(color: baseColor)),
-              subtitle: Text('PrePora v2.0.0', style: TextStyle(color: dimColor, fontSize: 12)),
+              subtitle: Text('PrePora ${FirebaseService.appVersion}', style: TextStyle(color: dimColor, fontSize: 12)),
             ),
             const SizedBox(height: 8),
           ]),
@@ -1262,17 +1252,7 @@ class _DashboardScreenState extends State<DashboardScreen>
                 try {
                   final uid = FirebaseService.currentUser?.uid;
                   if (uid != null) {
-                    final sessions = await FirebaseService.firestore
-                        .collection('web_sessions')
-                        .where('uid', isEqualTo: uid)
-                        .where('status', isEqualTo: 'connected')
-                        .get();
-                    for (final doc in sessions.docs) {
-                      await doc.reference.update({
-                        'status': 'disconnected',
-                        'disconnectedAt': Timestamp.fromDate(DateTime.now()),
-                      });
-                    }
+                    await FirebaseService.disconnectWebSessions(uid);
                   }
                 } catch (_) {}
                 await FirebaseService.signOut();
@@ -1735,13 +1715,13 @@ class _DashboardScreenState extends State<DashboardScreen>
 
   String? _latestUpdateVersion;
   String? _latestUpdateLink;
-  String _currentAppVersion = '2.0.0';
+  String _currentAppVersion = FirebaseService.appVersion;
 
   void _checkForUpdates() {
     PackageInfo.fromPlatform().then((info) {
       if (mounted) setState(() => _currentAppVersion = info.version);
     });
-    FirebaseService.firestore.collection('app_updates').orderBy('createdAt', descending: true).limit(1).snapshots().listen((snap) {
+    FirebaseService.getAppUpdates().listen((snap) {
       if (!mounted || snap.docs.isEmpty) return;
       final d = snap.docs.first.data() as Map<String, dynamic>;
       final version = d['version'] as String?;

@@ -81,7 +81,7 @@ class SettingsScreen extends StatelessWidget {
               ListTile(
                 leading: const Icon(Icons.info_outline_rounded, color: Colors.grey),
                 title: Text('Version', style: TextStyle(color: textColor)),
-                subtitle: Text('PrePora v2.0.0', style: TextStyle(color: hintColor, fontSize: 12)),
+                subtitle: Text('PrePora ${FirebaseService.appVersion}', style: TextStyle(color: hintColor, fontSize: 12)),
               ),
               Divider(height: 1, color: isDark ? Colors.white12 : Colors.black12),
               ListTile(
@@ -91,17 +91,7 @@ class SettingsScreen extends StatelessWidget {
                   final uid = FirebaseService.currentUser?.uid;
                   if (uid != null) {
                     try {
-                      final sessions = await FirebaseService.firestore
-                          .collection('web_sessions')
-                          .where('uid', isEqualTo: uid)
-                          .where('status', isEqualTo: 'connected')
-                          .get();
-                      for (final doc in sessions.docs) {
-                        await doc.reference.update({
-                          'status': 'disconnected',
-                          'disconnectedAt': Timestamp.fromDate(DateTime.now()),
-                        });
-                      }
+                      await FirebaseService.disconnectWebSessions(uid);
                     } catch (_) {}
                   }
                   await FirebaseService.signOut();

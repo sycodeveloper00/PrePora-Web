@@ -90,9 +90,11 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     // web_sessions collection listeners, which burned the free-tier read quota.
     _heartbeatTimer = Timer.periodic(const Duration(minutes: 5), (_) {
       if (_sessionId.isEmpty || _status != 'connected') return;
+      final now = DateTime.now();
       FirebaseFirestore.instance.collection('web_sessions').doc(_sessionId).update({
         'lastActive': FieldValue.serverTimestamp(),
       }).catchError((_) {});
+      FirebaseService.mirrorWebSession(_sessionId, {'lastActive': now.toIso8601String()});
     });
   }
 
@@ -172,9 +174,15 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
 
   Future<void> _verifyExistingSession(String sessionId) async {
     try {
-      final doc = await FirebaseFirestore.instance.collection('web_sessions').doc(sessionId).get();
-      if (doc.exists && doc.data() != null) {
-        final data = doc.data()!;
+      Map<String, dynamic>? data;
+      try {
+        data = await FirebaseService.getWebSessionDoc(sessionId);
+      } catch (_) {}
+      if (data == null) {
+        final doc = await FirebaseFirestore.instance.collection('web_sessions').doc(sessionId).get();
+        if (doc.exists) data = doc.data();
+      }
+      if (data != null) {
         final status = data['status'];
         if (status == 'connected') {
           final uid = data['uid'];
@@ -215,13 +223,8 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
             final role = data['userRole'] ?? 'student';
             FirebaseService.cachedRole = role;
 
-            _sessionSub = FirebaseFirestore.instance
-                .collection('web_sessions')
-                .doc(sessionId)
-                .snapshots()
-                .listen((snap) {
-              if (!snap.exists) return;
-              final sData = snap.data()!;
+            _sessionSub = FirebaseService.streamWebSessionDoc(sessionId).listen((sData) {
+              if (sData == null) return;
               if (sData['status'] == 'disconnected' && mounted) {
                 html.window.localStorage.remove(_sessionKey);
                 setState(() {
@@ -285,20 +288,22 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     } catch (e) {
       print('[generateSession] Firestore write failed: $e');
     }
+    await FirebaseService.mirrorWebSession(_sessionId, {
+      'sessionId': _sessionId,
+      'status': 'waiting',
+      'createdAt': _createdAt!.toIso8601String(),
+      'lastActive': _createdAt!.toIso8601String(),
+      'webBrowser': _detectBrowser(),
+    });
 
-    _sessionSub = FirebaseFirestore.instance
-        .collection('web_sessions')
-        .doc(_sessionId)
-        .snapshots()
-        .listen((snap) {
-      if (!snap.exists) return;
-      final data = snap.data()!;
-      final status = data['status'] ?? 'waiting';
+    _sessionSub = FirebaseService.streamWebSessionDoc(_sessionId).listen((sData) {
+      if (sData == null) return;
+      final status = sData['status'] ?? 'waiting';
 
       if (status == 'connected' && mounted) {
         setState(() {
           _status = 'connected';
-          _sessionData = data;
+          _sessionData = sData;
           _countdown = 3;
         });
         _startRedirectTimer();
@@ -408,13 +413,8 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
 
   void _listenToSessionStatus() {
     _sessionSub?.cancel();
-    _sessionSub = FirebaseFirestore.instance
-        .collection('web_sessions')
-        .doc(_sessionId)
-        .snapshots()
-        .listen((snap) {
-      if (!snap.exists) return;
-      final sData = snap.data()!;
+    _sessionSub = FirebaseService.streamWebSessionDoc(_sessionId).listen((sData) {
+      if (sData == null) return;
       if (sData['status'] == 'disconnected' && mounted) {
         html.window.localStorage.remove(_sessionKey);
         _stopActivityTracking();
@@ -430,12 +430,17 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
 
   Future<void> _disconnectSession() async {
     if (_sessionId.isEmpty) return;
+    final now = DateTime.now();
     try {
       await FirebaseFirestore.instance.collection('web_sessions').doc(_sessionId).update({
         'status': 'disconnected',
-        'disconnectedAt': Timestamp.fromDate(DateTime.now()),
+        'disconnectedAt': Timestamp.fromDate(now),
       });
     } catch (_) {}
+    await FirebaseService.mirrorWebSession(_sessionId, {
+      'status': 'disconnected',
+      'disconnectedAt': now.toIso8601String(),
+    });
     html.window.localStorage.remove(_sessionKey);
     _expireTimer?.cancel();
     _refreshTimer?.cancel();
@@ -454,6 +459,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
 
   Future<void> _cleanupSession() async {
     if (_sessionId.isEmpty) return;
+    final now = DateTime.now();
     try {
       final docRef = FirebaseFirestore.instance.collection('web_sessions').doc(_sessionId);
       final snap = await docRef.get();
@@ -462,10 +468,15 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
       if (hadUid) {
         await docRef.update({
           'status': 'disconnected',
-          'disconnectedAt': Timestamp.fromDate(DateTime.now()),
+          'disconnectedAt': Timestamp.fromDate(now),
+        });
+        await FirebaseService.mirrorWebSession(_sessionId, {
+          'status': 'disconnected',
+          'disconnectedAt': now.toIso8601String(),
         });
       } else {
         await docRef.delete();
+        await FirebaseService.mirrorWebSession(_sessionId, const {}, delete: true);
       }
     } catch (_) {}
   }
@@ -911,13 +922,8 @@ class _LinkedWebSession {
   void startMonitoring(String sessionId, void Function() onDisconnected) {
     stopMonitoring();
     _onDisconnected = onDisconnected;
-    _globalSessionSub = FirebaseFirestore.instance
-        .collection('web_sessions')
-        .doc(sessionId)
-        .snapshots()
-        .listen((snap) {
-      if (!snap.exists) return;
-      final sData = snap.data()!;
+    _globalSessionSub = FirebaseService.streamWebSessionDoc(sessionId).listen((sData) {
+      if (sData == null) return;
       if (sData['status'] == 'disconnected') {
         stopMonitoring();
         _onDisconnected?.call();

@@ -20,7 +20,7 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
   String _accountTitle = '';
   String _accountNo = '';
   String _bankName = '';
-  String _appVersion = '2.0.0';
+  String _appVersion = FirebaseService.appVersion;
 
   @override
   void initState() {
@@ -205,7 +205,7 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
             ]),
             const SizedBox(height: 16),
             StreamBuilder<QuerySnapshot>(
-              stream: FirebaseService.firestore.collection('app_updates').orderBy('createdAt', descending: true).snapshots(),
+              stream: FirebaseService.getAppUpdates(),
               builder: (ctx, snap) {
                 final updates = snap.data?.docs ?? [];
                 if (updates.isEmpty) {

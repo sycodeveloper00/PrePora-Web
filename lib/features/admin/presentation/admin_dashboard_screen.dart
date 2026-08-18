@@ -89,17 +89,19 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   }
 
   void _markAllFeedbacksViewed() async {
-    final snap = await FirebaseService.firestore
-        .collection('feedbacks')
-        .where('status', isEqualTo: 'pending')
-        .where('viewed', isEqualTo: false)
-        .get();
-    if (snap.docs.isEmpty) return;
-    final batch = FirebaseService.firestore.batch();
-    for (final d in snap.docs) {
-      batch.update(d.reference, {'viewed': true});
-    }
-    await batch.commit();
+    try {
+      final snap = await FirebaseService.firestore
+          .collection('feedbacks')
+          .where('status', isEqualTo: 'pending')
+          .where('viewed', isEqualTo: false)
+          .get();
+      if (snap.docs.isEmpty) return;
+      final batch = FirebaseService.firestore.batch();
+      for (final d in snap.docs) {
+        batch.update(d.reference, {'viewed': true});
+      }
+      await batch.commit();
+    } catch (_) {}
   }
 
   void _loadPendingCount() async {
@@ -108,11 +110,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   }
 
   void _listenNewFeedbacks() {
-    _feedbackSub = FirebaseService.firestore
-        .collection('feedbacks')
-        .where('status', isEqualTo: 'pending')
-        .snapshots()
-        .listen((snap) {
+    _feedbackSub = FirebaseService.getPendingFeedbacks().listen((snap) {
       final all = snap.docs.where((d) {
         final data = d.data() as Map<String, dynamic>;
         return data['viewed'] != true;
@@ -740,7 +738,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             ]),
             const SizedBox(height: 16),
             StreamBuilder<QuerySnapshot>(
-              stream: FirebaseService.firestore.collection('login_history').doc(uid).collection('logins').orderBy('timestamp', descending: true).limit(20).snapshots(),
+              stream: FirebaseService.getLoginHistory(uid),
               builder: (ctx, snap) {
                 final logs = snap.data?.docs ?? [];
                 if (logs.isEmpty) {
@@ -842,7 +840,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             ]),
             const SizedBox(height: 16),
             StreamBuilder<QuerySnapshot>(
-              stream: FirebaseService.firestore.collection('app_updates').orderBy('createdAt', descending: true).snapshots(),
+              stream: FirebaseService.getAppUpdates(),
               builder: (ctx, snap) {
                 final updates = snap.data?.docs ?? [];
                 if (updates.isEmpty) {
@@ -1070,20 +1068,26 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           List<Map<String, dynamic>> assistants = [];
           bool loading = true;
           Future<void> load() async {
-            final results = await Future.wait([
-              FirebaseService.getAllAssistant().first,
-              FirebaseService.getUidsWithFolderAccess(folderId),
-            ]);
-            final assistantSnap = results[0] as QuerySnapshot;
-            final uids = results[1] as Set<String>;
-            assistants = assistantSnap.docs.map((d) => {
-              'uid': d.id,
-              'name': ((d.data() as Map<String, dynamic>)['name'] as String?) ?? 'Unknown',
-              'email': ((d.data() as Map<String, dynamic>)['email'] as String?) ?? '',
-            }).toList();
-            grantedUids = uids;
-            loading = false;
-            if (ctx.mounted) setLocal(() {});
+            try {
+              final results = await Future.wait([
+                FirebaseService.getAllAssistant().first,
+                FirebaseService.getUidsWithFolderAccess(folderId),
+              ]);
+              final assistantSnap = results[0] as QuerySnapshot;
+              final uids = results[1] as Set<String>;
+              assistants = assistantSnap.docs.map((d) => {
+                'uid': d.id,
+                'name': ((d.data() as Map<String, dynamic>)['name'] as String?) ?? 'Unknown',
+                'email': ((d.data() as Map<String, dynamic>)['email'] as String?) ?? '',
+              }).toList();
+              grantedUids = uids;
+            } catch (_) {
+              assistants = [];
+              grantedUids = {};
+            } finally {
+              loading = false;
+              if (ctx.mounted) setLocal(() {});
+            }
           }
           load();
           return DraggableScrollableSheet(
@@ -2132,7 +2136,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             ListTile(
               leading: const Icon(Icons.info_outline_rounded, color: Colors.grey),
               title: Text('Version', style: TextStyle(color: baseColor)),
-              subtitle: Text('PrePora v2.0.0', style: TextStyle(color: dimColor, fontSize: 12)),
+              subtitle: Text('PrePora ${FirebaseService.appVersion}', style: TextStyle(color: dimColor, fontSize: 12)),
             ),
             ListTile(
               leading: const Icon(Icons.palette_outlined, color: Colors.amber),

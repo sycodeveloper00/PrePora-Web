@@ -116,6 +116,32 @@ class SupabaseReadService {
     return _flatten(rows.first);
   }
 
+  // ─── supabase accounts (mirrored into the settings table) ────────────────
+
+  /// Returns the active global Supabase storage account. `supabase_accounts`
+  /// rows are mirrored into `settings` with id `supabase_account:<docId>`.
+  static Future<Map<String, dynamic>?> getActiveSupabaseAccount() async {
+    final rows = await _query('settings', 'id=like.supabase_account.%&$_sel');
+    if (rows == null || rows.isEmpty) return null;
+    for (final r in rows) {
+      final flat = _flatten(r);
+      if (flat['isActive'] == true) return flat;
+    }
+    return null;
+  }
+
+  /// Returns the active assistant-specific storage account (mirrored into
+  /// `settings` with id `assistant_supabase:<docId>`).
+  static Future<Map<String, dynamic>?> getActiveAssistantSupabaseAccount(String assistantUid) async {
+    final rows = await _query('settings', 'id=like.assistant_supabase.%&$_sel');
+    if (rows == null || rows.isEmpty) return null;
+    for (final r in rows) {
+      final flat = _flatten(r);
+      if (flat['assistantUid'] == assistantUid && flat['isActive'] == true) return flat;
+    }
+    return null;
+  }
+
   // ─── folders ──────────────────────────────────────────────────────────────
 
   static Stream<List<Map<String, dynamic>>> streamFolders({
@@ -129,6 +155,18 @@ class SupabaseReadService {
     Duration interval = const Duration(seconds: 10),
   }) {
     return _poll('contents', 'folder_id=eq.$folderId&$_sel', interval: interval);
+  }
+
+  static Future<Map<String, dynamic>?> getFolder(String folderId) async {
+    final rows = await _query('folders', 'id=eq.$folderId&limit=1&$_sel');
+    if (rows == null || rows.isEmpty) return null;
+    return _flatten(rows.first);
+  }
+
+  static Future<Map<String, dynamic>?> getContent(String folderId, String contentId) async {
+    final rows = await _query('contents', 'id=eq.$contentId&folder_id=eq.$folderId&limit=1&$_sel');
+    if (rows == null || rows.isEmpty) return null;
+    return _flatten(rows.first);
   }
 
   // ─── notices ──────────────────────────────────────────────────────────────
@@ -174,6 +212,12 @@ class SupabaseReadService {
     Duration interval = const Duration(seconds: 10),
   }) {
     return _poll('feedbacks', '$_sel&order=created_at.desc', interval: interval);
+  }
+
+  static Stream<List<Map<String, dynamic>>> streamPendingFeedbacks({
+    Duration interval = const Duration(seconds: 10),
+  }) {
+    return _poll('feedbacks', 'status=eq.pending&$_sel&order=created_at.desc', interval: interval);
   }
 
   static Future<int> getPendingFeedbackCount() async {
@@ -306,12 +350,60 @@ class SupabaseReadService {
     return _poll('login_history', 'uid=eq.$uid&$_sel&order=timestamp.desc', interval: interval);
   }
 
+  static Stream<List<Map<String, dynamic>>> streamLoginAttemptsForUser(
+    String uid, {
+    Duration interval = const Duration(seconds: 10),
+  }) {
+    return _poll('login_attempts', 'uid=eq.$uid&$_sel&order=timestamp.desc&limit=100', interval: interval);
+  }
+
+  static Stream<List<Map<String, dynamic>>> streamWebSessionsForUser(
+    String uid, {
+    Duration interval = const Duration(seconds: 10),
+  }) {
+    return _poll('web_sessions', 'uid=eq.$uid&$_sel&order=created_at.desc&limit=50', interval: interval);
+  }
+
+  static Stream<List<Map<String, dynamic>>> streamTargetedNotificationsForUser(
+    String uid, {
+    Duration interval = const Duration(seconds: 10),
+  }) {
+    return _poll('notifications', 'uid=eq.$uid&type=eq.targeted&$_sel', interval: interval);
+  }
+
   // ─── web session (QR link flow) ───────────────────────────────────────────
 
   static Future<Map<String, dynamic>?> getWebSession(String sessionId) async {
     final rows = await _query('web_sessions', 'id=eq.$sessionId&limit=1&$_sel');
     if (rows == null || rows.isEmpty) return null;
     return _flatten(rows.first);
+  }
+
+  /// A user's connected web sessions (mirror) for the disconnect flow.
+  static Future<List<Map<String, dynamic>>?> getConnectedSessions(String uid) async {
+    final rows = await _query('web_sessions', 'uid=eq.$uid&status=eq.connected&$_sel');
+    if (rows == null) return null;
+    return rows.map(_flatten).toList();
+  }
+
+  /// Polls a single web session every few seconds so the web app detects an
+  /// Android-side disconnect quickly — without a live Firestore listener
+  /// (which burns the read quota).
+  static Stream<Map<String, dynamic>?> streamWebSession(
+    String sessionId, {
+    Duration interval = const Duration(seconds: 5),
+  }) async* {
+    String? lastKey;
+    while (true) {
+      final rows = await _query('web_sessions', 'id=eq.$sessionId&limit=1&$_sel');
+      final flat = (rows == null || rows.isEmpty) ? null : _flatten(rows.first);
+      final key = json.encode(flat);
+      if (key != lastKey) {
+        lastKey = key;
+        yield flat;
+      }
+      await Future.delayed(interval);
+    }
   }
 
   /// Toggle the mirror on/off (used if the mirror ever needs disabling).

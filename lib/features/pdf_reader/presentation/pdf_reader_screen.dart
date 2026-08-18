@@ -79,7 +79,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       }
 
       if (kIsWeb) {
-        final proxyUrl = Uri.parse('/api/download-file?url=${Uri.encodeComponent(url)}');
+        final proxyUrl = Uri.parse('https://prepora-web.vercel.app/api/download-file?url=${Uri.encodeComponent(url)}');
         final headers = <String, String>{};
         if (url.contains('supabase.co') && FirebaseService.serviceRoleKey.isNotEmpty) {
           headers['Authorization'] = 'Bearer ${FirebaseService.serviceRoleKey}';

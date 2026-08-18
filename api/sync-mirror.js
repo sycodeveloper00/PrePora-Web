@@ -4,12 +4,17 @@
 // row (no new Vercel env vars needed). Writes to Firestore remain the source
 // of truth; this keeps the mirror fresh for quota-free reads.
 //
-// POST body: { table, id, data, isActive, delete }
+// POST body: { table, id, data, isActive, delete, action, filter }
 //   table   - mirror table name (ai_api_keys, settings, web_sessions, users, ...)
 //   id      - document id
 //   data    - full document map
 //   isActive- (optional) if set and false, deactivates the row instead.
 //   delete  - (optional) if true, removes the row from the mirror entirely.
+//   action  - (optional) bulk operation (no id needed):
+//               'mark_all_read'  - PATCH all rows with read=false -> read=true
+//               'clear'          - DELETE all rows in the table
+//               'delete_filter'  - DELETE rows matching `filter` (AND of key=value)
+//   filter  - (optional) map used by the delete_filter action.
 
 const MIRROR_URL = 'https://qluwnxsmnxvvqoiejtbr.supabase.co';
 const MIRROR_ANON =
@@ -175,12 +180,49 @@ module.exports = async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   try {
-    const { table, id, data, isActive, delete: deleteRow } = req.body || {};
-    if (!table || !id) return res.status(400).json({ error: 'table and id required' });
+    const { table, id, data, isActive, delete: deleteRow, action, filter } = req.body || {};
+    if (!table) return res.status(400).json({ error: 'table required' });
     if (!SAFE_TABLES.has(table)) return res.status(400).json({ error: `table ${table} not allowed` });
 
     const serviceRoleKey = await getServiceRoleKey();
     if (!serviceRoleKey) return res.status(500).json({ error: 'read_mirror service role key missing' });
+
+    const authHeaders = {
+      apikey: serviceRoleKey,
+      Authorization: `Bearer ${serviceRoleKey}`,
+      'Content-Type': 'application/json',
+    };
+
+    // Bulk operations (no id needed).
+    if (action === 'mark_all_read') {
+      const r = await fetch(`${MIRROR_URL}/rest/v1/${table}?read=eq.false`, {
+        method: 'PATCH',
+        headers: authHeaders,
+        body: JSON.stringify({ read: true }),
+      });
+      if (!r.ok) return res.status(502).json({ error: `mirror mark_all_read ${r.status}`, detail: await r.text().catch(() => '') });
+      return res.status(200).json({ ok: true, action: 'mark_all_read', table });
+    }
+    if (action === 'clear') {
+      const r = await fetch(`${MIRROR_URL}/rest/v1/${table}`, {
+        method: 'DELETE',
+        headers: authHeaders,
+      });
+      if (!r.ok) return res.status(502).json({ error: `mirror clear ${r.status}`, detail: await r.text().catch(() => '') });
+      return res.status(200).json({ ok: true, action: 'clear', table });
+    }
+    if (action === 'delete_filter') {
+      const where = Object.entries(filter || {})
+        .map(([k, v]) => `${encodeURIComponent(k)}=eq.${encodeURIComponent(String(v))}`)
+        .join('&');
+      const r = await fetch(`${MIRROR_URL}/rest/v1/${table}?${where}`, {
+        method: 'DELETE',
+        headers: authHeaders,
+      });
+      if (!r.ok) return res.status(502).json({ error: `mirror delete_filter ${r.status}`, detail: await r.text().catch(() => '') });
+      return res.status(200).json({ ok: true, action: 'delete_filter', table, where });
+    }
+    if (!id) return res.status(400).json({ error: 'id required' });
 
     const headers = {
       apikey: serviceRoleKey,

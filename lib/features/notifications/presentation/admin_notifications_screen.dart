@@ -22,8 +22,7 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
         leading: IconButton(icon: const Icon(Icons.arrow_back_ios_new_rounded), onPressed: () => context.pop()),
         actions: [
           StreamBuilder<QuerySnapshot>(
-            stream: FirebaseService.firestore.collection('admin_notifications')
-                .where('read', isEqualTo: false).snapshots(),
+            stream: FirebaseService.getAdminNotifications(),
             builder: (context, snap) {
               final unread = snap.hasData ? snap.data!.docs.length : 0;
               if (unread == 0) return const SizedBox();

@@ -106,12 +106,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     if (widget.assistantContentAccess != null) {
       _assistantAccess = widget.assistantContentAccess!;
     }
-    _folderFuture = FirebaseService.firestore.collection('folders').doc(widget.folderId).get();
-    _contentsStream = FirebaseService.firestore
-        .collection('folders')
-        .doc(widget.folderId)
-        .collection('contents')
-        .snapshots();
+    _folderFuture = FirebaseService.getFolderDoc(widget.folderId);
+    _contentsStream = FirebaseService.getContentsStream(widget.folderId);
     _refreshAssistantAccess();
     _checkStatus();
     _loadSubfolderName();
@@ -182,23 +178,17 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
 
   void _refreshContentsStream() {
     setState(() {
-      _contentsStream = FirebaseService.firestore
-          .collection('folders')
-          .doc(widget.folderId)
-          .collection('contents')
-          .snapshots();
+      _contentsStream = FirebaseService.getContentsStream(widget.folderId);
     });
   }
 
   void _loadSubfolderName() async {
     if (widget.parentContentId == null) return;
     try {
-      final snap = await FirebaseService.firestore
-          .collection('folders').doc(widget.folderId)
-          .collection('contents').doc(widget.parentContentId!).get();
-      if (snap.exists && mounted) {
+      final data = await FirebaseService.getContentDoc(widget.folderId, widget.parentContentId!);
+      if (data != null && mounted) {
         setState(() {
-          _subfolderName = (snap.data() as Map<String, dynamic>)['name'] as String? ?? '';
+          _subfolderName = data['name'] as String? ?? '';
         });
       }
     } catch (_) {}
@@ -379,20 +369,26 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
           List<Map<String, dynamic>> assistants = [];
           bool loading = true;
           Future<void> load() async {
-            final results = await Future.wait([
-              FirebaseService.getAllAssistant().first,
-              FirebaseService.getUidsWithContentAccess(widget.folderId, contentId),
-            ]);
-            final assistantSnap = results[0] as QuerySnapshot;
-            final uids = results[1] as Set<String>;
-            assistants = assistantSnap.docs.map((d) => {
-              'uid': d.id,
-              'name': ((d.data() as Map<String, dynamic>)['name'] as String?) ?? 'Unknown',
-              'email': ((d.data() as Map<String, dynamic>)['email'] as String?) ?? '',
-            }).toList();
-            grantedUids = uids;
-            loading = false;
-            if (ctx.mounted) setLocal(() {});
+            try {
+              final results = await Future.wait([
+                FirebaseService.getAllAssistant().first,
+                FirebaseService.getUidsWithContentAccess(widget.folderId, contentId),
+              ]);
+              final assistantSnap = results[0] as QuerySnapshot;
+              final uids = results[1] as Set<String>;
+              assistants = assistantSnap.docs.map((d) => {
+                'uid': d.id,
+                'name': ((d.data() as Map<String, dynamic>)['name'] as String?) ?? 'Unknown',
+                'email': ((d.data() as Map<String, dynamic>)['email'] as String?) ?? '',
+              }).toList();
+              grantedUids = uids;
+            } catch (_) {
+              assistants = [];
+              grantedUids = {};
+            } finally {
+              loading = false;
+              if (ctx.mounted) setLocal(() {});
+            }
           }
           load();
           return DraggableScrollableSheet(

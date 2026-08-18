@@ -110,6 +110,7 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
                               onDelete: () => _showDeleteKeyDialog(k),
                               onAddModel: () => _showAddModelDialog(k),
                               onRemoveModel: (m) => _removeModel(k, m),
+                              onMoveModel: (m, delta) => _moveModel(k, m, delta),
                             );
                           }),
                       ],
@@ -145,6 +146,7 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
     required Color textColor, required Color hintColor, required bool isDark,
     required VoidCallback onToggle, required VoidCallback onEdit, required VoidCallback onDelete,
     required VoidCallback onAddModel, required void Function(String) onRemoveModel,
+    required void Function(String, int) onMoveModel,
   }) {
     final name = k['name'] as String? ?? 'AI Key';
     final model = k['model'] as String? ?? '';
@@ -185,15 +187,26 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
               spacing: 6,
               runSpacing: 6,
               children: [
-                for (final m in models)
+                for (var mi = 0; mi < models.length; mi++)
                   InputChip(
-                    label: Text(m, style: const TextStyle(fontSize: 10)),
+                    label: Text(models[mi], style: const TextStyle(fontSize: 10)),
                     visualDensity: VisualDensity.compact,
                     materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    onDeleted: () => onRemoveModel(m),
+                    onDeleted: () => onRemoveModel(models[mi]),
                     backgroundColor: isDark ? Colors.white12 : Colors.deepPurple.withValues(alpha: 0.08),
                     side: BorderSide(color: isDark ? Colors.white24 : Colors.deepPurple.withValues(alpha: 0.3)),
                     labelStyle: TextStyle(color: isDark ? Colors.white70 : Colors.deepPurple),
+                    deleteIconColor: Colors.redAccent,
+                    avatar: Row(mainAxisSize: MainAxisSize.min, children: [
+                      InkWell(
+                        onTap: () => onMoveModel(models[mi], -1),
+                        child: const Icon(Icons.keyboard_arrow_up_rounded, size: 16, color: Colors.deepPurple),
+                      ),
+                      InkWell(
+                        onTap: () => onMoveModel(models[mi], 1),
+                        child: const Icon(Icons.keyboard_arrow_down_rounded, size: 16, color: Colors.deepPurple),
+                      ),
+                    ]),
                   ),
                 ActionChip(
                   avatar: const Icon(Icons.add_rounded, size: 16, color: Colors.deepPurple),
@@ -230,10 +243,10 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
     final nameCtrl = TextEditingController();
     final baseUrlCtrl = TextEditingController();
     final keyCtrl = TextEditingController();
-    final modelCtrl = TextEditingController();
     String provider = 'openai';
     bool isLoading = false;
     String? errorMsg;
+    List<String> editorModels = [];
 
     showDialog(context: context, builder: (d) => StatefulBuilder(builder: (ctx, setDialog) {
       return AlertDialog(
@@ -265,7 +278,13 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
             const SizedBox(height: 12),
             TextField(controller: keyCtrl, style: TextStyle(color: baseColor), maxLines: 3, decoration: InputDecoration(labelText: 'API Key', hintText: provider == 'gemini' ? 'AIza...' : 'sk-...', labelStyle: TextStyle(color: dimColor), hintStyle: TextStyle(color: dimColor), filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
             const SizedBox(height: 12),
-            TextField(controller: modelCtrl, style: TextStyle(color: baseColor), decoration: InputDecoration(labelText: 'Model', hintText: provider == 'gemini' ? 'gemini-3.6-flash' : 'qwen/qwen3.7-flash:free', labelStyle: TextStyle(color: dimColor), hintStyle: TextStyle(color: dimColor), filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
+            _ModelsEditor(
+              initial: const [],
+              onChanged: (v) => editorModels = v,
+              baseColor: baseColor,
+              dimColor: dimColor,
+              fillColor: fillColor,
+            ),
             const SizedBox(height: 12),
             Text('Free providers: Groq (api.groq.com/openai/v1, llama-3.3-70b-versatile) \u00b7 OpenRouter (openrouter.ai/api/v1, meta-llama/llama-3.1-8b-instruct:free) \u00b7 Gemini (generativelanguage.googleapis.com)', style: TextStyle(color: dimColor, fontSize: 11, height: 1.4)),
           ])),
@@ -274,7 +293,8 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
           TextButton(onPressed: () => Navigator.pop(d), child: Text('Cancel', style: TextStyle(color: dimColor))),
           ElevatedButton(
             onPressed: isLoading ? null : () async {
-              if (nameCtrl.text.trim().isEmpty || baseUrlCtrl.text.trim().isEmpty || keyCtrl.text.trim().isEmpty || modelCtrl.text.trim().isEmpty) return;
+              final models = editorModels.map((m) => m.trim()).where((m) => m.isNotEmpty).toList();
+              if (nameCtrl.text.trim().isEmpty || baseUrlCtrl.text.trim().isEmpty || keyCtrl.text.trim().isEmpty || models.isEmpty) return;
               setDialog(() { isLoading = true; errorMsg = null; });
               try {
                 await FirebaseService.addAiApiKey(
@@ -282,7 +302,8 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
                   provider: provider,
                   baseUrl: baseUrlCtrl.text.trim(),
                   apiKey: keyCtrl.text.trim(),
-                  model: modelCtrl.text.trim(),
+                  model: models.first,
+                  models: models,
                   isActive: true,
                 );
                 AiService.refreshKey();
@@ -311,9 +332,13 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
     final nameCtrl = TextEditingController(text: k['name'] as String? ?? '');
     final baseUrlCtrl = TextEditingController(text: k['baseUrl'] as String? ?? '');
     final keyCtrl = TextEditingController(text: k['apiKey'] as String? ?? '');
-    final modelCtrl = TextEditingController(text: k['model'] as String? ?? '');
     String provider = k['provider'] as String? ?? 'openai';
     bool isLoading = false;
+    List<String> editorModels = [];
+    final rawModels = k['models'];
+    editorModels = rawModels is List
+        ? rawModels.map((m) => m.toString()).where((m) => m.trim().isNotEmpty).toList()
+        : ((k['model'] as String? ?? '').trim().isNotEmpty ? [k['model'] as String] : <String>[]);
 
     showDialog(context: context, builder: (d) => StatefulBuilder(builder: (ctx, setDialog) {
       return AlertDialog(
@@ -337,14 +362,21 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
             const SizedBox(height: 12),
             TextField(controller: keyCtrl, style: TextStyle(color: baseColor), maxLines: 3, decoration: InputDecoration(labelText: 'API Key', labelStyle: TextStyle(color: dimColor), filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
             const SizedBox(height: 12),
-            TextField(controller: modelCtrl, style: TextStyle(color: baseColor), decoration: InputDecoration(labelText: 'Model', labelStyle: TextStyle(color: dimColor), filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
+            _ModelsEditor(
+              initial: editorModels,
+              onChanged: (v) => editorModels = v,
+              baseColor: baseColor,
+              dimColor: dimColor,
+              fillColor: fillColor,
+            ),
           ])),
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(d), child: Text('Cancel', style: TextStyle(color: dimColor))),
           ElevatedButton(
             onPressed: isLoading ? null : () async {
-              if (nameCtrl.text.trim().isEmpty || baseUrlCtrl.text.trim().isEmpty || keyCtrl.text.trim().isEmpty || modelCtrl.text.trim().isEmpty) return;
+              final models = editorModels.map((m) => m.trim()).where((m) => m.isNotEmpty).toList();
+              if (nameCtrl.text.trim().isEmpty || baseUrlCtrl.text.trim().isEmpty || keyCtrl.text.trim().isEmpty || models.isEmpty) return;
               setDialog(() { isLoading = true; });
               try {
                 await FirebaseService.updateAiApiKey(
@@ -353,7 +385,8 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
                   provider: provider,
                   baseUrl: baseUrlCtrl.text.trim(),
                   apiKey: keyCtrl.text.trim(),
-                  model: modelCtrl.text.trim(),
+                  model: models.first,
+                  models: models,
                 );
                 AiService.refreshKey();
                 if (d.mounted) Navigator.pop(d);
@@ -413,7 +446,7 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
               final rawModels = k['models'];
               final List<String> models = rawModels is List
                   ? rawModels.map((x) => x.toString()).toList()
-                  : (rawModels is String && rawModels.trim().isNotEmpty ? [rawModels as String] : <String>[]);
+                  : (rawModels is String && rawModels.trim().isNotEmpty ? [rawModels] : <String>[]);
               if (models.contains(m)) {
                 setDialog(() { errorMsg = 'This model is already in the pool.'; });
                 return;
@@ -449,6 +482,22 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
     AiService.refreshKey();
   }
 
+  void _moveModel(Map<String, dynamic> k, String m, int delta) {
+    final rawModels = k['models'];
+    final List<String> models = rawModels is List
+        ? rawModels.map((x) => x.toString()).toList()
+        : <String>[];
+    final i = models.indexOf(m);
+    if (i < 0) return;
+    final j = i + delta;
+    if (j < 0 || j >= models.length) return;
+    final t = models.removeAt(i);
+    models.insert(j, t);
+    setState(() { k['models'] = models; });
+    FirebaseService.updateAiApiKey(k['id'], models: models);
+    AiService.refreshKey();
+  }
+
   void _showDeleteKeyDialog(Map<String, dynamic> k) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final baseColor = isDark ? Colors.white : Colors.black87;
@@ -475,5 +524,126 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
         }, style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent), child: const Text('Delete', style: TextStyle(color: Colors.white))),
       ],
     ));
+  }
+}
+
+/// Ordered model-pool editor used in the Add/Edit key dialogs. Models are tried
+/// in the order shown (top = preferred), so up/down arrows reorder them.
+class _ModelsEditor extends StatefulWidget {
+  final List<String> initial;
+  final void Function(List<String>) onChanged;
+  final Color baseColor;
+  final Color dimColor;
+  final Color fillColor;
+  const _ModelsEditor({
+    required this.initial,
+    required this.onChanged,
+    required this.baseColor,
+    required this.dimColor,
+    required this.fillColor,
+  });
+
+  @override
+  State<_ModelsEditor> createState() => _ModelsEditorState();
+}
+
+class _ModelsEditorState extends State<_ModelsEditor> {
+  late List<String> _models;
+  final TextEditingController _ctrl = TextEditingController();
+
+  @override
+  void initState() {
+    super.initState();
+    _models = [...widget.initial];
+  }
+
+  void _emit() {
+    widget.onChanged(List.of(_models));
+    setState(() {});
+  }
+
+  void _add() {
+    final m = _ctrl.text.trim();
+    if (m.isEmpty || _models.contains(m)) return;
+    _models.add(m);
+    _ctrl.clear();
+    _emit();
+  }
+
+  void _move(int i, int delta) {
+    final j = i + delta;
+    if (j < 0 || j >= _models.length) return;
+    final t = _models.removeAt(i);
+    _models.insert(j, t);
+    _emit();
+  }
+
+  void _remove(int i) {
+    _models.removeAt(i);
+    _emit();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = widget.baseColor == Colors.white;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      Row(children: [
+        Expanded(
+          child: TextField(
+            controller: _ctrl,
+            style: TextStyle(color: widget.baseColor),
+            onSubmitted: (_) => _add(),
+            decoration: InputDecoration(
+              labelText: 'Model',
+              hintText: 'e.g. qwen/qwen3.7-flash:free',
+              labelStyle: TextStyle(color: widget.dimColor),
+              hintStyle: TextStyle(color: widget.dimColor),
+              filled: true,
+              fillColor: widget.fillColor,
+              border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+        IconButton(
+          icon: const Icon(Icons.add_circle_rounded, color: Colors.deepPurple),
+          onPressed: _add,
+          tooltip: 'Add model',
+        ),
+      ]),
+      const SizedBox(height: 4),
+      Text('Models are tried in this order (top = first). Add, remove, or reorder with the arrows.', style: TextStyle(color: widget.dimColor, fontSize: 11, height: 1.4)),
+      const SizedBox(height: 8),
+      if (_models.isEmpty)
+        Text('No models yet — add at least one.', style: TextStyle(color: widget.dimColor, fontSize: 12))
+      else
+        Wrap(
+          spacing: 6,
+          runSpacing: 6,
+          children: [
+            for (var i = 0; i < _models.length; i++)
+              InputChip(
+                label: Text(_models[i], style: const TextStyle(fontSize: 10)),
+                visualDensity: VisualDensity.compact,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                backgroundColor: isDark ? Colors.white12 : Colors.deepPurple.withValues(alpha: 0.08),
+                side: BorderSide(color: isDark ? Colors.white24 : Colors.deepPurple.withValues(alpha: 0.3)),
+                labelStyle: TextStyle(color: isDark ? Colors.white70 : Colors.deepPurple),
+                deleteIconColor: Colors.redAccent,
+                onDeleted: () => _remove(i),
+                avatar: Row(mainAxisSize: MainAxisSize.min, children: [
+                  InkWell(
+                    onTap: () => _move(i, -1),
+                    child: const Icon(Icons.keyboard_arrow_up_rounded, size: 16, color: Colors.deepPurple),
+                  ),
+                  InkWell(
+                    onTap: () => _move(i, 1),
+                    child: const Icon(Icons.keyboard_arrow_down_rounded, size: 16, color: Colors.deepPurple),
+                  ),
+                ]),
+              ),
+          ],
+        ),
+    ]);
   }
 }

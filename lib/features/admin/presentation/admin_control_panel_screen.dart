@@ -963,7 +963,7 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
             ]),
             const SizedBox(height: 16),
             StreamBuilder<QuerySnapshot>(
-              stream: FirebaseService.firestore.collection('app_updates').orderBy('createdAt', descending: true).snapshots(),
+              stream: FirebaseService.getAppUpdates(),
               builder: (ctx, snap) {
                 final updates = snap.data?.docs ?? [];
                 if (updates.isEmpty) {
@@ -1321,11 +1321,7 @@ class _StudentDevicePageState extends State<_StudentDevicePage> with SingleTicke
 
   Widget _buildDevicesTab() {
     return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseService.firestore.collection('login_attempts')
-          .where('uid', isEqualTo: widget.uid)
-          .orderBy('timestamp', descending: true)
-          .limit(100)
-          .snapshots(),
+      stream: FirebaseService.getLoginAttemptsForUser(widget.uid),
       builder: (ctx, loginSnap) {
         if (loginSnap.hasError) {
           if (FirebaseService.currentUser == null) {
@@ -1361,11 +1357,7 @@ class _StudentDevicePageState extends State<_StudentDevicePage> with SingleTicke
             ? (loginLogs.first.data() as Map<String, dynamic>)['deviceId'] as String?
             : null;
         return StreamBuilder<QuerySnapshot>(
-          stream: FirebaseService.firestore.collection('web_sessions')
-              .where('uid', isEqualTo: widget.uid)
-              .orderBy('createdAt', descending: true)
-              .limit(50)
-              .snapshots(),
+          stream: FirebaseService.getWebSessionsForUser(widget.uid),
           builder: (ctx, webSnap) {
             final allWebSessions = webSnap.hasData ? webSnap.data!.docs : [];
             final activeWebSessions = allWebSessions
@@ -1467,10 +1459,7 @@ class _StudentDevicePageState extends State<_StudentDevicePage> with SingleTicke
 
   Widget _buildNotificationsTab() {
     return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseService.firestore.collection('notifications')
-          .where('uid', isEqualTo: widget.uid)
-          .where('type', isEqualTo: 'targeted')
-          .snapshots(),
+      stream: FirebaseService.getTargetedNotificationsForUser(widget.uid),
       builder: (ctx, snap) {
         if (snap.hasError) {
           if (FirebaseService.currentUser == null) {
@@ -1633,11 +1622,7 @@ class _AdminLinkHistoryScreenState extends State<_AdminLinkHistoryScreen> {
           ),
           Expanded(
             child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseService.firestore.collection('web_sessions')
-                  .where('uid', isEqualTo: widget.uid)
-                  .orderBy('createdAt', descending: true)
-                  .limit(50)
-                  .snapshots(),
+              stream: FirebaseService.getWebSessionsForUser(widget.uid),
               builder: (ctx, snap) {
                 if (snap.hasError) {
                   if (FirebaseService.currentUser == null) {

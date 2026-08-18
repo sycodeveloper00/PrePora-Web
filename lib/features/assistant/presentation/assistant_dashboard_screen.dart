@@ -139,17 +139,7 @@ class _AssistantDashboardScreenState extends State<AssistantDashboardScreen> {
                     try {
                       final uid = FirebaseService.currentUser?.uid;
                       if (uid != null) {
-                        final sessions = await FirebaseService.firestore
-                            .collection('web_sessions')
-                            .where('uid', isEqualTo: uid)
-                            .where('status', isEqualTo: 'connected')
-                            .get();
-                        for (final doc in sessions.docs) {
-                          await doc.reference.update({
-                            'status': 'disconnected',
-                            'disconnectedAt': Timestamp.fromDate(DateTime.now()),
-                          });
-                        }
+                        await FirebaseService.disconnectWebSessions(uid);
                       }
                     } catch (_) {}
                     await FirebaseService.signOut();
