@@ -81,7 +81,7 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
                         ]),
                         const SizedBox(height: 4),
                         Text(
-                          'The active key is used by the PrePora AI tutor. Add keys from BazaarLink, Groq, OpenRouter, Google Gemini, or any OpenAI-compatible provider.',
+                          'The active key is used by the PrePora AI tutor. Add models to a key\u2019s pool (+) and they are tried in order \u2014 if one fails, the next model is used automatically.',
                           style: TextStyle(color: hintColor, fontSize: 11, height: 1.4),
                         ),
                         const SizedBox(height: 8),
@@ -108,6 +108,8 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
                               },
                               onEdit: () => _showEditKeyDialog(k),
                               onDelete: () => _showDeleteKeyDialog(k),
+                              onAddModel: () => _showAddModelDialog(k),
+                              onRemoveModel: (m) => _removeModel(k, m),
                             );
                           }),
                       ],
@@ -142,10 +144,15 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
     required Map<String, dynamic> k, required bool isActive,
     required Color textColor, required Color hintColor, required bool isDark,
     required VoidCallback onToggle, required VoidCallback onEdit, required VoidCallback onDelete,
+    required VoidCallback onAddModel, required void Function(String) onRemoveModel,
   }) {
     final name = k['name'] as String? ?? 'AI Key';
     final model = k['model'] as String? ?? '';
     final provider = k['provider'] as String? ?? 'openai';
+    final rawModels = k['models'];
+    final List<String> models = rawModels is List
+        ? rawModels.map((m) => m.toString()).where((m) => m.trim().isNotEmpty).toList()
+        : (rawModels is String && rawModels.trim().isNotEmpty ? [rawModels] : const <String>[]);
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -173,6 +180,31 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
             Text(_providerLabel(provider), style: TextStyle(color: hintColor, fontSize: 11)),
             if (model.isNotEmpty)
               Text(model, style: TextStyle(color: hintColor, fontSize: 11), overflow: TextOverflow.ellipsis),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final m in models)
+                  InputChip(
+                    label: Text(m, style: const TextStyle(fontSize: 10)),
+                    visualDensity: VisualDensity.compact,
+                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    onDeleted: () => onRemoveModel(m),
+                    backgroundColor: isDark ? Colors.white12 : Colors.deepPurple.withValues(alpha: 0.08),
+                    side: BorderSide(color: isDark ? Colors.white24 : Colors.deepPurple.withValues(alpha: 0.3)),
+                    labelStyle: TextStyle(color: isDark ? Colors.white70 : Colors.deepPurple),
+                  ),
+                ActionChip(
+                  avatar: const Icon(Icons.add_rounded, size: 16, color: Colors.deepPurple),
+                  label: const Text('Model', style: TextStyle(fontSize: 10, color: Colors.deepPurple)),
+                  visualDensity: VisualDensity.compact,
+                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  onPressed: onAddModel,
+                  backgroundColor: Colors.deepPurple.withValues(alpha: 0.1),
+                ),
+              ],
+            ),
           ]),
         ),
         const SizedBox(width: 8),
@@ -338,6 +370,83 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
         ],
       );
     }));
+  }
+
+  void _showAddModelDialog(Map<String, dynamic> k) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final baseColor = isDark ? Colors.white : Colors.black87;
+    final dimColor = isDark ? Colors.white38 : Colors.black54;
+    final fillColor = isDark ? Colors.white10 : Colors.black12;
+    final bgColor = isDark ? const Color(0xFF1A0533) : Colors.white;
+    final modelCtrl = TextEditingController();
+    bool isLoading = false;
+    String? errorMsg;
+
+    showDialog(context: context, builder: (d) => StatefulBuilder(builder: (ctx, setDialog) {
+      return AlertDialog(
+        backgroundColor: bgColor,
+        title: Row(children: [const Icon(Icons.library_add_rounded, color: Colors.deepPurple, size: 22), const SizedBox(width: 8), Text('Add Model to Pool', style: TextStyle(color: baseColor, fontSize: 16))]),
+        content: SizedBox(
+          width: 500,
+          child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text('Models are tried in order. If one hits its daily limit or becomes unavailable, the next model is used automatically.', style: TextStyle(color: dimColor, fontSize: 12, height: 1.4)),
+            const SizedBox(height: 12),
+            if (errorMsg != null) ...[
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(color: Colors.redAccent.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+                child: Row(children: [const Icon(Icons.error_outline, color: Colors.redAccent, size: 16), const SizedBox(width: 8), Expanded(child: Text(errorMsg!, style: const TextStyle(color: Colors.redAccent, fontSize: 12)))]),
+              ),
+              const SizedBox(height: 12),
+            ],
+            TextField(controller: modelCtrl, style: TextStyle(color: baseColor), decoration: InputDecoration(labelText: 'Model', hintText: 'e.g. nvidia/nemotron-3-super-120b-a12b:free', labelStyle: TextStyle(color: dimColor), hintStyle: TextStyle(color: dimColor), filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
+            const SizedBox(height: 12),
+            Text('OpenRouter free models:\nnvidia/nemotron-3-super-120b-a12b:free \u00b7 google/gemma-4-26b-a4b-it:free \u00b7 nvidia/nemotron-3-nano-30b-a3b:free \u00b7 nvidia/nemotron-nano-12b-v2-vl:free \u00b7 cohere/north-mini-code:free \u00b7 dots-studio/dots-3-note-preview:free', style: TextStyle(color: dimColor, fontSize: 11, height: 1.4)),
+          ])),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(d), child: Text('Cancel', style: TextStyle(color: dimColor))),
+          ElevatedButton(
+            onPressed: isLoading ? null : () async {
+              final m = modelCtrl.text.trim();
+              if (m.isEmpty) return;
+              final rawModels = k['models'];
+              final List<String> models = rawModels is List
+                  ? rawModels.map((x) => x.toString()).toList()
+                  : (rawModels is String && rawModels.trim().isNotEmpty ? [rawModels as String] : <String>[]);
+              if (models.contains(m)) {
+                setDialog(() { errorMsg = 'This model is already in the pool.'; });
+                return;
+              }
+              models.add(m);
+              setDialog(() { isLoading = true; errorMsg = null; });
+              try {
+                await FirebaseService.updateAiApiKey(k['id'], models: models);
+                setState(() { k['models'] = models; });
+                AiService.refreshKey();
+                if (d.mounted) Navigator.pop(d);
+              } catch (e) {
+                setDialog(() { isLoading = false; errorMsg = 'Failed to add model: $e'; });
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurple),
+            child: isLoading
+                ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                : const Text('Add', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      );
+    }));
+  }
+
+  void _removeModel(Map<String, dynamic> k, String m) {
+    final rawModels = k['models'];
+    final List<String> models = rawModels is List
+        ? rawModels.map((x) => x.toString()).where((x) => x != m).toList()
+        : <String>[];
+    setState(() { k['models'] = models; });
+    FirebaseService.updateAiApiKey(k['id'], models: models);
+    AiService.refreshKey();
   }
 
   void _showDeleteKeyDialog(Map<String, dynamic> k) {

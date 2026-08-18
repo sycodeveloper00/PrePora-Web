@@ -17,20 +17,74 @@ class AiService {
   static String _provider = 'openai';
   static bool _keyLoaded = false;
 
+  /// The active key's model pool. Each entry pairs the shared key/baseUrl with
+  /// one model, so a failed model automatically falls back to the next one.
+  static List<Map<String, dynamic>> _keyPool = [];
+
+  /// Caches the last successfully-loaded key so the AI keeps working even if
+  /// the Firestore read fails (e.g. free-tier quota exhausted).
+  static String? _cachedApiKey;
+  static String? _cachedBaseUrl;
+  static String? _cachedModel;
+  static String? _cachedProvider;
+  static List<Map<String, dynamic>>? _cachedPool;
+
+  static void _applyPoolEntry(Map<String, dynamic> entry) {
+    _apiKey = (entry['apiKey'] as String?)?.trim() ?? _defaultApiKey;
+    _baseUrl = (entry['baseUrl'] as String?)?.trim() ?? _defaultBaseUrl;
+    _model = (entry['model'] as String?)?.trim() ?? _defaultModel;
+    _provider = (entry['provider'] as String?)?.trim() ?? 'openai';
+  }
+
   /// Loads the active AI API key config from Firestore (once). Falls back to
-  /// the built-in defaults when no key is configured yet.
+  /// the last known good key, then the built-in defaults, when Firestore is
+  /// unavailable. Builds the model pool so failed models can be retried.
   static Future<void> loadActiveKey() async {
     if (_keyLoaded) return;
     try {
       final key = await FirebaseService.getActiveAiApiKey();
       if (key != null) {
-        _apiKey = (key['apiKey'] as String?)?.trim() ?? _defaultApiKey;
-        _baseUrl = (key['baseUrl'] as String?)?.trim() ?? _defaultBaseUrl;
-        _model = (key['model'] as String?)?.trim() ?? _defaultModel;
-        _provider = (key['provider'] as String?)?.trim() ?? 'openai';
+        final apiKeyVal = (key['apiKey'] as String?)?.trim();
+        final baseUrlVal = (key['baseUrl'] as String?)?.trim();
+        final providerVal = (key['provider'] as String?)?.trim() ?? 'openai';
+        final baseModel = (key['model'] as String?)?.trim();
+        final pool = <Map<String, dynamic>>[];
+        final models = key['models'];
+        if (models is List) {
+          for (final m in models) {
+            final s = m.toString().trim();
+            if (s.isEmpty) continue;
+            pool.add({'apiKey': apiKeyVal, 'baseUrl': baseUrlVal, 'model': s, 'provider': providerVal});
+          }
+        }
+        if (pool.isEmpty && baseModel != null && baseModel.isNotEmpty) {
+          pool.add({'apiKey': apiKeyVal, 'baseUrl': baseUrlVal, 'model': baseModel, 'provider': providerVal});
+        }
+        if (pool.isEmpty) {
+          pool.add({'apiKey': _defaultApiKey, 'baseUrl': _defaultBaseUrl, 'model': _defaultModel, 'provider': 'openai'});
+        }
+        _keyPool = pool;
+        _cachedPool = pool;
+        _applyPoolEntry(pool.first);
+        _cachedApiKey = _apiKey;
+        _cachedBaseUrl = _baseUrl;
+        _cachedModel = _model;
+        _cachedProvider = _provider;
       }
     } catch (_) {
-      // keep defaults on error
+      // Firestore read failed — reuse the last known good key if we have one.
+      if (_cachedPool != null && _cachedPool!.isNotEmpty) {
+        _keyPool = _cachedPool!;
+        _applyPoolEntry(_keyPool.first);
+      } else if (_cachedApiKey != null) {
+        _apiKey = _cachedApiKey!;
+        _baseUrl = _cachedBaseUrl ?? _defaultBaseUrl;
+        _model = _cachedModel ?? _defaultModel;
+        _provider = _cachedProvider ?? 'openai';
+        _keyPool = [
+          {'apiKey': _apiKey, 'baseUrl': _baseUrl, 'model': _model, 'provider': _provider}
+        ];
+      }
     } finally {
       _keyLoaded = true;
     }
@@ -42,12 +96,37 @@ class AiService {
     loadActiveKey();
   }
 
+  static String _errorForStatus(int status) {
+    if (status == 401) {
+      return '⚠️ The AI service needs a moment to refresh. Please try again in a few minutes.';
+    }
+    if (status == 429) {
+      return '🤖 The AI is very popular right now and reached its daily limit. Please try again tomorrow.';
+    }
+    if (status == 400 || status == 404) {
+      return '⚠️ This AI model is not available right now. Trying another model...';
+    }
+    return '🤖 AI server is unavailable right now. Please try later.';
+  }
+
+  static Future<void> _notifyPoolFailure() async {
+    try {
+      await FirebaseService.addAdminNotification(
+        'ai_failure',
+        'AI model pool exhausted — all ${_keyPool.length} model(s) failed. Check the AI API Keys settings.',
+      );
+    } catch (_) {}
+  }
+
   static const String _baseSystemPrompt =
       'You are PrePora AI — an advanced, professional, and highly capable study assistant '
-      'for Pakistani students preparing for their academic tests and competitive exams.\n\n'
-      'GREETING RULE: When greeting a student, NEVER list specific exam names '
-      '(like MDCAT, ECAT, NUST, FAST, CSS, IELTS, etc.). Just say you can help with '
-      'their studies and exam preparation.\n\n'
+      'for Pakistani students. Your ONLY focus is helping students with their studies.\n\n'
+      'GREETING RULE (STRICT — VIOLATION = WRONG): When greeting a student, talk ONLY about '
+      'their general studies. NEVER mention ANY specific topics, exams, or categories — '
+      'do NOT mention Entry Tests (MDCAT, ECAT, NUST, FAST, USAT, CSS, IELTS, SAT, GRE, etc.), '
+      'do NOT mention online earning, do NOT mention abroad scholarships, abroad jobs, '
+      'language learning, or programming. Say simply: "I\'m here to help you with your studies." '
+      'Keep the greeting short and generic.\n\n'
       'RESPONSE FORMAT:\n'
       '- STRICT LENGTH: Answer ONLY what is asked. If asked a specific question, '
       'give the answer directly without introduction, extra details, or follow-up suggestions.\n'
@@ -111,7 +190,7 @@ class AiService {
       '  **Verification:** Substitute back: \$2(2) + 3 = 4 + 3 = 7\$ ✓\n\n'
       '- For MCQs: state the answer first, then brief explanation.\n'
       '- For concepts: define → explain → example → key takeaway.\n'
-      '- Reference real exam patterns (MDCAT, ECAT, NUST, FAST, CSS, IELTS).\n'
+      '- Reference exam patterns ONLY if the student explicitly asks about a specific exam.\n'
       '- Use mnemonics for difficult memorization tasks.\n'
       '- Be encouraging but not patronizing. Be direct but not rude.\n'
       '- Keep responses concise but COMPLETE. Do NOT skip steps.\n\n'
@@ -259,40 +338,45 @@ class AiService {
       _messages.removeRange(1, _messages.length - 20);
     }
 
-    try {
-      final response = await http.post(
-        Uri.parse(_apiUrl),
-        headers: _headers(),
-        body: jsonEncode(_body(stream: false)),
-      );
-
-      if (response.statusCode == 200) {
-        String reply;
-        if (_provider == 'gemini') {
-          final data = jsonDecode(response.body);
-          reply = ((data['candidates'] as List<dynamic>?)?.firstOrNull
-              as Map<String, dynamic>?)?['content']?['parts']?.firstOrNull?['text'] as String? ?? '';
-        } else {
-          final data = jsonDecode(response.body);
-          reply = data['choices'][0]['message']['content'] as String;
-        }
-        _messages.add({'role': 'assistant', 'content': reply});
-        return reply;
-      }
-
-      if (response.statusCode == 401) {
-        return '⚠️ The AI service needs a moment to refresh. Please try again in a few minutes.';
-      }
-
-      if (response.statusCode == 429) {
-        return '🤖 The AI is very popular right now and reached its daily limit. Please try again tomorrow.';
-      }
-
-      return '🤖 AI server is unavailable right now. Please try later.';
-
-    } catch (e) {
-      return '❌ No internet connection. Please check your network and try again.';
+    final pool = [..._keyPool];
+    if (pool.isEmpty) {
+      pool.add({'apiKey': _apiKey, 'baseUrl': _baseUrl, 'model': _model, 'provider': _provider});
     }
+
+    String? lastError;
+    for (final entry in pool) {
+      _applyPoolEntry(entry);
+      try {
+        final response = await http
+            .post(
+              Uri.parse(_apiUrl),
+              headers: _headers(),
+              body: jsonEncode(_body(stream: false)),
+            )
+            .timeout(const Duration(seconds: 90));
+
+        if (response.statusCode == 200) {
+          String reply;
+          if (_provider == 'gemini') {
+            final data = jsonDecode(response.body);
+            reply = ((data['candidates'] as List<dynamic>?)?.firstOrNull
+                as Map<String, dynamic>?)?['content']?['parts']?.firstOrNull?['text'] as String? ?? '';
+          } else {
+            final data = jsonDecode(response.body);
+            reply = data['choices'][0]['message']['content'] as String;
+          }
+          _messages.add({'role': 'assistant', 'content': reply});
+          return reply;
+        }
+
+        lastError = _errorForStatus(response.statusCode);
+      } catch (e) {
+        lastError = '❌ No internet connection. Please check your network and try again.';
+      }
+    }
+
+    await _notifyPoolFailure();
+    return lastError ?? '🤖 AI server is unavailable right now. Please try later.';
   }
 
   /// Fixes messy AI LaTeX output so flutter_math_fork can parse it.
@@ -638,50 +722,64 @@ class AiService {
       _messages.removeRange(1, _messages.length - 20);
     }
 
-    // Gemini: direct SSE streaming (Google API allows browser CORS).
-    // Works on web AND mobile without the proxy.
-    if (_provider == 'gemini') {
-      yield* _streamGemini();
-      return;
+    final pool = [..._keyPool];
+    if (pool.isEmpty) {
+      pool.add({'apiKey': _apiKey, 'baseUrl': _baseUrl, 'model': _model, 'provider': _provider});
     }
 
-    // Web: use Vercel serverless proxy with SSE streaming.
-    // Mobile: direct API streaming.
-    if (kIsWeb) {
+    String? lastError;
+    for (final entry in pool) {
+      _applyPoolEntry(entry);
       final fullBuffer = StringBuffer();
       http.Client? client;
       try {
         client = http.Client();
-        final request = http.Request('POST', Uri.parse(_apiUrl));
-        request.headers.addAll(_headers());
-        request.body = jsonEncode(_body(stream: true));
-        final streamed = await client.send(request).timeout(const Duration(seconds: 90));
+        final streamed = _provider == 'gemini'
+            ? await _geminiRequest(client)
+            : await _openAiRequest(client);
 
-        final contentType = streamed.headers['content-type'] ?? '';
-        if (!contentType.contains('text/event-stream') && !contentType.contains('application/json')) {
-          yield '🤖 AI server is unavailable right now. Please try later.';
+        if (streamed.statusCode != 200) {
+          lastError = _errorForStatus(streamed.statusCode);
           client.close();
-          return;
+          continue;
+        }
+
+        if (_provider != 'gemini') {
+          final contentType = streamed.headers['content-type'] ?? '';
+          if (!contentType.contains('text/event-stream') && !contentType.contains('application/json')) {
+            lastError = '🤖 AI server is unavailable right now. Please try later.';
+            client.close();
+            continue;
+          }
         }
 
         await for (final chunk in streamed.stream
             .transform(utf8.decoder)
             .transform(const LineSplitter())) {
-          if (chunk.startsWith('data: ')) {
-            final data = chunk.substring(6).trim();
-            if (data == '[DONE]') break;
-            try {
-              final json = jsonDecode(data) as Map<String, dynamic>;
+          if (!chunk.startsWith('data: ')) continue;
+          final data = chunk.substring(6).trim();
+          if (data.isEmpty || data == '[DONE]') continue;
+          try {
+            final json = jsonDecode(data) as Map<String, dynamic>;
+            if (_provider == 'gemini') {
+              final parts = (((json['candidates'] as List<dynamic>?)?.firstOrNull
+                  as Map<String, dynamic>?)?['content'] as Map<String, dynamic>?)?['parts'] as List<dynamic>?;
+              if (parts == null || parts.isEmpty) continue;
+              final raw = (parts.first as Map<String, dynamic>)['text'] as String?;
+              if (raw != null && raw.isNotEmpty) {
+                fullBuffer.write(raw);
+                yield raw;
+              }
+            } else {
               if (json['error'] == true) {
                 final status = json['status'] as int?;
-                if (status == 429) {
-                  yield '🤖 The AI is very popular right now and reached its daily limit. Please try again tomorrow.';
-                } else if (status == 401) {
-                  yield '⚠️ The AI service needs a moment to refresh. Please try again in a few minutes.';
-                } else {
-                  yield '🤖 AI server is unavailable right now. Please try later.';
-                }
-                return;
+                final m = json['message'] as String?;
+                lastError = status != null
+                    ? _errorForStatus(status)
+                    : (m != null && m.isNotEmpty
+                        ? '🤖 AI issue: $m'
+                        : '🤖 AI server is unavailable right now. Please try later.');
+                break;
               }
               final delta = ((json['choices'] as List<dynamic>?)?.firstOrNull
                   as Map<String, dynamic>?)?['delta'] as Map<String, dynamic>?;
@@ -690,147 +788,73 @@ class AiService {
                 fullBuffer.write(raw);
                 yield raw;
               }
-            } catch (_) {}
-          }
-        }
-        if (fullBuffer.isEmpty) {
-          yield '⚠️ AI returned an empty response. Please try again.';
-        } else {
-          _messages.add({'role': 'assistant', 'content': fullBuffer.toString()});
+            }
+          } catch (_) {}
         }
         client.close();
-        return;
+
+        final full = fullBuffer.toString();
+        if (full.isNotEmpty) {
+          _messages.add({'role': 'assistant', 'content': full});
+          return;
+        }
+        if (lastError == null) {
+          lastError = '⚠️ AI returned an empty response. Please try again.';
+        }
+      } on TimeoutException catch (_) {
+        client?.close();
+        if (fullBuffer.isNotEmpty) {
+          _messages.add({'role': 'assistant', 'content': fullBuffer.toString()});
+          return;
+        }
+        lastError = '\n\n⚠️ The AI server is not responding (timeout). Please try again in a few moments.';
       } catch (e) {
         client?.close();
         if (fullBuffer.isNotEmpty) {
           _messages.add({'role': 'assistant', 'content': fullBuffer.toString()});
           return;
         }
+        lastError = _provider == 'gemini'
+            ? '\n\n❌ No internet connection. Please check your network and try again.'
+            : '❌ Connection Error\n\nPlease check your internet connection and try again.';
       }
-      yield '❌ Connection Error\n\nPlease check your internet connection and try again.';
-      return;
     }
 
-    // Mobile: direct streaming via SSE
-    final request = http.Request(
-      'POST',
-      Uri.parse(_apiUrl),
-    );
+    await _notifyPoolFailure();
+    yield lastError ?? '🤖 AI server is unavailable right now. Please try later.';
+  }
+
+  /// Sends one OpenAI-compatible streaming request (via proxy on web).
+  Future<http.StreamedResponse> _openAiRequest(http.Client client) {
+    final request = http.Request('POST', Uri.parse(_apiUrl));
     request.headers.addAll(_headers());
     request.body = jsonEncode(_body(stream: true));
-
-    final fullBuffer = StringBuffer();
-    http.Client? client;
-
-    try {
-      client = http.Client();
-      final streamed =
-          await client.send(request).timeout(const Duration(seconds: 60));
-
-      await for (final chunk in streamed.stream
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())) {
-        if (chunk.startsWith('data: ')) {
-          final data = chunk.substring(6).trim();
-          if (data == '[DONE]') break;
-          try {
-            final json = jsonDecode(data) as Map<String, dynamic>;
-            final delta = ((json['choices'] as List<dynamic>?)?.firstOrNull
-                as Map<String, dynamic>?)?['delta'] as Map<String, dynamic>?;
-            final raw = delta?['content'] as String?;
-            if (raw != null && raw.isNotEmpty) {
-              fullBuffer.write(raw);
-              yield raw;
-            }
-          } catch (_) {
-            // skip malformed chunks
-          }
-        }
-      }
-    } on TimeoutException catch (_) {
-      yield '\n\n⚠️ The AI server is not responding (timeout). Please try again in a few moments.';
-    } catch (e) {
-      yield '\n\n❌ No internet connection. Please check your network and try again.';
-    } finally {
-      client?.close();
-    }
-
-    // Save full response to history
-    final full = fullBuffer.toString();
-    if (full.isEmpty) {
-      yield '⚠️ AI returned an empty response. Please try again.';
-    } else {
-      _messages.add({'role': 'assistant', 'content': full});
-    }
+    return client.send(request).timeout(const Duration(seconds: 90));
   }
 
-  /// Gemini native SSE streaming (works on web + mobile without a proxy).
-  Stream<String> _streamGemini() async* {
-    final fullBuffer = StringBuffer();
-    http.Client? client;
-    try {
-      final uri = Uri.parse('$_baseUrl/v1beta/models/$_model:streamGenerateContent?alt=sse');
-      final request = http.Request('POST', uri);
-      request.headers.addAll(_headers());
-      request.body = jsonEncode(_body(stream: true));
-      client = http.Client();
-      final streamed = await client.send(request).timeout(const Duration(seconds: 90));
-
-      if (streamed.statusCode != 200) {
-        if (streamed.statusCode == 429) {
-          yield '🤖 The AI is very popular right now and reached its daily limit. Please try again tomorrow.';
-        } else if (streamed.statusCode == 400 || streamed.statusCode == 404) {
-          yield '🤖 The AI needs a quick configuration update. Please try again later.';
-        } else {
-          yield '🤖 AI server is unavailable right now. Please try later.';
-        }
-        return;
-      }
-
-      await for (final chunk in streamed.stream
-          .transform(utf8.decoder)
-          .transform(const LineSplitter())) {
-        if (!chunk.startsWith('data: ')) continue;
-        final data = chunk.substring(6).trim();
-        if (data.isEmpty) continue;
-        try {
-          final json = jsonDecode(data) as Map<String, dynamic>;
-          final parts = (((json['candidates'] as List<dynamic>?)?.firstOrNull
-              as Map<String, dynamic>?)?['content'] as Map<String, dynamic>?)?['parts'] as List<dynamic>?;
-          if (parts == null || parts.isEmpty) continue;
-          final raw = (parts.first as Map<String, dynamic>)['text'] as String?;
-          if (raw != null && raw.isNotEmpty) {
-            fullBuffer.write(raw);
-            yield raw;
-          }
-        } catch (_) {
-          // skip malformed chunks
-        }
-      }
-    } on TimeoutException catch (_) {
-      yield '\n\n⚠️ The AI server is not responding (timeout). Please try again in a few moments.';
-    } catch (_) {
-      yield '\n\n❌ No internet connection. Please check your network and try again.';
-    } finally {
-      client?.close();
-    }
-
-    final full = fullBuffer.toString();
-    if (full.isNotEmpty) {
-      _messages.add({'role': 'assistant', 'content': full});
-    } else if (full.isEmpty) {
-      yield '🤖 The AI returned an empty response. Please try again.';
-    }
+  /// Sends one Gemini native SSE streaming request (no proxy needed).
+  Future<http.StreamedResponse> _geminiRequest(http.Client client) {
+    final uri = Uri.parse('$_baseUrl/v1beta/models/$_model:streamGenerateContent?alt=sse');
+    final request = http.Request('POST', uri);
+    request.headers.addAll(_headers());
+    request.body = jsonEncode(_body(stream: true));
+    return client.send(request).timeout(const Duration(seconds: 90));
   }
+
+  /// Static caches so the heavy catalog/student-info reads happen at most once
+  /// per app run instead of on every chat screen open (saves hundreds of
+  /// Firestore reads).
+  static String? _cachedCatalog;
+  static String? _cachedStudentInfo;
 
   Future<void> setContext(String context) async {
     if (!_contextLoaded) {
       _contextLoaded = true;
-      final catalog = await _fetchUserContentCatalog();
+      final catalog = _cachedCatalog ??= await _fetchUserContentCatalog();
       if (catalog.isNotEmpty) {
         _messages.add({'role': 'system', 'content': catalog});
       }
-      final info = await _fetchStudentInfo();
+      final info = _cachedStudentInfo ??= await _fetchStudentInfo();
       if (info != null) {
         _messages.add({'role': 'system', 'content': info});
       }

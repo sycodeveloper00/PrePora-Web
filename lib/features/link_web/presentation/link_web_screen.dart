@@ -8,6 +8,7 @@ import 'package:qr_flutter/qr_flutter.dart';
 import 'package:firebase_auth/firebase_auth.dart' as fb_auth;
 import 'package:http/http.dart' as http;
 import 'dart:html' as html;
+import '../../../core/router/app_router.dart';
 import '../../../core/services/firebase_service.dart';
 
 class LinkWebScreen extends StatefulWidget {
@@ -85,7 +86,9 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
 
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
-    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+    // 5-minute heartbeat (was 30s) — every write triggers re-reads on active
+    // web_sessions collection listeners, which burned the free-tier read quota.
+    _heartbeatTimer = Timer.periodic(const Duration(minutes: 5), (_) {
       if (_sessionId.isEmpty || _status != 'connected') return;
       FirebaseFirestore.instance.collection('web_sessions').doc(_sessionId).update({
         'lastActive': FieldValue.serverTimestamp(),
@@ -96,6 +99,28 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
   void _stopHeartbeat() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+  }
+
+  /// Best-effort cleanup of stale waiting/disconnected sessions older than
+  /// 2 hours. Runs once per session creation and never throws.
+  Future<void> _cleanupStaleSessions() async {
+    try {
+      final cutoff = Timestamp.fromDate(DateTime.now().subtract(const Duration(hours: 2)));
+      final stale = await FirebaseFirestore.instance
+          .collection('web_sessions')
+          .where('createdAt', isLessThan: cutoff)
+          .limit(50)
+          .get();
+      for (final doc in stale.docs) {
+        try {
+          final data = doc.data();
+          final status = data['status'] as String?;
+          if (status == 'waiting' || status == 'disconnected') {
+            await doc.reference.delete();
+          }
+        } catch (_) {}
+      }
+    } catch (_) {}
   }
 
   void _startBeforeUnloadListener() {
@@ -165,7 +190,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
               final response = await http.post(
                 Uri.parse('/api/generate-token'),
                 headers: {'Content-Type': 'application/json'},
-                body: json.encode({'sessionId': sessionId}),
+                body: json.encode({'sessionId': sessionId, 'uid': uid}),
               );
               if (response.statusCode == 200) {
                 final body = json.decode(response.body) as Map<String, dynamic>;
@@ -208,6 +233,17 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
                 _generateSession();
               }
             });
+            _LinkedWebSession.instance.startMonitoring(sessionId, () {
+              html.window.localStorage.remove(_sessionKey);
+              _LinkedWebSession.instance.clear();
+              _stopActivityTracking();
+              fb_auth.FirebaseAuth.instance.signOut().then((_) {
+                final navCtx = AppRouter.rootNavigatorKey.currentContext;
+                if (navCtx != null) {
+                  GoRouter.of(navCtx).go('/link-web');
+                }
+              });
+            });
             _startActivityTracking();
             if (mounted) {
               context.go('/dashboard');
@@ -232,6 +268,11 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     final token = List.generate(32, (_) => rng.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
     _sessionId = 'web-$token';
     _createdAt = DateTime.now();
+
+    // Clean up stale waiting/disconnected sessions older than 2 hours so the
+    // web_sessions collection doesn't grow unbounded (each QR page load used
+    // to create a permanent doc, inflating collection reads).
+    _cleanupStaleSessions();
 
     try {
       await FirebaseFirestore.instance.collection('web_sessions').doc(_sessionId).set({
@@ -315,7 +356,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
       final response = await http.post(
         Uri.parse('/api/generate-token'),
         headers: {'Content-Type': 'application/json'},
-        body: json.encode({'sessionId': _sessionId}),
+        body: json.encode({'sessionId': _sessionId, 'uid': uid}),
       );
       if (response.statusCode == 200) {
         final body = json.decode(response.body) as Map<String, dynamic>;
@@ -344,6 +385,20 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
 
     html.window.localStorage[_sessionKey] = json.encode({'sessionId': _sessionId});
     _startActivityTracking();
+
+    // Keep listening for Android-side disconnect even after this screen is
+    // disposed on navigation.
+    _LinkedWebSession.instance.startMonitoring(_sessionId, () {
+      html.window.localStorage.remove(_sessionKey);
+      _LinkedWebSession.instance.clear();
+      _stopActivityTracking();
+      fb_auth.FirebaseAuth.instance.signOut().then((_) {
+        final navCtx = AppRouter.rootNavigatorKey.currentContext;
+        if (navCtx != null) {
+          GoRouter.of(navCtx).go('/link-web');
+        }
+      });
+    });
     _listenToSessionStatus();
 
     if (mounted) {
@@ -837,6 +892,12 @@ class _LinkedWebSession {
   String email = '';
   String role = 'student';
 
+  /// Global session-status listener that survives navigation so the web app
+  /// reacts to an Android-side disconnect even after the LinkWebScreen is
+  /// disposed.
+  StreamSubscription? _globalSessionSub;
+  void Function()? _onDisconnected;
+
   void setSession({required String uid, required String name, required String email, required String role}) {
     this.uid = uid;
     this.name = name;
@@ -844,6 +905,39 @@ class _LinkedWebSession {
     this.role = role;
   }
 
-  void clear() { uid = ''; name = ''; email = ''; role = 'student'; }
+  /// Starts a persistent listener on the given session doc. When the session
+  /// becomes 'disconnected', [onDisconnected] is invoked once and the
+  /// listener stops.
+  void startMonitoring(String sessionId, void Function() onDisconnected) {
+    stopMonitoring();
+    _onDisconnected = onDisconnected;
+    _globalSessionSub = FirebaseFirestore.instance
+        .collection('web_sessions')
+        .doc(sessionId)
+        .snapshots()
+        .listen((snap) {
+      if (!snap.exists) return;
+      final sData = snap.data()!;
+      if (sData['status'] == 'disconnected') {
+        stopMonitoring();
+        _onDisconnected?.call();
+      }
+    });
+  }
+
+  void stopMonitoring() {
+    _globalSessionSub?.cancel();
+    _globalSessionSub = null;
+    _onDisconnected = null;
+  }
+
+  void clear() {
+    stopMonitoring();
+    uid = '';
+    name = '';
+    email = '';
+    role = 'student';
+  }
+
   bool get isActive => uid.isNotEmpty;
 }

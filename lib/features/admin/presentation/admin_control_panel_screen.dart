@@ -1323,6 +1323,8 @@ class _StudentDevicePageState extends State<_StudentDevicePage> with SingleTicke
     return StreamBuilder<QuerySnapshot>(
       stream: FirebaseService.firestore.collection('login_attempts')
           .where('uid', isEqualTo: widget.uid)
+          .orderBy('timestamp', descending: true)
+          .limit(100)
           .snapshots(),
       builder: (ctx, loginSnap) {
         if (loginSnap.hasError) {
@@ -1361,6 +1363,8 @@ class _StudentDevicePageState extends State<_StudentDevicePage> with SingleTicke
         return StreamBuilder<QuerySnapshot>(
           stream: FirebaseService.firestore.collection('web_sessions')
               .where('uid', isEqualTo: widget.uid)
+              .orderBy('createdAt', descending: true)
+              .limit(50)
               .snapshots(),
           builder: (ctx, webSnap) {
             final allWebSessions = webSnap.hasData ? webSnap.data!.docs : [];
@@ -1631,6 +1635,8 @@ class _AdminLinkHistoryScreenState extends State<_AdminLinkHistoryScreen> {
             child: StreamBuilder<QuerySnapshot>(
               stream: FirebaseService.firestore.collection('web_sessions')
                   .where('uid', isEqualTo: widget.uid)
+                  .orderBy('createdAt', descending: true)
+                  .limit(50)
                   .snapshots(),
               builder: (ctx, snap) {
                 if (snap.hasError) {

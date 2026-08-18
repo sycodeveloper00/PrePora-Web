@@ -42,7 +42,13 @@ module.exports = async (req, res) => {
         res.setHeader('Connection', 'keep-alive');
         let errBody = '';
         try { errBody = await apiRes.text(); } catch (_) {}
-        res.write(`data: ${JSON.stringify({ error: true, status: apiRes.status, details: errBody })}\n\n`);
+        let message = 'AI server error';
+        try {
+          const j = JSON.parse(errBody);
+          if (j && j.error && j.error.message) message = j.error.message;
+          else if (j && j.message) message = j.message;
+        } catch (_) {}
+        res.write(`data: ${JSON.stringify({ error: true, status: apiRes.status, details: errBody, message })}\n\n`);
         return res.end();
       }
       res.setHeader('Content-Type', 'text/event-stream');

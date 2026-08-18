@@ -95,6 +95,14 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
   String _pendingTyping = '';
   _Message? _typingMsg;
 
+  /// Strips the hidden file-content context out of a retry message so the
+  /// extracted text never appears in the visible chat bubble.
+  String _cleanDisplayText(String text) {
+    final idx = text.indexOf('\n\nThe user shared a file:');
+    if (idx == -1) return text;
+    return text.substring(0, idx);
+  }
+
   Future<void> _sendMessage([String? quickPrompt]) async {
     final text = quickPrompt ?? _controller.text.trim();
     if (text.isEmpty && _selectedFile == null) return;
@@ -104,29 +112,26 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
     _loadingError = null;
 
     String fullMessage = text;
+    String displayMessage = _cleanDisplayText(text);
+    String? aiAttachmentContext;
     _FilePickResult? attachedFile;
     if (_selectedFile != null) {
       attachedFile = _selectedFile;
+      displayMessage = '\u{1F4C4} File: ${attachedFile!.fileName}${text.isNotEmpty ? '\n$text' : ''}';
+      aiAttachmentContext = 'The user shared a file: "${attachedFile!.fileName}"\n\n'
+          'File contents:\n${attachedFile!.content}';
       if (fullMessage.isNotEmpty) fullMessage += '\n\n';
-      fullMessage += 'The user shared a file: "${_selectedFile!.fileName}"\n\n'
-          'File contents:\n${_selectedFile!.content}';
+      fullMessage = '$displayMessage\n\n$aiAttachmentContext';
     }
 
     setState(() {
-      if (attachedFile != null) {
-        _messages.add(_Message(
-          text: '\u{1F4C4} File: ${attachedFile.fileName}${text.isNotEmpty ? '\n$text' : ''}',
-          isUser: true,
-        ));
-      } else {
-        _messages.add(_Message(text: text, isUser: true));
-      }
+      _messages.add(_Message(text: displayMessage, isUser: true));
       _isLoading = true;
       _selectedFile = null;
     });
     _scrollToBottom();
 
-    _saveMessageToHistory(fullMessage, 'user');
+    _saveMessageToHistory(displayMessage, 'user');
 
     try {
       String messageToSend = fullMessage;
