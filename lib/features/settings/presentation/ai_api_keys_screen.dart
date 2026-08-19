@@ -103,8 +103,6 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
                               },
                               onEdit: () => _showEditKeyDialog(k),
                               onDelete: () => _showDeleteKeyDialog(k),
-                              onRemoveModel: (m) => _removeModel(k, m),
-                              onMoveModel: (m, delta) => _moveModel(k, m, delta),
                             );
                           }),
                       ],
@@ -139,17 +137,10 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
     required Map<String, dynamic> k, required bool isActive,
     required Color textColor, required Color hintColor, required bool isDark,
     required VoidCallback onToggle, required VoidCallback onEdit, required VoidCallback onDelete,
-    required void Function(String) onRemoveModel,
-    required void Function(String, int) onMoveModel,
   }) {
     final name = k['name'] as String? ?? 'AI Key';
     final model = k['model'] as String? ?? '';
     final provider = k['provider'] as String? ?? 'openai';
-    final rawModels = k['models'];
-    final List<String> models = rawModels is List
-        ? rawModels.map((m) => m.toString()).where((m) => m.trim().isNotEmpty).toList()
-        : (rawModels is String && rawModels.trim().isNotEmpty ? [rawModels] : const <String>[]);
-
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
@@ -176,34 +167,6 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
             Text(_providerLabel(provider), style: TextStyle(color: hintColor, fontSize: 11)),
             if (model.isNotEmpty)
               Text(model, style: TextStyle(color: hintColor, fontSize: 11), overflow: TextOverflow.ellipsis),
-            const SizedBox(height: 6),
-            Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                for (var mi = 0; mi < models.length; mi++)
-                  InputChip(
-                    label: Text(models[mi], style: const TextStyle(fontSize: 10)),
-                    visualDensity: VisualDensity.compact,
-                    materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                    onDeleted: () => onRemoveModel(models[mi]),
-                    backgroundColor: isDark ? Colors.white12 : Colors.deepPurple.withValues(alpha: 0.08),
-                    side: BorderSide(color: isDark ? Colors.white24 : Colors.deepPurple.withValues(alpha: 0.3)),
-                    labelStyle: TextStyle(color: isDark ? Colors.white70 : Colors.deepPurple),
-                    deleteIconColor: Colors.redAccent,
-                    avatar: Row(mainAxisSize: MainAxisSize.min, children: [
-                      InkWell(
-                        onTap: () => onMoveModel(models[mi], -1),
-                        child: const Icon(Icons.keyboard_arrow_up_rounded, size: 16, color: Colors.deepPurple),
-                      ),
-                      InkWell(
-                        onTap: () => onMoveModel(models[mi], 1),
-                        child: const Icon(Icons.keyboard_arrow_down_rounded, size: 16, color: Colors.deepPurple),
-                      ),
-                    ]),
-                  ),
-              ],
-            ),
           ]),
         ),
         const SizedBox(width: 8),
@@ -394,22 +357,6 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
     final List<String> models = rawModels is List
         ? rawModels.map((x) => x.toString()).where((x) => x != m).toList()
         : <String>[];
-    setState(() { k['models'] = models; });
-    FirebaseService.updateAiApiKey(k['id'], models: models);
-    AiService.refreshKey();
-  }
-
-  void _moveModel(Map<String, dynamic> k, String m, int delta) {
-    final rawModels = k['models'];
-    final List<String> models = rawModels is List
-        ? rawModels.map((x) => x.toString()).toList()
-        : <String>[];
-    final i = models.indexOf(m);
-    if (i < 0) return;
-    final j = i + delta;
-    if (j < 0 || j >= models.length) return;
-    final t = models.removeAt(i);
-    models.insert(j, t);
     setState(() { k['models'] = models; });
     FirebaseService.updateAiApiKey(k['id'], models: models);
     AiService.refreshKey();
