@@ -120,13 +120,27 @@ async function upsertRows(table, rows) {
   }
 }
 
+// ---- Read budget tracking (Firestore read quota) ----
+let totalReads = 0;
+let READ_BUDGET = 9000; // default = 18% of 50k daily reads
+const budgetArg = process.argv.find((a) => a.startsWith('--budget='));
+if (budgetArg) READ_BUDGET = parseInt(budgetArg.split('=')[1], 10) || READ_BUDGET;
+
+function markReads(n) {
+  totalReads += n;
+  console.log(`  [reads so far: ${totalReads}/${READ_BUDGET}]`);
+  return totalReads >= READ_BUDGET;
+}
+
 async function readAndMirror(collection, table, maxDocs = 100000) {
   console.log(`\n[${table}] reading ${collection}...`);
   const snap = await admin.firestore().collection(collection).limit(maxDocs).get();
   const rows = snap.docs.map((d) => buildRow(table, d.id, d.data()));
-  if (rows.length === 0) { console.log(`  empty`); return; }
+  const budgetHit = markReads(rows.length);
+  if (rows.length === 0) { console.log(`  empty`); return false; }
   await upsertRows(table, rows);
   console.log(`  done: ${rows.length}`);
+  return budgetHit;
 }
 
 async function readAndMirrorSub(collection, table) {
@@ -147,9 +161,11 @@ async function readAndMirrorSub(collection, table) {
     }
     return buildRow(table, d.id, d.data(), extra);
   });
-  if (rows.length === 0) { console.log(`  empty`); return; }
+  const budgetHit = markReads(rows.length);
+  if (rows.length === 0) { console.log(`  empty`); return false; }
   await upsertRows(table, rows);
   console.log(`  done: ${rows.length}`);
+  return budgetHit;
 }
 
 const TOP_LEVEL = [
@@ -187,15 +203,17 @@ async function main() {
 
   for (const [collection, table] of TOP_LEVEL) {
     if (only && !only.includes(table)) continue;
-    try { await readAndMirror(collection, table); } catch (e) { console.error(`FAILED ${table}:`, e.message); }
+    if (totalReads >= READ_BUDGET) { console.log(`\nREAD BUDGET REACHED (${totalReads}/${READ_BUDGET}) - stopping`); break; }
+    try { const hit = await readAndMirror(collection, table); if (hit) break; } catch (e) { console.error(`FAILED ${table}:`, e.message); }
   }
 
   for (const [collection, table] of SUB_COLLECTIONS) {
     if (only && !only.includes(table)) continue;
-    try { await readAndMirrorSub(collection, table); } catch (e) { console.error(`FAILED ${table}:`, e.message); }
+    if (totalReads >= READ_BUDGET) { console.log(`\nREAD BUDGET REACHED (${totalReads}/${READ_BUDGET}) - stopping`); break; }
+    try { const hit = await readAndMirrorSub(collection, table); if (hit) break; } catch (e) { console.error(`FAILED ${table}:`, e.message); }
   }
 
-  console.log('\nDone.');
+  console.log(`\nDone. Total Firestore reads used: ${totalReads}/${READ_BUDGET}`);
   process.exit(0);
 }
 
