@@ -79,11 +79,6 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
                             onPressed: () => _showAddKeyDialog(),
                           ),
                         ]),
-                        const SizedBox(height: 4),
-                        Text(
-                          'The active key is used by the PrePora AI tutor. Add models to a key\u2019s pool (+) and they are tried in order \u2014 if one fails, the next model is used automatically.',
-                          style: TextStyle(color: hintColor, fontSize: 11, height: 1.4),
-                        ),
                         const SizedBox(height: 8),
                         if (_keys.isEmpty)
                           _emptyState('No AI API keys', 'Tap + to add your first API key', Icons.auto_awesome_outlined, isDark, hintColor)
@@ -276,8 +271,6 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
               dimColor: dimColor,
               fillColor: fillColor,
             ),
-            const SizedBox(height: 12),
-            Text('Free providers: Groq (api.groq.com/openai/v1, llama-3.3-70b-versatile) \u00b7 OpenRouter (openrouter.ai/api/v1, meta-llama/llama-3.1-8b-instruct:free) \u00b7 Gemini (generativelanguage.googleapis.com)', style: TextStyle(color: dimColor, fontSize: 11, height: 1.4)),
           ])),
         ),
         actions: [
@@ -575,8 +568,6 @@ class _ModelsEditorState extends State<_ModelsEditor> {
           Text('Add Model Box', style: TextStyle(color: isDark ? Colors.deepPurple.shade200 : Colors.deepPurple, fontSize: 12)),
         ]),
       ),
-      const SizedBox(height: 4),
-      Text('OpenRouter free models:\nnvidia/nemotron-3-super-120b-a12b:free \u00b7 google/gemma-4-26b-a4b-it:free \u00b7 nvidia/nemotron-3-nano-30b-a3b:free \u00b7 nvidia/nemotron-nano-12b-v2-vl:free \u00b7 cohere/north-mini-code:free', style: TextStyle(color: widget.dimColor, fontSize: 11, height: 1.4)),
     ]);
   }
 }

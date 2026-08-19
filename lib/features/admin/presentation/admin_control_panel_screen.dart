@@ -119,8 +119,8 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
                 ]),
                 const SizedBox(height: 8),
                 _ctrlSection(context, 'App', [
-                  _ctrlTile(context, Icons.cloud_upload_rounded, Colors.deepPurple, 'Storage Settings', 'Manage Supabase, Cloudinary & upload providers', onTap: () => context.push('/admin/storage-settings')),
-                  _ctrlTile(context, Icons.auto_awesome_rounded, Colors.indigo, 'AI API Keys', 'Add & manage AI provider keys (BazaarLink, Groq, Gemini)', onTap: () => context.push('/admin/ai-api-keys')),
+                  _ctrlTile(context, Icons.cloud_upload_rounded, Colors.deepPurple, 'Storage Settings', 'Manage Supabase & upload providers', onTap: () => context.push('/admin/storage-settings')),
+                  _ctrlTile(context, Icons.auto_awesome_rounded, Colors.indigo, 'AI API Keys', 'Manage AI provider keys & models', onTap: () => context.push('/admin/ai-api-keys')),
                   _ctrlTile(context, Icons.update_rounded, Colors.cyanAccent, 'App Updates', 'Manage version & update banner', onTap: () => _showAppUpdates(context)),
                 ]),
               ],
