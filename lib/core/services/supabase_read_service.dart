@@ -1169,4 +1169,46 @@ class SupabaseReadService {
     }
     return result;
   }
+
+  // ─── Bulk Operations ──────────────────────────────────────────────────────
+
+  /// Delete all rows matching [filter] from [table] across ALL projects.
+  /// Filter keys use PostgREST `eq` operators: `{'folderId': 'x'}` → `folderId=eq.x`.
+  static Future<void> bulkDeleteWhere(String table, Map<String, dynamic> filter) async {
+    if (filter.isEmpty) return;
+    final whereClause = filter.entries.map((e) => '${e.key}=eq.${Uri.encodeComponent(e.value.toString())}').join('&');
+    for (final p in _projects) {
+      try {
+        await http.delete(
+          Uri.parse('${p['url']!}/rest/v1/$table?$whereClause'),
+          headers: {
+            'apikey': p['service']!,
+            'Authorization': 'Bearer ${p['service']!}',
+            'Prefer': 'return=minimal',
+          },
+        ).timeout(const Duration(seconds: 10));
+      } catch (_) {}
+    }
+  }
+
+  /// Update all rows matching [filter] in [table] with [updates] across ALL projects.
+  /// Filter keys use PostgREST `eq` operators. [updates] are the new column values.
+  static Future<void> bulkUpdateWhere(String table, Map<String, dynamic> filter, Map<String, dynamic> updates) async {
+    if (filter.isEmpty || updates.isEmpty) return;
+    final whereClause = filter.entries.map((e) => '${e.key}=eq.${Uri.encodeComponent(e.value.toString())}').join('&');
+    for (final p in _projects) {
+      try {
+        await http.patch(
+          Uri.parse('${p['url']!}/rest/v1/$table?$whereClause'),
+          headers: {
+            'apikey': p['service']!,
+            'Authorization': 'Bearer ${p['service']!}',
+            'Content-Type': 'application/json',
+            'Prefer': 'return=minimal',
+          },
+          body: json.encode(updates),
+        ).timeout(const Duration(seconds: 10));
+      } catch (_) {}
+    }
+  }
 }

@@ -982,8 +982,6 @@ class FirebaseService {
     return null;
   }
 
-  static const String _mirrorSyncEndpoint = 'https://prepora-web.vercel.app/api/sync-mirror';
-
   /// Mirrors an AI key row into the read-mirror Supabase (best effort — never
   /// throws, so Firestore remains the source of truth even if mirroring fails).
   static Future<void> _mirrorAiApiKey({
@@ -992,13 +990,9 @@ class FirebaseService {
     bool? isActive,
   }) async {
     try {
-      await http
-          .post(
-            Uri.parse(_mirrorSyncEndpoint),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode({'table': 'ai_api_keys', 'id': id, 'data': data, 'isActive': isActive}),
-          )
-          .timeout(const Duration(seconds: 10));
+      final merged = <String, dynamic>{...data};
+      if (isActive != null) merged['isActive'] = isActive;
+      await SupabaseReadService.writeToAll('ai_api_keys', id, merged);
     } catch (_) {}
   }
 
@@ -1010,21 +1004,12 @@ class FirebaseService {
     } catch (_) {}
   }
 
-  /// Best-effort bulk mirror operation (mark_all_read / clear / delete_filter).
+  /// Best-effort bulk mirror delete across all Supabase projects.
   /// Never throws — the mirror is only a read cache; Firestore stays canonical.
   static Future<void> _mirrorBulk(String table, String action, {Map<String, dynamic>? filter}) async {
+    if (filter == null || filter.isEmpty) return;
     try {
-      await http
-          .post(
-            Uri.parse(_mirrorSyncEndpoint),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode({
-              'table': table,
-              'action': action,
-              if (filter != null) 'filter': filter,
-            }),
-          )
-          .timeout(const Duration(seconds: 10));
+      await SupabaseReadService.bulkDeleteWhere(table, filter);
     } catch (_) {}
   }
 
@@ -1135,15 +1120,6 @@ class FirebaseService {
 
   static Future<void> deleteAiApiKey(String id) async {
     await _mirrorWrite('ai_api_keys', id, const {}, delete: true);
-    try {
-      await http
-          .post(
-            Uri.parse(_mirrorSyncEndpoint),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode({'table': 'ai_api_keys', 'id': id, 'data': const {}, 'delete': true}),
-          )
-          .timeout(const Duration(seconds: 10));
-    } catch (_) {}
   }
 
   static Future<Map<String, dynamic>> retryBucketCreation(String accountId) async {
@@ -1391,9 +1367,7 @@ class FirebaseService {
   }
 
   static Future<void> _propagateAllDescendants(String folderId, String? startParentId, String? link, bool inheritGroup) async {
-    // Supabase-only: bulk update descendants via mirror
-    await _mirrorBulk('contents', 'update_filter', filter: {
-      'folderId': folderId,
+    await SupabaseReadService.bulkUpdateWhere('contents', {'folderId': folderId}, {
       'group_link': link,
       'inherit_group': inheritGroup,
     });
