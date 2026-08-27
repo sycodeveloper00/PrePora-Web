@@ -1,16 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
 import 'package:firebase_auth/firebase_auth.dart' as fb_auth;
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_storage/firebase_storage.dart' as fb_storage;
-import 'package:supabase_flutter/supabase_flutter.dart' hide AuthenticatedClient;
+import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 import 'supabase_read_service.dart';
@@ -66,8 +64,6 @@ class FirebaseService {
 
   static fb_auth.User? get currentUser => fb_auth.FirebaseAuth.instance.currentUser;
 
-  static FirebaseFirestore get firestore => FirebaseFirestore.instance;
-
   static SupabaseClient get supabase => Supabase.instance.client;
 
   static Future<String> getDeviceId() async {
@@ -87,11 +83,15 @@ class FirebaseService {
 
   static Future<void> initialize() async {
     if (_initialized) return;
-    await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform);
-    await _loadActiveSupabaseAccount();
+    try {
+      await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform).timeout(const Duration(seconds: 10));
+    } catch (_) {}
+    try {
+      await _loadActiveSupabaseAccount().timeout(const Duration(seconds: 8));
+    } catch (_) {}
     if (supabaseUrl.isNotEmpty && _supabaseAnonKey.isNotEmpty) {
       try {
-        await Supabase.initialize(url: supabaseUrl, anonKey: _supabaseAnonKey);
+        await Supabase.initialize(url: supabaseUrl, anonKey: _supabaseAnonKey).timeout(const Duration(seconds: 5));
       } catch (_) {}
     }
     _initialized = true;
@@ -131,16 +131,6 @@ class FirebaseService {
         supabaseUrl = mirror['projectUrl'] as String? ?? '';
         serviceRoleKey = mirror['serviceRoleKey'] as String? ?? '';
         _supabaseAnonKey = mirror['anonKey'] as String? ?? '';
-        return;
-      }
-    } catch (_) {}
-    try {
-      final snap = await firestore.collection('supabase_accounts').where('isActive', isEqualTo: true).limit(1).get();
-      if (snap.docs.isNotEmpty) {
-        final data = snap.docs.first.data();
-        supabaseUrl = data['projectUrl'] as String? ?? '';
-        serviceRoleKey = data['serviceRoleKey'] as String? ?? '';
-        _supabaseAnonKey = data['anonKey'] as String? ?? '';
       }
     } catch (_) {}
   }
@@ -158,26 +148,6 @@ class FirebaseService {
         return true;
       }
     } catch (_) {}
-    try {
-      final snap = await firestore
-          .collection('assistant_supabase')
-          .where('assistantUid', isEqualTo: assistantUid)
-          .where('isActive', isEqualTo: true)
-          .limit(1)
-          .get();
-      if (snap.docs.isNotEmpty) {
-        final data = snap.docs.first.data();
-        final url = data['projectUrl'] as String? ?? '';
-        final key = data['serviceRoleKey'] as String? ?? '';
-        final anon = data['anonKey'] as String? ?? '';
-        if (url.isNotEmpty && key.isNotEmpty) {
-          supabaseUrl = url;
-          serviceRoleKey = key;
-          _supabaseAnonKey = anon;
-          return true;
-        }
-      }
-    } catch (_) {}
     return false;
   }
 
@@ -186,8 +156,9 @@ class FirebaseService {
   /// to the global one), everyone else uses the global `supabase_accounts`.
   static Future<void> selectStorageAccountForUser(String uid) async {
     try {
-      final userDoc = await firestore.collection('users').doc(uid).get();
-      final role = (userDoc.data() as Map<String, dynamic>?)?['role'] as String? ?? '';
+      Map<String, dynamic>? userData;
+      try { userData = await SupabaseReadService.getUser(uid); } catch (_) {}
+      final role = userData?['role'] as String? ?? '';
       if (role == 'Assistant' || role == 'assistant') {
         final ok = await _loadActiveAssistantSupabaseAccount(uid);
         if (ok) {
@@ -221,12 +192,14 @@ class FirebaseService {
         password: password,
       );
       if (cred.user != null) {
-        final userDoc = await firestore.collection('users').doc(cred.user!.uid).get();
-        final userData = userDoc.data() as Map<String, dynamic>?;
+        Map<String, dynamic>? userData;
+        try {
+          userData = await SupabaseReadService.getUser(cred.user!.uid);
+        } catch (_) {}
         final userRole = userData?['role'] as String?;
         if (userData?['blocked'] == true) {
           if (userRole == 'admin' || userRole == 'Assistant') {
-            await firestore.collection('users').doc(cred.user!.uid).update({'blocked': false});
+            await _mirrorWrite('users', cred.user!.uid, {'blocked': false});
           } else {
             await fb_auth.FirebaseAuth.instance.signOut();
             throw Exception('BLOCKED');
@@ -260,7 +233,7 @@ class FirebaseService {
       await cred.user?.updateDisplayName(name);
       final uid = cred.user!.uid;
       await storeSession(uid);
-      await firestore.collection('users').doc(uid).set({
+      await _mirrorWrite('users', uid, {
         'uid': uid,
         'name': name,
         'email': email.trim(),
@@ -269,18 +242,8 @@ class FirebaseService {
         'gender': gender,
         'blocked': false,
         'verified': role == 'admin',
-        'createdAt': FieldValue.serverTimestamp(),
-        'termsAccepted': false,
-      });
-      await _mirrorWrite('users', uid, {
-        'uid': uid,
-        'name': name,
-        'email': email.trim(),
-        'role': role,
-        'gender': gender,
-        'blocked': false,
-        'verified': role == 'admin',
         'createdAt': DateTime.now().toIso8601String(),
+        'termsAccepted': false,
       });
       await addAdminNotification('registration', 'New student registered: $name ($email)', relatedUid: uid);
       return cred;
@@ -292,8 +255,9 @@ class FirebaseService {
   static Future<void> signOut() async {
     final user = fb_auth.FirebaseAuth.instance.currentUser;
     if (user != null) {
-      final userDoc = await firestore.collection('users').doc(user.uid).get();
-      final role = (userDoc.data() as Map<String, dynamic>?)?['role'] as String?;
+      Map<String, dynamic>? userData;
+      try { userData = await SupabaseReadService.getUser(user.uid); } catch (_) {}
+      final role = userData?['role'] as String?;
       final label = role == 'admin' ? 'Admin' : (role == 'Assistant' ? 'Assistant' : 'Student');
       await addAdminNotification('logout', '$label logged out: ${user.email}', relatedUid: user.uid);
     }
@@ -325,12 +289,7 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getUser(uid);
       if (mirror != null) return mirror['role'] as String?;
     } catch (_) {}
-    try {
-      final doc = await firestore.collection('users').doc(uid).get();
-      return doc.data()?['role'] as String?;
-    } catch (_) {
-      return null;
-    }
+    return null;
   }
 
   static Future<String?> getCachedUserRole(String uid) async {
@@ -348,11 +307,7 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getUser(uid);
       if (mirror != null) return _MirrorDocumentSnapshot(mirror);
     } catch (_) {}
-    try {
-      return await firestore.collection('users').doc(uid).get();
-    } catch (_) {
-      return null;
-    }
+    return null;
   }
 
   static Future<String> getUserDisplayName(String uid) async {
@@ -360,12 +315,7 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getUser(uid);
       if (mirror != null) return mirror['name'] as String? ?? 'User';
     } catch (_) {}
-    try {
-      final doc = await firestore.collection('users').doc(uid).get();
-      return (doc.data() as Map<String, dynamic>?)?['name'] as String? ?? 'User';
-    } catch (_) {
-      return 'User';
-    }
+    return 'User';
   }
 
   static Future<bool> isStudentBlocked(String uid) async {
@@ -373,12 +323,7 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getUser(uid);
       if (mirror != null) return mirror['blocked'] == true;
     } catch (_) {}
-    try {
-      final doc = await firestore.collection('users').doc(uid).get();
-      return (doc.data() as Map<String, dynamic>?)?['blocked'] == true;
-    } catch (_) {
-      return false;
-    }
+    return false;
   }
 
   static Future<bool> isStudentVerified(String uid) async {
@@ -386,29 +331,46 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getUser(uid);
       if (mirror != null) return mirror['verified'] == true;
     } catch (_) {}
-    try {
-      final doc = await firestore.collection('users').doc(uid).get();
-      return (doc.data() as Map<String, dynamic>?)?['verified'] == true;
-    } catch (_) {
-      return false;
-    }
+    return false;
   }
 
   static Future<void> toggleStudentBlocked(String uid, bool blocked) async {
-    await firestore.collection('users').doc(uid).update({'blocked': blocked});
     await _mirrorWrite('users', uid, {'blocked': blocked});
     if (blocked) {
-      final snap = await firestore.collection('users').doc(uid).get();
-      final email = (snap.data() as Map<String, dynamic>?)?['email'] as String? ?? uid;
+      Map<String, dynamic>? userData;
+      try { userData = await SupabaseReadService.getUser(uid); } catch (_) {}
+      final email = userData?['email'] as String? ?? uid;
       await addAdminNotification('blocked', 'Student account blocked: $email', relatedUid: uid);
     }
+    await addTargetedNotification(uid, blocked
+        ? 'Your account has been blocked by the administrator. Contact support for help.'
+        : 'Your account has been unblocked. You can now access all features.');
   }
 
   static Future<void> toggleStudentVerified(String uid, bool verified, {double? paidAmount}) async {
     final data = <String, dynamic>{'verified': verified};
     if (paidAmount != null && paidAmount > 0) data['paidAmount'] = paidAmount;
-    await firestore.collection('users').doc(uid).update(data);
     await _mirrorWrite('users', uid, data);
+    await addTargetedNotification(uid, verified
+        ? 'Your account has been verified! You now have full access to all content.'
+        : 'Your account verification has been removed. Contact support for details.');
+    if (verified) {
+      _removeTrialNotificationsForUser(uid);
+    }
+  }
+
+  static void _removeTrialNotificationsForUser(String uid) async {
+    try {
+      final notifs = await SupabaseReadService.getTargetedNotifications(uid);
+      if (notifs == null || notifs.isEmpty) return;
+      for (final n in notifs) {
+        final msg = n['message'] as String? ?? '';
+        if (msg.contains('free trial') || msg.contains('Free trial') || msg.contains('trial expires')) {
+          final id = n['id'] as String?;
+          if (id != null) await SupabaseReadService.writeToAll('notifications', id, {}, delete: true);
+        }
+      }
+    } catch (_) {}
   }
 
   /// Returns the free-trial state for a student: `{active, endsAt}` where
@@ -419,20 +381,11 @@ class FirebaseService {
       if (mirror != null) {
         final active = mirror['freeTrialActive'] == true;
         final endsAt = mirror['freeTrialEndsAt'];
-        final endDate = endsAt is Timestamp ? endsAt.toDate() : (endsAt is DateTime ? endsAt : null);
+        final endDate = endsAt is String ? DateTime.tryParse(endsAt) : (endsAt is DateTime ? endsAt : null);
         return {'active': active, 'endsAt': endDate};
       }
     } catch (_) {}
-    try {
-      final doc = await firestore.collection('users').doc(uid).get();
-      final data = doc.data() as Map<String, dynamic>? ?? {};
-      final active = data['freeTrialActive'] == true;
-      final endsAt = data['freeTrialEndsAt'];
-      final endDate = endsAt is Timestamp ? endsAt.toDate() : null;
-      return {'active': active, 'endsAt': endDate};
-    } catch (_) {
-      return {'active': false, 'endsAt': null};
-    }
+    return {'active': false, 'endsAt': null};
   }
 
   /// Returns the trial end time currently applied to unverified students (the
@@ -440,18 +393,20 @@ class FirebaseService {
   /// student is on an active free trial. Used by the admin countdown tile.
   static Future<DateTime?> getActiveTrialEndTime() async {
     try {
-      final snap = await firestore
-          .collection('users')
-          .where('role', isEqualTo: 'student')
-          .where('freeTrialActive', isEqualTo: true)
-          .get();
+      List<Map<String, dynamic>>? students;
+      try {
+        students = await SupabaseReadService.getUsersWhere('role=eq.student&free_trial_active=eq.true');
+      } catch (_) {}
       DateTime? latest;
-      for (final doc in snap.docs) {
-        final endsAt = doc.data()['freeTrialEndsAt'];
-        final d = endsAt is Timestamp ? endsAt.toDate() : null;
-        if (d != null && (latest == null || d.isAfter(latest))) latest = d;
+      if (students != null && students.isNotEmpty) {
+        for (final data in students) {
+          final endsAt = data['free_trial_ends_at'] ?? data['freeTrialEndsAt'];
+          final d = endsAt is DateTime ? endsAt : (endsAt is String ? DateTime.tryParse(endsAt) : null);
+          if (d != null && (latest == null || d.isAfter(latest))) latest = d;
+        }
+        return latest;
       }
-      return latest;
+      return null;
     } catch (_) {
       return null;
     }
@@ -461,17 +416,28 @@ class FirebaseService {
   /// [end] date/time (preserves minutes — no truncation).
   /// Returns the number of students the trial was applied to.
   static Future<int> startFreeTrialForAll({required DateTime end}) async {
-    final snap = await firestore.collection('users').where('role', isEqualTo: 'student').get();
-    final endTimestamp = Timestamp.fromDate(end);
-    final batch = firestore.batch();
+    List<Map<String, dynamic>>? students;
+    try { students = await SupabaseReadService.getUsersByRole('student'); } catch (_) {}
+    final mirrorWrites = <Future>[];
     int count = 0;
-    for (final doc in snap.docs) {
-      final data = doc.data();
-      if (data['verified'] == true) continue;
-      batch.update(doc.reference, {'freeTrialActive': true, 'freeTrialEndsAt': endTimestamp});
-      count++;
+    if (students != null && students.isNotEmpty) {
+      for (final data in students) {
+        if (data['verified'] == true) continue;
+        final id = data['id'] as String? ?? '';
+        if (id.isEmpty) continue;
+        mirrorWrites.add(_mirrorWrite('users', id, {
+          ...data,
+          'freeTrialActive': true,
+          'freeTrialEndsAt': end.toIso8601String(),
+          'free_trial_active': true,
+          'free_trial_ends_at': end.toIso8601String(),
+        }));
+        count++;
+      }
     }
-    if (count > 0) await batch.commit();
+    if (count > 0) {
+      try { await Future.wait(mirrorWrites); } catch (_) {}
+    }
     return count;
   }
 
@@ -501,8 +467,7 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getUsersByRole('student');
       if (mirror != null) return mirror;
     } catch (_) {}
-    final snap = await firestore.collection('users').where('role', isEqualTo: 'student').get();
-    return snap.docs.map((e) => {'id': e.id, ...e.data()}).toList();
+    return [];
   }
 
   /// Admin-only: changes a student/assistant password via the free-tier Vercel
@@ -528,9 +493,9 @@ class FirebaseService {
   /// Used by admins to show the current password in the change-password dialog.
   static Future<String> getUserStoredPassword(String uid) async {
     try {
-      final doc = await firestore.collection('users').doc(uid).get();
-      if (!doc.exists) return '';
-      return (doc.data()?['password'] as String?) ?? '';
+      final data = await SupabaseReadService.getUser(uid);
+      if (data == null) return '';
+      return (data['password'] as String?) ?? '';
     } catch (_) {
       return '';
     }
@@ -554,50 +519,30 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getSettings('notification_config');
       if (mirror != null) return {...defaults, ...mirror};
     } catch (_) {}
-    try {
-      final doc = await firestore.collection('settings').doc('notification_config').get();
-      if (!doc.exists) return defaults;
-      final data = doc.data() as Map<String, dynamic>? ?? {};
-      return {...defaults, ...data};
-    } catch (_) {
-      return defaults;
-    }
+    return defaults;
   }
 
   static Stream<QuerySnapshot> getAllAssistant() {
-    return _mirrorOrFirestore(
-      SupabaseReadService.streamUsersByRole('Assistant'),
-      firestoreQuery: () => firestore.collection('users').where('role', isEqualTo: 'Assistant').get(),
-    );
+    return SupabaseReadService.streamUsersByRole('Assistant').map((rows) => _MirrorQuerySnapshot(rows));
   }
 
   static Future<void> deleteAssistantAccount(String uid) async {
-    await firestore.collection('users').doc(uid).delete();
+    await _mirrorWrite('users', uid, const {}, delete: true);
   }
 
   static Future<void> deleteUserFromAuth(String uid) async {
     try {
       final idToken = await fb_auth.FirebaseAuth.instance.currentUser?.getIdToken();
       if (idToken == null) return;
-      final res = await http.post(
+      await http.post(
         Uri.parse('https://prepora-web.vercel.app/api/delete-user'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'idToken': idToken, 'uid': uid}),
       );
-      if (res.statusCode != 200) {
-        await firestore.collection('users').doc(uid).delete();
-      }
-    } catch (e) {
-      await firestore.collection('users').doc(uid).delete();
-    }
+    } catch (_) {}
   }
 
   static Future<void> deleteStudentCompletely(String uid) async {
-    final feedbacks = await firestore.collection('feedbacks').where('uid', isEqualTo: uid).get();
-    final batch = firestore.batch();
-    for (final d in feedbacks.docs) { batch.delete(d.reference); }
-    batch.delete(firestore.collection('users').doc(uid));
-    await batch.commit();
     await deleteUserFromAuth(uid);
   }
 
@@ -613,17 +558,20 @@ class FirebaseService {
         password: password,
       );
       await cred.user?.updateDisplayName(name);
-      await firestore.collection('users').doc(cred.user!.uid).set({
+      final uid = cred.user!.uid;
+      await _mirrorWrite('users', uid, {
+        'uid': uid,
         'name': name,
         'email': displayEmail,
         'password': password,
         'role': 'Assistant',
-        'createdAt': FieldValue.serverTimestamp(),
+        'createdAt': DateTime.now().toIso8601String(),
       });
-      await firestore.collection('Assistant_access').add({
-        'uid': cred.user!.uid,
+      final accessId = 'aa_${DateTime.now().millisecondsSinceEpoch}';
+      await _mirrorWrite('assistant_access', accessId, {
+        'uid': uid,
         'name': name,
-        'createdAt': FieldValue.serverTimestamp(),
+        'createdAt': DateTime.now().toIso8601String(),
       });
       return {'email': displayEmail, 'password': password, 'name': name};
     } catch (e) {
@@ -678,55 +626,44 @@ class FirebaseService {
   // ─── Cloudinary Multi-Account Upload ─────────────────────────────────────────
 
   static Future<List<Map<String, dynamic>>> getCloudinaryAccounts() async {
-    final snap = await firestore.collection('cloudinary_accounts').orderBy('createdAt', descending: false).get();
-    return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
+    try {
+      final rows = await SupabaseReadService.getCloudinaryAccounts();
+      if (rows != null && rows.isNotEmpty) return rows;
+    } catch (_) {}
+    return [];
   }
 
   static Future<String> addCloudinaryAccount(String cloudName, String uploadPreset, {bool isActive = true}) async {
-    final doc = await firestore.collection('cloudinary_accounts').add({
+    final docId = 'ca_${DateTime.now().millisecondsSinceEpoch}';
+    if (isActive) {
+      await _mirrorWrite('settings', 'cloudinary_accounts', {'isActive': false});
+    }
+    await _mirrorWrite('settings', 'cloudinary_accounts', {
       'cloudName': cloudName.trim(),
       'uploadPreset': uploadPreset.trim(),
       'isActive': isActive,
-      'createdAt': FieldValue.serverTimestamp(),
+      'createdAt': DateTime.now().toIso8601String(),
     });
-    if (isActive) {
-      final snap = await firestore.collection('cloudinary_accounts').get();
-      final batch = firestore.batch();
-      for (final d in snap.docs) {
-        if (d.id != doc.id) {
-          batch.update(d.reference, {'isActive': false});
-        }
-      }
-      await batch.commit();
-    }
-    return doc.id;
+    return docId;
   }
 
   static Future<void> updateCloudinaryAccount(String id, {String? cloudName, String? uploadPreset, bool? isActive}) async {
     if (isActive == true) {
-      final snap = await firestore.collection('cloudinary_accounts').get();
-      final batch = firestore.batch();
-      for (final doc in snap.docs) {
-        if (doc.id != id) {
-          batch.update(doc.reference, {'isActive': false});
-        } else {
-          batch.update(doc.reference, {'isActive': true});
-        }
-      }
-      await batch.commit();
+      await _mirrorWrite('settings', 'cloudinary_accounts', {'isActive': false});
     } else if (isActive == false) {
-      await firestore.collection('cloudinary_accounts').doc(id).update({'isActive': false});
+      await _mirrorWrite('settings', 'cloudinary_accounts', {'isActive': false});
     }
-    if (cloudName != null || uploadPreset != null) {
-      final data = <String, dynamic>{};
-      if (cloudName != null) data['cloudName'] = cloudName.trim();
-      if (uploadPreset != null) data['uploadPreset'] = uploadPreset.trim();
-      await firestore.collection('cloudinary_accounts').doc(id).update(data);
+    final data = <String, dynamic>{};
+    if (cloudName != null) data['cloudName'] = cloudName.trim();
+    if (uploadPreset != null) data['uploadPreset'] = uploadPreset.trim();
+    if (isActive != null) data['isActive'] = isActive;
+    if (data.isNotEmpty) {
+      await _mirrorWrite('settings', 'cloudinary_accounts', data);
     }
   }
 
   static Future<void> deleteCloudinaryAccount(String id) async {
-    await firestore.collection('cloudinary_accounts').doc(id).delete();
+    await _mirrorWrite('settings', 'cloudinary_accounts', {}, delete: true);
   }
 
   static Future<String> uploadToCloudinary(Uint8List bytes, String filename) async {
@@ -767,8 +704,11 @@ class FirebaseService {
   // ─── Assistant Cloudinary Accounts ───────────────────────────────────────────
 
   static Future<List<Map<String, dynamic>>> getAssistantCloudinaryAccounts() async {
-    final snap = await firestore.collection('assistant_cloudinary').orderBy('createdAt', descending: false).get();
-    return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
+    try {
+      final rows = await SupabaseReadService.getAssistantCloudinaryAccounts();
+      if (rows != null && rows.isNotEmpty) return rows;
+    } catch (_) {}
+    return [];
   }
 
   static Future<String> addAssistantCloudinaryAccount({
@@ -777,61 +717,44 @@ class FirebaseService {
     required String cloudName,
     required String uploadPreset,
   }) async {
-    final doc = await firestore.collection('assistant_cloudinary').add({
+    final docId = 'ac_${DateTime.now().millisecondsSinceEpoch}';
+    await _mirrorWrite('settings', 'assistant_cloudinary_$docId', {
       'assistantUid': assistantUid,
       'assistantName': assistantName,
       'cloudName': cloudName.trim(),
       'uploadPreset': uploadPreset.trim(),
       'isActive': true,
-      'createdAt': FieldValue.serverTimestamp(),
+      'createdAt': DateTime.now().toIso8601String(),
     });
-    final snap = await firestore.collection('assistant_cloudinary').where('assistantUid', isEqualTo: assistantUid).get();
-    final batch = firestore.batch();
-    for (final d in snap.docs) {
-      if (d.id != doc.id) {
-        batch.update(d.reference, {'isActive': false});
-      }
-    }
-    await batch.commit();
-    return doc.id;
+    return docId;
   }
 
   static Future<void> updateAssistantCloudinaryAccount(String id, {String? cloudName, String? uploadPreset, bool? isActive}) async {
     if (isActive == true) {
-      final docSnap = await firestore.collection('assistant_cloudinary').doc(id).get();
-      final assistantUid = (docSnap.data() as Map<String, dynamic>?)?['assistantUid'] as String?;
-      if (assistantUid != null) {
-        final snap = await firestore.collection('assistant_cloudinary').where('assistantUid', isEqualTo: assistantUid).get();
-        final batch = firestore.batch();
-        for (final doc in snap.docs) {
-          if (doc.id != id) {
-            batch.update(doc.reference, {'isActive': false});
-          } else {
-            batch.update(doc.reference, {'isActive': true});
-          }
-        }
-        await batch.commit();
-      }
+      await _mirrorWrite('settings', 'assistant_cloudinary_$id', {'isActive': true});
     } else if (isActive == false) {
-      await firestore.collection('assistant_cloudinary').doc(id).update({'isActive': false});
+      await _mirrorWrite('settings', 'assistant_cloudinary_$id', {'isActive': false});
     }
     if (cloudName != null || uploadPreset != null) {
       final data = <String, dynamic>{};
       if (cloudName != null) data['cloudName'] = cloudName.trim();
       if (uploadPreset != null) data['uploadPreset'] = uploadPreset.trim();
-      await firestore.collection('assistant_cloudinary').doc(id).update(data);
+      await _mirrorWrite('settings', 'assistant_cloudinary_$id', data);
     }
   }
 
   static Future<void> deleteAssistantCloudinaryAccount(String id) async {
-    await firestore.collection('assistant_cloudinary').doc(id).delete();
+    await _mirrorWrite('settings', 'assistant_cloudinary_$id', {}, delete: true);
   }
 
   // ─── Assistant Supabase Accounts ──────────────────────────────────────────
 
   static Future<List<Map<String, dynamic>>> getAssistantSupabaseAccounts() async {
-    final snap = await firestore.collection('assistant_supabase').orderBy('createdAt', descending: false).get();
-    return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
+    try {
+      final rows = await SupabaseReadService.getAssistantSupabaseAccounts();
+      if (rows != null && rows.isNotEmpty) return rows;
+    } catch (_) {}
+    return [];
   }
 
   static Future<String> addAssistantSupabaseAccount({
@@ -841,33 +764,9 @@ class FirebaseService {
     required String serviceRoleKey,
     required String anonKey,
   }) async {
-    final doc = await firestore.collection('assistant_supabase').add({
-      'assistantUid': assistantUid,
-      'assistantName': assistantName,
-      'projectUrl': projectUrl.trim(),
-      'serviceRoleKey': serviceRoleKey.trim(),
-      'anonKey': anonKey.trim(),
-      'bucketStatus': 'pending',
-      'failedBuckets': <String>[],
-      'isActive': true,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-    try {
-      final snap = await firestore.collection('assistant_supabase').where('assistantUid', isEqualTo: assistantUid).get();
-      final batch = firestore.batch();
-      for (final d in snap.docs) {
-        if (d.id != doc.id) {
-          batch.update(d.reference, {'isActive': false});
-        }
-      }
-      await batch.commit();
-    } catch (_) {}
+    final docId = 'as_${DateTime.now().millisecondsSinceEpoch}';
     final bucketResult = await _autoCreateBuckets(projectUrl.trim(), serviceRoleKey.trim());
-    await firestore.collection('assistant_supabase').doc(doc.id).update({
-      'bucketStatus': bucketResult['status'],
-      'failedBuckets': bucketResult['failedBuckets'],
-    });
-    await _mirrorWrite('settings', 'assistant_supabase:${doc.id}', {
+    await _mirrorWrite('settings', 'assistant_supabase:$docId', {
       'assistantUid': assistantUid,
       'assistantName': assistantName,
       'projectUrl': projectUrl.trim(),
@@ -878,36 +777,25 @@ class FirebaseService {
       'isActive': true,
       'createdAt': DateTime.now().toIso8601String(),
     });
-    return doc.id;
+    return docId;
   }
 
   static Future<void> updateAssistantSupabaseAccount(String id, {String? projectUrl, String? serviceRoleKey, String? anonKey, bool? isActive}) async {
+    // When activating an assistant account, deactivate ALL other accounts for the same assistant first
     if (isActive == true) {
       try {
-        final docSnap = await firestore.collection('assistant_supabase').doc(id).get();
-        final assistantUid = (docSnap.data() as Map<String, dynamic>?)?['assistantUid'] as String?;
-        if (assistantUid != null) {
-          final snap = await firestore.collection('assistant_supabase').where('assistantUid', isEqualTo: assistantUid).get();
-          final batch = firestore.batch();
-          for (final doc in snap.docs) {
-            if (doc.id != id) {
-              batch.update(doc.reference, {'isActive': false});
-            } else {
-              batch.update(doc.reference, {'isActive': true});
+        final all = await SupabaseReadService.getAssistantSupabaseAccounts();
+        if (all != null) {
+          for (final acc in all) {
+            final accId = acc['id'] as String?;
+            if (accId == null || accId == id) continue;
+            if (acc['isActive'] == true) {
+              final existingOther = await SupabaseReadService.getSettings('assistant_supabase:$accId') ?? {};
+              await _mirrorWrite('settings', 'assistant_supabase:$accId', {...existingOther, 'isActive': false});
             }
           }
-          await batch.commit();
         }
       } catch (_) {}
-    } else if (isActive == false) {
-      await firestore.collection('assistant_supabase').doc(id).update({'isActive': false});
-    }
-    if (projectUrl != null || serviceRoleKey != null || anonKey != null) {
-      final data = <String, dynamic>{};
-      if (projectUrl != null) data['projectUrl'] = projectUrl.trim();
-      if (serviceRoleKey != null) data['serviceRoleKey'] = serviceRoleKey.trim();
-      if (anonKey != null) data['anonKey'] = anonKey.trim();
-      await firestore.collection('assistant_supabase').doc(id).update(data);
     }
     try {
       final existing = await SupabaseReadService.getSettings('assistant_supabase:$id') ?? {};
@@ -918,22 +806,21 @@ class FirebaseService {
         if (anonKey != null) 'anonKey': anonKey.trim(),
         if (isActive != null) 'isActive': isActive,
       });
+      SupabaseReadService.invalidateSettingsCache();
     } catch (_) {}
   }
 
   static Future<void> deleteAssistantSupabaseAccount(String id) async {
-    await firestore.collection('assistant_supabase').doc(id).delete();
     await _mirrorWrite('settings', 'assistant_supabase:$id', const {}, delete: true);
   }
 
   static Future<Map<String, dynamic>> retryAssistantSupabaseBuckets(String accountId) async {
-    final doc = await firestore.collection('assistant_supabase').doc(accountId).get();
-    if (!doc.exists) return {'status': 'error', 'error': 'Account not found'};
-    final data = doc.data()!;
-    final projectUrl = data['projectUrl'] as String;
-    final serviceKey = data['serviceRoleKey'] as String;
+    final existing = await SupabaseReadService.getSettings('assistant_supabase:$accountId');
+    if (existing == null) return {'status': 'error', 'error': 'Account not found'};
+    final projectUrl = existing['projectUrl'] as String;
+    final serviceKey = existing['serviceRoleKey'] as String;
     final result = await _autoCreateBuckets(projectUrl, serviceKey);
-    await firestore.collection('assistant_supabase').doc(accountId).update({
+    await _mirrorWrite('settings', 'assistant_supabase:$accountId', {
       'bucketStatus': result['status'],
       'failedBuckets': result['failedBuckets'],
     });
@@ -954,17 +841,34 @@ class FirebaseService {
   // ─── Supabase Multi-Account ────────────────────────────────────────────────
 
   static Future<List<Map<String, dynamic>>> getSupabaseAccounts() async {
-    final snap = await firestore.collection('supabase_accounts').orderBy('createdAt', descending: false).get();
-    return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
+    try {
+      final rows = await SupabaseReadService.getSupabaseAccounts();
+      if (rows != null && rows.isNotEmpty) return rows;
+    } catch (_) {}
+    return [];
+  }
+
+  static String get _supabaseProxyUrl {
+    final host = Uri.base.host;
+    if (host.contains('vercel.app')) return 'https://prepora-web.vercel.app/api/supabase-proxy';
+    return '/api/supabase-proxy';
+  }
+
+  static Future<Map<String, dynamic>> _supabaseProxy(String action, String projectUrl, String serviceKey, {String? bucketName}) async {
+    final body = <String, dynamic>{'action': action, 'projectUrl': projectUrl, 'serviceKey': serviceKey};
+    if (bucketName != null) body['bucketName'] = bucketName;
+    final response = await http.post(Uri.parse(_supabaseProxyUrl), headers: {'Content-Type': 'application/json'}, body: jsonEncode(body)).timeout(const Duration(seconds: 20));
+    return jsonDecode(response.body) as Map<String, dynamic>;
   }
 
   static Future<Map<String, dynamic>> verifySupabaseCredentials(String projectUrl, String serviceKey) async {
     try {
-      final uri = Uri.parse('$projectUrl/storage/v1/bucket');
-      final response = await http.get(uri, headers: {'Authorization': 'Bearer $serviceKey'}).timeout(const Duration(seconds: 15));
-      if (response.statusCode == 200) return {'valid': true};
-      if (response.statusCode == 401 || response.statusCode == 403) return {'valid': false, 'error': 'Invalid credentials'};
-      return {'valid': false, 'error': 'Server error: ${response.statusCode}'};
+      final result = await _supabaseProxy('verify', projectUrl, serviceKey);
+      // Include details in error message for better diagnostics
+      if (result['valid'] != true && result['details'] != null) {
+        result['error'] = '${result['error']} (${result['details']})';
+      }
+      return result;
     } catch (e) {
       return {'valid': false, 'error': 'Connection failed: $e'};
     }
@@ -974,22 +878,10 @@ class FirebaseService {
     final results = <String, String>{};
     for (final bucket in ['folder_files', 'notices']) {
       try {
-        final checkUri = Uri.parse('$projectUrl/storage/v1/bucket/$bucket');
-        final checkResp = await http.get(checkUri, headers: {'Authorization': 'Bearer $serviceKey'}).timeout(const Duration(seconds: 15));
-        if (checkResp.statusCode == 200) {
-          results[bucket] = 'ready';
-          continue;
-        }
-        final uri = Uri.parse('$projectUrl/storage/v1/bucket');
-        final response = await http.post(uri,
-          headers: {'Authorization': 'Bearer $serviceKey', 'Content-Type': 'application/json'},
-          body: jsonEncode({'id': bucket, 'public': true}),
-        ).timeout(const Duration(seconds: 15));
-        if (response.statusCode == 200 || response.statusCode == 201 || response.statusCode == 409) {
-          results[bucket] = 'ready';
-        } else {
-          results[bucket] = 'failed';
-        }
+        final check = await _supabaseProxy('check_bucket', projectUrl, serviceKey, bucketName: bucket);
+        if (check['exists'] == true) { results[bucket] = 'ready'; continue; }
+        final create = await _supabaseProxy('create_bucket', projectUrl, serviceKey, bucketName: bucket);
+        results[bucket] = create['ok'] == true ? 'ready' : 'failed';
       } catch (_) {
         results[bucket] = 'failed';
       }
@@ -1000,33 +892,9 @@ class FirebaseService {
   }
 
   static Future<String> addSupabaseAccount(String projectUrl, String serviceRoleKey, String anonKey, {bool isActive = true}) async {
-    final doc = await firestore.collection('supabase_accounts').add({
-      'projectUrl': projectUrl.trim(),
-      'serviceRoleKey': serviceRoleKey.trim(),
-      'anonKey': anonKey.trim(),
-      'bucketStatus': 'pending',
-      'failedBuckets': <String>[],
-      'isActive': isActive,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-    if (isActive) {
-      try {
-        final snap = await firestore.collection('supabase_accounts').get();
-        final batch = firestore.batch();
-        for (final d in snap.docs) {
-          if (d.id != doc.id) {
-            batch.update(d.reference, {'isActive': false});
-          }
-        }
-        await batch.commit();
-      } catch (_) {}
-    }
+    final docId = 'sa_${DateTime.now().millisecondsSinceEpoch}';
     final bucketResult = await _autoCreateBuckets(projectUrl.trim(), serviceRoleKey.trim());
-    await firestore.collection('supabase_accounts').doc(doc.id).update({
-      'bucketStatus': bucketResult['status'],
-      'failedBuckets': bucketResult['failedBuckets'],
-    });
-    await _mirrorWrite('settings', 'supabase_account:${doc.id}', {
+    await _mirrorWrite('settings', 'supabase_account:$docId', {
       'projectUrl': projectUrl.trim(),
       'serviceRoleKey': serviceRoleKey.trim(),
       'anonKey': anonKey.trim(),
@@ -1035,49 +903,68 @@ class FirebaseService {
       'isActive': isActive,
       'createdAt': DateTime.now().toIso8601String(),
     });
-    return doc.id;
+    return docId;
   }
 
   static Future<void> updateSupabaseAccount(String id, {String? projectUrl, String? serviceRoleKey, String? anonKey, bool? isActive}) async {
+    // When activating an account, deactivate ALL others first (mutual exclusion)
     if (isActive == true) {
       try {
-        final snap = await firestore.collection('supabase_accounts').get();
-        final batch = firestore.batch();
-        for (final doc in snap.docs) {
-          if (doc.id != id) {
-            batch.update(doc.reference, {'isActive': false});
-          } else {
-            batch.update(doc.reference, {'isActive': true});
+        final all = await SupabaseReadService.getSupabaseAccounts();
+        if (all != null) {
+          for (final acc in all) {
+            final accId = acc['id'] as String?;
+            if (accId == null || accId == id) continue;
+            if (acc['isActive'] == true) {
+              final existingOther = await SupabaseReadService.getSettings(accId) ?? {};
+              await _mirrorWrite('settings', accId, {...existingOther, 'isActive': false});
+            }
           }
         }
-        await batch.commit();
       } catch (_) {}
-    } else if (isActive == false) {
-      await firestore.collection('supabase_accounts').doc(id).update({'isActive': false});
-    }
-    if (projectUrl != null || serviceRoleKey != null || anonKey != null) {
-      final data = <String, dynamic>{};
-      if (projectUrl != null) data['projectUrl'] = projectUrl.trim();
-      if (serviceRoleKey != null) data['serviceRoleKey'] = serviceRoleKey.trim();
-      if (anonKey != null) data['anonKey'] = anonKey.trim();
-      await firestore.collection('supabase_accounts').doc(id).update(data);
     }
     try {
-      final existing = await SupabaseReadService.getSettings('supabase_account:$id') ?? {};
-      await _mirrorWrite('settings', 'supabase_account:$id', {
+      final existing = await SupabaseReadService.getSettings(id) ?? {};
+      await _mirrorWrite('settings', id, {
         ...existing,
         if (projectUrl != null) 'projectUrl': projectUrl.trim(),
         if (serviceRoleKey != null) 'serviceRoleKey': serviceRoleKey.trim(),
         if (anonKey != null) 'anonKey': anonKey.trim(),
         if (isActive != null) 'isActive': isActive,
       });
+      SupabaseReadService.invalidateSettingsCache();
     } catch (_) {}
   }
 
   static Future<void> deleteSupabaseAccount(String id) async {
-    await firestore.collection('supabase_accounts').doc(id).delete();
-    await _mirrorWrite('settings', 'supabase_account:$id', const {}, delete: true);
+    await _mirrorWrite('settings', id, const {}, delete: true);
   }
+
+  static Future<Map<String, dynamic>> getStorageUsage(String projectUrl, String serviceKey) async {
+    try {
+      final result = await _supabaseProxy('storage_usage', projectUrl, serviceKey);
+      return {'usedBytes': result['totalBytes'] ?? 0, 'fileCount': result['fileCount'] ?? 0};
+    } catch (_) {
+      return {'usedBytes': 0, 'fileCount': 0};
+    }
+  }
+
+  // ─── FOP Allowed Emails ──────────────────────────────────────────────────
+  static Set<String> _cachedFopEmails = {};
+
+  static Set<String> get cachedFopEmails => _cachedFopEmails;
+
+  static Future<Set<String>> getFopAllowedEmails() async {
+    if (_cachedFopEmails.isNotEmpty) return _cachedFopEmails;
+    try {
+      final emails = await SupabaseReadService.getFopAllowedEmails();
+      _cachedFopEmails = emails;
+      return emails;
+    } catch (_) {}
+    return {};
+  }
+
+  static void invalidateFopEmailsCache() => _cachedFopEmails = {};
 
   // ─── AI API Keys ───────────────────────────────────────────────────────────
 
@@ -1086,21 +973,13 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getAiApiKeys();
       if (mirror != null) return mirror;
     } catch (_) {}
-    final snap = await firestore.collection('ai_api_keys').orderBy('createdAt', descending: false).get();
-    return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
+    return [];
   }
 
   static Future<Map<String, dynamic>?> getActiveAiApiKey() async {
-    // Mirror first — this bypasses the Firestore read quota.
     final mirrorKey = await SupabaseReadService.getActiveAiApiKey();
     if (mirrorKey != null) return mirrorKey;
-    try {
-      final snap = await firestore.collection('ai_api_keys').where('isActive', isEqualTo: true).limit(1).get();
-      if (snap.docs.isEmpty) return null;
-      return {'id': snap.docs.first.id, ...snap.docs.first.data()};
-    } catch (_) {
-      return null;
-    }
+    return null;
   }
 
   static const String _mirrorSyncEndpoint = 'https://prepora-web.vercel.app/api/sync-mirror';
@@ -1127,18 +1006,7 @@ class FirebaseService {
   /// Never throws. Plain values only (no FieldValue/Timestamp sentinels).
   static Future<void> _mirrorWrite(String table, String id, Map<String, dynamic> data, {bool? delete}) async {
     try {
-      await http
-          .post(
-            Uri.parse(_mirrorSyncEndpoint),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode({
-              'table': table,
-              'id': id,
-              'data': data,
-              if (delete == true) 'delete': true,
-            }),
-          )
-          .timeout(const Duration(seconds: 10));
+      await SupabaseReadService.writeToAll(table, id, data, delete: delete == true);
     } catch (_) {}
   }
 
@@ -1175,13 +1043,7 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getWebSession(sessionId);
       if (mirror != null) return mirror;
     } catch (_) {}
-    try {
-      final doc = await firestore.collection('web_sessions').doc(sessionId).get();
-      if (!doc.exists) return null;
-      return {'id': doc.id, ...(doc.data() ?? {})};
-    } catch (_) {
-      return null;
-    }
+    return null;
   }
 
   /// Mirror-first list of a user's connected web sessions.
@@ -1190,32 +1052,17 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getConnectedSessions(uid);
       if (mirror != null) return mirror;
     } catch (_) {}
-    try {
-      final snap = await firestore
-          .collection('web_sessions')
-          .where('uid', isEqualTo: uid)
-          .where('status', isEqualTo: 'connected')
-          .get();
-      return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
-    } catch (_) {
-      return [];
-    }
+    return [];
   }
 
-  /// Marks every connected web session of [uid] as disconnected in Firestore
-  /// AND the mirror (so other tabs / the admin panel detect it immediately).
+  /// Marks every connected web session of [uid] as disconnected in
+  /// the mirror (so other tabs / the admin panel detect it immediately).
   static Future<void> disconnectWebSessions(String uid) async {
     final sessions = await getConnectedSessions(uid);
     final now = DateTime.now();
     for (final s in sessions) {
       final id = s['id'] as String?;
       if (id == null || id.isEmpty) continue;
-      try {
-        await firestore.collection('web_sessions').doc(id).update({
-          'status': 'disconnected',
-          'disconnectedAt': Timestamp.fromDate(now),
-        });
-      } catch (_) {}
       await mirrorWebSession(id, {'status': 'disconnected', 'disconnectedAt': now.toIso8601String()});
     }
   }
@@ -1227,7 +1074,7 @@ class FirebaseService {
     required String apiKey,
     required String model,
     List<String>? models,
-    bool isActive = true,
+    bool isActive = false,
   }) async {
     final data = <String, dynamic>{
       'name': name.trim(),
@@ -1236,58 +1083,58 @@ class FirebaseService {
       'apiKey': apiKey.trim(),
       'model': model.trim(),
       'isActive': isActive,
+      'createdAt': DateTime.now().toIso8601String(),
     };
     if (models != null && models.isNotEmpty) {
       data['models'] = models.map((m) => m.trim()).where((m) => m.isNotEmpty).toList();
     }
-    final doc = await firestore.collection('ai_api_keys').add({
-      ...data,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-    if (isActive) {
-      final snap = await firestore.collection('ai_api_keys').get();
-      final batch = firestore.batch();
-      for (final d in snap.docs) {
-        if (d.id != doc.id) batch.update(d.reference, {'isActive': false});
-      }
-      await batch.commit();
-    }
-    await _mirrorAiApiKey(id: doc.id, data: data, isActive: isActive);
-    return doc.id;
+    final docId = 'aik_${DateTime.now().millisecondsSinceEpoch}';
+    await _mirrorWrite('ai_api_keys', docId, data);
+    await _mirrorAiApiKey(id: docId, data: data, isActive: isActive);
+    return docId;
   }
 
   static Future<void> updateAiApiKey(String id, {String? name, String? provider, String? baseUrl, String? apiKey, String? model, List<String>? models, bool? isActive}) async {
-    if (isActive == true) {
-      final snap = await firestore.collection('ai_api_keys').get();
-      final batch = firestore.batch();
-      for (final doc in snap.docs) {
-        if (doc.id != id) {
-          batch.update(doc.reference, {'isActive': false});
-        } else {
-          batch.update(doc.reference, {'isActive': true});
-        }
-      }
-      await batch.commit();
-    } else if (isActive == false) {
-      await firestore.collection('ai_api_keys').doc(id).update({'isActive': false});
-    }
-    final data = <String, dynamic>{};
+    // Read existing data first to prevent JSONB overwrite
+    Map<String, dynamic>? existing;
+    try { existing = await SupabaseReadService.getAiApiKeyById(id); } catch (_) {}
+    final data = Map<String, dynamic>.from(existing ?? {});
     if (name != null) data['name'] = name.trim();
     if (provider != null) data['provider'] = provider.trim();
     if (baseUrl != null) data['baseUrl'] = baseUrl.trim();
     if (apiKey != null) data['apiKey'] = apiKey.trim();
     if (model != null) data['model'] = model.trim();
     if (models != null) data['models'] = models.map((m) => m.trim()).where((m) => m.isNotEmpty).toList();
+    if (isActive != null) data['isActive'] = isActive;
     if (data.isNotEmpty) {
-      await firestore.collection('ai_api_keys').doc(id).update(data);
+      await _mirrorWrite('ai_api_keys', id, data);
       await _mirrorAiApiKey(id: id, data: data, isActive: isActive);
-    } else if (isActive != null) {
-      await _mirrorAiApiKey(id: id, data: const {}, isActive: isActive);
+      if (isActive == true) await _deactivateOtherAiApiKeys(id);
     }
   }
 
+  static Future<void> _deactivateOtherAiApiKeys(String exceptId) async {
+    try {
+      final keys = await SupabaseReadService.getAiApiKeys();
+      if (keys == null) return;
+      for (final k in keys) {
+        final kid = k['id'] as String?;
+        if (kid == null || kid == exceptId) continue;
+        if (k['isActive'] == true) {
+          // Read existing data first to preserve all fields
+          Map<String, dynamic>? existing;
+          try { existing = await SupabaseReadService.getAiApiKeyById(kid); } catch (_) {}
+          final merged = Map<String, dynamic>.from(existing ?? k);
+          merged['isActive'] = false;
+          await _mirrorWrite('ai_api_keys', kid, merged);
+          await _mirrorAiApiKey(id: kid, data: merged, isActive: false);
+        }
+      }
+    } catch (_) {}
+  }
+
   static Future<void> deleteAiApiKey(String id) async {
-    await firestore.collection('ai_api_keys').doc(id).delete();
+    await _mirrorWrite('ai_api_keys', id, const {}, delete: true);
     try {
       await http
           .post(
@@ -1300,13 +1147,12 @@ class FirebaseService {
   }
 
   static Future<Map<String, dynamic>> retryBucketCreation(String accountId) async {
-    final doc = await firestore.collection('supabase_accounts').doc(accountId).get();
-    if (!doc.exists) return {'status': 'error', 'error': 'Account not found'};
-    final data = doc.data()!;
-    final projectUrl = data['projectUrl'] as String;
-    final serviceKey = data['serviceRoleKey'] as String;
+    final existing = await SupabaseReadService.getSettings(accountId);
+    if (existing == null) return {'status': 'error', 'error': 'Account not found'};
+    final projectUrl = existing['projectUrl'] as String;
+    final serviceKey = existing['serviceRoleKey'] as String;
     final result = await _autoCreateBuckets(projectUrl, serviceKey);
-    await firestore.collection('supabase_accounts').doc(accountId).update({
+    await _mirrorWrite('settings', accountId, {
       'bucketStatus': result['status'],
       'failedBuckets': result['failedBuckets'],
     });
@@ -1370,20 +1216,18 @@ class FirebaseService {
   }
 
   static Future<String> _uploadToAssistantCloudinary(String assistantUid, Uint8List bytes, String filename) async {
-    final snap = await firestore
-        .collection('assistant_cloudinary')
-        .where('assistantUid', isEqualTo: assistantUid)
-        .where('isActive', isEqualTo: true)
-        .limit(1)
-        .get();
-
-    if (snap.docs.isEmpty) {
+    List<Map<String, dynamic>>? accounts;
+    try { accounts = await SupabaseReadService.getAssistantCloudinaryAccounts(); } catch (_) {}
+    final match = accounts?.firstWhere(
+      (a) => a['assistantUid'] == assistantUid && a['isActive'] == true,
+      orElse: () => {},
+    );
+    if (match == null || match.isEmpty) {
       return await uploadToCloudinary(bytes, filename);
     }
 
-    final data = snap.docs.first.data();
-    final cloudName = data['cloudName'] as String;
-    final uploadPreset = data['uploadPreset'] as String;
+    final cloudName = match['cloudName'] as String;
+    final uploadPreset = match['uploadPreset'] as String;
 
     final uri = Uri.parse('https://api.cloudinary.com/v1_1/$cloudName/raw/upload');
     final request = http.MultipartRequest('POST', uri);
@@ -1412,35 +1256,12 @@ class FirebaseService {
   // ─── Folders ───────────────────────────────────────────────────────────────────
 
   static Stream<QuerySnapshot> getAllFolders() {
-    // Mirror-first (zero Firestore reads). When the mirror is empty — because a
-    // backfill hasn't run yet — fall back to Firestore once so the real folder
-    // list still appears the moment Firestore reads are available again.
-    return SupabaseReadService.streamFolders().asyncExpand((rows) async* {
-      if (rows.isNotEmpty) {
-        yield _MirrorQuerySnapshot(rows);
-        return;
-      }
-      try {
-        final snap = await firestore.collection('folders').orderBy('createdAt', descending: false).get();
-        if (snap.docs.isNotEmpty) yield snap;
-      } catch (_) {}
-    });
+    return SupabaseReadService.streamFolders().map((rows) => _MirrorQuerySnapshot(rows));
   }
 
   static Future<String?> createRootFolder({required String name, String? icon, String? color}) async {
-    final doc = await firestore.collection('folders').add({
-      'name': name,
-      'icon': icon ?? 'folder',
-      'color': color ?? '#4A148C',
-      'item_count': 0,
-      'locked': false,
-      'invisible': false,
-      'updating': false,
-      'group_link': null,
-      'sort_order': 0,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-    await _mirrorWrite('folders', doc.id, {
+    final docId = 'fo_${DateTime.now().millisecondsSinceEpoch}';
+    await _mirrorWrite('folders', docId, {
       'name': name,
       'icon': icon ?? 'folder',
       'color': color ?? '#4A148C',
@@ -1452,27 +1273,22 @@ class FirebaseService {
       'sort_order': 0,
       'createdAt': DateTime.now().toIso8601String(),
     });
-    return doc.id;
+    return docId;
   }
 
   static Future<void> renameRootFolder(String folderId, String name) async {
-    await firestore.collection('folders').doc(folderId).update({'name': name});
     await _mirrorWrite('folders', folderId, {'name': name});
   }
 
   static Future<void> deleteRootFolder(String folderId) async {
-    // Delete ALL contents recursively (including nested subfolders)
     await _deleteAllContentsRecursive(folderId, 'contents');
     await _deleteAllContentsRecursive(folderId, 'content');
-    await firestore.collection('folders').doc(folderId).delete();
     await _mirrorWrite('folders', folderId, const {}, delete: true);
   }
 
   static Future<void> _deleteAllContentsRecursive(String folderId, String subcollection) async {
-    final snap = await firestore.collection('folders').doc(folderId).collection(subcollection).get();
-    for (final doc in snap.docs) {
-      await doc.reference.delete();
-    }
+    // Supabase-only: bulk delete via mirror
+    await _mirrorBulk('contents', 'delete_filter', filter: {'folderId': folderId});
   }
 
   static Future<void> deleteFolder(String folderId) async {
@@ -1480,27 +1296,29 @@ class FirebaseService {
   }
 
   static Future<void> toggleFolderLock(String folderId, String field, dynamic value) async {
-    await firestore.collection('folders').doc(folderId).update({field: value});
-    await _mirrorWrite('folders', folderId, {field: value});
+    Map<String, dynamic>? existing;
+    try { existing = await SupabaseReadService.getFolder(folderId); } catch (_) {}
+    final merged = <String, dynamic>{...?existing, field: value};
+    await _mirrorWrite('folders', folderId, merged);
   }
 
   /// Async: check content-level group_link first, fall back to root folder doc.
   /// Respects [inheritGroup] flag: if false on the content doc, skip folder fallback.
   static Future<String?> getGroupLinkForLevel(String folderId, {String? parentContentId}) async {
     if (parentContentId != null && parentContentId != 'root') {
-      final contentDoc = await firestore.collection('folders').doc(folderId).collection('contents').doc(parentContentId).get();
-      if (contentDoc.exists) {
-        final data = contentDoc.data() as Map<String, dynamic>?;
-        final link = data?['group_link'] as String?;
-        final inherit = data?['inherit_group'] as bool? ?? true;
+      Map<String, dynamic>? data;
+      try { data = await SupabaseReadService.getContent(folderId, parentContentId); } catch (_) {}
+      if (data != null) {
+        final link = data['group_link'] as String?;
+        final inherit = data['inherit_group'] as bool? ?? true;
         if (link != null && link.isNotEmpty) return link;
         if (!inherit) return null;
       }
     }
-    final folderDoc = await firestore.collection('folders').doc(folderId).get();
-    if (folderDoc.exists) {
-      final data = folderDoc.data() as Map<String, dynamic>?;
-      final link = data?['group_link'] as String?;
+    Map<String, dynamic>? folderData;
+    try { folderData = await SupabaseReadService.getFolder(folderId); } catch (_) {}
+    if (folderData != null) {
+      final link = folderData['group_link'] as String?;
       if (link != null && link.isNotEmpty) return link;
     }
     return null;
@@ -1526,7 +1344,8 @@ class FirebaseService {
 
   static Future<void> setGroupLink(String folderId, String link, {String? parentContentId, bool inheritGroup = true}) async {
     if (parentContentId != null && parentContentId != 'root') {
-      await firestore.collection('folders').doc(folderId).collection('contents').doc(parentContentId).update({
+      await _mirrorWrite('contents', parentContentId, {
+        'folderId': folderId,
         'group_link': link,
         'inherit_group': inheritGroup,
       });
@@ -1534,7 +1353,7 @@ class FirebaseService {
         await _propagateAllDescendants(folderId, parentContentId, link, true);
       }
     } else {
-      await firestore.collection('folders').doc(folderId).update({
+      await _mirrorWrite('folders', folderId, {
         'group_link': link,
         'inherit_group': inheritGroup,
       });
@@ -1546,9 +1365,11 @@ class FirebaseService {
 
   static Future<void> removeGroupLink(String folderId, {String? parentContentId}) async {
     if (parentContentId != null && parentContentId != 'root') {
-      final doc = await firestore.collection('folders').doc(folderId).collection('contents').doc(parentContentId).get();
-      final inherit = (doc.data() as Map<String, dynamic>?)?['inherit_group'] as bool? ?? true;
-      await firestore.collection('folders').doc(folderId).collection('contents').doc(parentContentId).update({
+      Map<String, dynamic>? data;
+      try { data = await SupabaseReadService.getContent(folderId, parentContentId); } catch (_) {}
+      final inherit = data?['inherit_group'] as bool? ?? true;
+      await _mirrorWrite('contents', parentContentId, {
+        'folderId': folderId,
         'group_link': null,
         'inherit_group': true,
       });
@@ -1556,9 +1377,10 @@ class FirebaseService {
         await _propagateAllDescendants(folderId, parentContentId, null, true);
       }
     } else {
-      final folderDoc = await firestore.collection('folders').doc(folderId).get();
-      final inherit = (folderDoc.data() as Map<String, dynamic>?)?['inherit_group'] as bool? ?? true;
-      await firestore.collection('folders').doc(folderId).update({
+      Map<String, dynamic>? folderData;
+      try { folderData = await SupabaseReadService.getFolder(folderId); } catch (_) {}
+      final inherit = folderData?['inherit_group'] as bool? ?? true;
+      await _mirrorWrite('folders', folderId, {
         'group_link': null,
         'inherit_group': true,
       });
@@ -1569,134 +1391,52 @@ class FirebaseService {
   }
 
   static Future<void> _propagateAllDescendants(String folderId, String? startParentId, String? link, bool inheritGroup) async {
-    final allDocs = await firestore
-        .collection('folders').doc(folderId)
-        .collection('contents')
-        .get();
-    if (allDocs.docs.isEmpty) return;
-    final docMap = <String, Map<String, dynamic>>{};
-    final parentMap = <String?, List<String>>{};
-    for (final doc in allDocs.docs) {
-      docMap[doc.id] = doc.data();
-      final pid = doc.data()['parentContentId'] as String?;
-      parentMap.putIfAbsent(pid, () => []).add(doc.id);
-    }
-    final toUpdate = <String>{};
-    void collectDescendants(String id) {
-      final children = parentMap[id];
-      if (children == null) return;
-      for (final childId in children) {
-        if (toUpdate.add(childId)) {
-          collectDescendants(childId);
-        }
-      }
-    }
-    if (startParentId == null) {
-      for (final entry in parentMap.entries) {
-        if (entry.key != null) {
-          for (final childId in entry.value) {
-            if (toUpdate.add(childId)) {
-              collectDescendants(childId);
-            }
-          }
-        }
-      }
-    } else {
-      collectDescendants(startParentId);
-    }
-    if (toUpdate.isEmpty) return;
-    final batch = firestore.batch();
-    for (final id in toUpdate) {
-      batch.update(
-        firestore.collection('folders').doc(folderId).collection('contents').doc(id),
-        {'group_link': link, 'inherit_group': inheritGroup},
-      );
-    }
-    await batch.commit();
+    // Supabase-only: bulk update descendants via mirror
+    await _mirrorBulk('contents', 'update_filter', filter: {
+      'folderId': folderId,
+      'group_link': link,
+      'inherit_group': inheritGroup,
+    });
   }
 
   // ─── Folder Contents ───────────────────────────────────────────────────────────
 
   static Stream<QuerySnapshot> getContentsForFolder(String folderId) {
-    // Mirror-first; fall back to Firestore once when the mirror is empty so a
-    // folder whose contents weren't backfilled still shows its real items.
-    return SupabaseReadService.streamContents(folderId).asyncExpand((rows) async* {
-      if (rows.isNotEmpty) {
-        yield _MirrorQuerySnapshot(rows);
-        return;
-      }
-      try {
-        final snap = await firestore
-            .collection('folders')
-            .doc(folderId)
-            .collection('contents')
-            .orderBy('createdAt', descending: false)
-            .get();
-        if (snap.docs.isNotEmpty) yield snap;
-      } catch (_) {}
-    });
+    return SupabaseReadService.streamContents(folderId).map((rows) => _MirrorQuerySnapshot(rows));
   }
 
   static Future<String?> addFolderContent(String folderId, Map<String, dynamic> data) async {
-    final doc = await firestore.collection('folders').doc(folderId).collection('contents').add({
-      'createdAt': FieldValue.serverTimestamp(),
-      ...data,
-    });
-    await firestore.collection('folders').doc(folderId).update({'item_count': FieldValue.increment(1)});
-    await _mirrorWrite('contents', doc.id, {
+    final docId = 'fc_${DateTime.now().millisecondsSinceEpoch}';
+    await _mirrorWrite('contents', docId, {
       'folderId': folderId,
       ...data,
       'createdAt': DateTime.now().toIso8601String(),
     });
-    return doc.id;
+    return docId;
   }
 
   static Future<void> renameFolderContent(String folderId, String contentId, String name) async {
-    await firestore.collection('folders').doc(folderId).collection('contents').doc(contentId).update({'name': name});
     await _mirrorWrite('contents', contentId, {'folderId': folderId, 'name': name});
   }
 
   static Future<void> deleteFolderContent(String folderId, String contentId) async {
-    // Check if it's a subfolder — delete all children recursively
-    final contentDoc = await firestore.collection('folders').doc(folderId).collection('contents').doc(contentId).get();
-    if (contentDoc.exists) {
-      final data = contentDoc.data() as Map<String, dynamic>?;
-      if (data != null && data['type'] == 'subfolder') {
-        await _deleteSubfolderChildrenRecursive(folderId, contentId, 'contents');
-        await _deleteSubfolderChildrenRecursive(folderId, contentId, 'content');
-      }
-    }
-    await firestore.collection('folders').doc(folderId).collection('contents').doc(contentId).delete();
-    await firestore.collection('folders').doc(folderId).update({'item_count': FieldValue.increment(-1)});
     await _mirrorWrite('contents', contentId, const {}, delete: true);
   }
 
   static Future<void> _deleteSubfolderChildrenRecursive(String folderId, String parentContentId, String subcollection) async {
-    final snap = await firestore.collection('folders').doc(folderId).collection(subcollection)
-        .where('parentContentId', isEqualTo: parentContentId).get();
-    for (final doc in snap.docs) {
-      final data = doc.data() as Map<String, dynamic>;
-      if (data['type'] == 'subfolder') {
-        await _deleteSubfolderChildrenRecursive(folderId, doc.id, subcollection);
-      }
-      await doc.reference.delete();
-    }
+    await _mirrorBulk('contents', 'delete_filter', filter: {'folderId': folderId, 'parentContentId': parentContentId});
   }
 
   static Future<void> updateContentField(String folderId, String contentId, String field, dynamic value) async {
-    await firestore.collection('folders').doc(folderId).collection('contents').doc(contentId).update({field: value});
-    await _mirrorWrite('contents', contentId, {'folderId': folderId, field: value});
+    Map<String, dynamic>? existing;
+    try { existing = await SupabaseReadService.getContent(folderId, contentId); } catch (_) {}
+    final merged = <String, dynamic>{...?existing, field: value, 'folderId': folderId};
+    await _mirrorWrite('contents', contentId, merged);
   }
 
   static Future<void> grantContentAccess(String uid, String folderId, String contentId, String name) async {
-    final doc = await firestore.collection('content_Assistant_access').add({
-      'content_id': contentId,
-      'folder_id': folderId,
-      'user_id': uid,
-      'name': name,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-    await _mirrorWrite('content_assistant_access', doc.id, {
+    final docId = 'ca_${DateTime.now().millisecondsSinceEpoch}';
+    await _mirrorWrite('content_assistant_access', docId, {
       'userId': uid,
       'folderId': folderId,
       'contentId': contentId,
@@ -1706,16 +1446,6 @@ class FirebaseService {
   }
 
   static Future<void> revokeContentAccess(String uid, String folderId, String contentId) async {
-    try {
-      final snap = await firestore
-          .collection('content_Assistant_access')
-          .where('content_id', isEqualTo: contentId)
-          .where('user_id', isEqualTo: uid)
-          .get();
-      for (final d in snap.docs) {
-        await d.reference.delete();
-      }
-    } catch (_) {}
     await _mirrorBulk('content_assistant_access', 'delete_filter', filter: {'user_id': uid, 'content_id': contentId});
   }
 
@@ -1735,22 +1465,24 @@ class FirebaseService {
         final fileName = 'notices/${DateTime.now().millisecondsSinceEpoch}.$ext';
         supabaseUrl = await uploadFileToSupabase('notices', fileName, file);
       }
-      final doc = await firestore.collection('notices').add({
+      final docId = 'nt_${DateTime.now().millisecondsSinceEpoch}';
+      await _mirrorWrite('notices', docId, {
         'title': title,
         'fileUrl': supabaseUrl,
         'fileType': fileType,
-        'createdAt': FieldValue.serverTimestamp(),
+        'createdAt': DateTime.now().toIso8601String(),
       });
-      return doc.id;
+      return docId;
     } catch (e) {
       // Fallback: just save the text notice without file
-      final doc = await firestore.collection('notices').add({
+      final docId = 'nt_${DateTime.now().millisecondsSinceEpoch}';
+      await _mirrorWrite('notices', docId, {
         'title': title,
         'fileUrl': null,
         'fileType': 'text',
-        'createdAt': FieldValue.serverTimestamp(),
+        'createdAt': DateTime.now().toIso8601String(),
       });
-      return doc.id;
+      return docId;
     }
   }
 
@@ -1761,32 +1493,25 @@ class FirebaseService {
   }
 
   static Future<void> markStudentNotificationsRead(String uid) async {
-    final snap = await firestore
-        .collection('notifications')
-        .where('uid', isEqualTo: uid)
-        .get();
-    final batch = firestore.batch();
-    for (final d in snap.docs) {
-      final data = d.data();
-      if (data['read'] == false) {
-        batch.update(d.reference, {'read': true});
+    List<Map<String, dynamic>>? unread;
+    try { unread = await SupabaseReadService.getUnreadNotificationsForUser(uid); } catch (_) {}
+    if (unread != null && unread.isNotEmpty) {
+      for (final row in unread) {
+        final id = row['id'] as String?;
+        if (id != null && id.isNotEmpty) {
+          await _mirrorWrite('notifications', id, {
+            ...row,
+            'read': true,
+          });
+        }
       }
     }
-    await batch.commit();
   }
 
   // ─── Admin Notifications ───────────────────────────────────────────────────────
 
   static Future<void> addAdminNotification(String type, String message, {String? relatedUid}) async {
     final id = 'n${DateTime.now().millisecondsSinceEpoch}';
-    final data = {
-      'type': type,
-      'message': message,
-      'relatedUid': relatedUid,
-      'read': false,
-      'createdAt': FieldValue.serverTimestamp(),
-    };
-    await firestore.collection('admin_notifications').doc(id).set(data);
     await _mirrorWrite('admin_notifications', id, {
       'type': type,
       'message': message,
@@ -1805,32 +1530,33 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getAdminUnreadCount();
       if (mirror >= 0) return mirror;
     } catch (_) {}
-    final snap = await firestore.collection('admin_notifications').where('read', isEqualTo: false).get();
-    return snap.docs.length;
+    return 0;
   }
 
   static Future<void> markAdminNotificationsRead() async {
     try {
-      final snap = await firestore.collection('admin_notifications').where('read', isEqualTo: false).get();
-      final batch = firestore.batch();
-      for (final d in snap.docs) {
-        batch.update(d.reference, {'read': true});
+      List<Map<String, dynamic>>? unread;
+      try { unread = await SupabaseReadService.getUnreadAdminNotifications(); } catch (_) {}
+      if (unread != null && unread.isNotEmpty) {
+        for (final row in unread) {
+          final id = row['id'] as String?;
+          if (id != null && id.isNotEmpty) {
+            await _mirrorWrite('admin_notifications', id, {
+              ...row,
+              'read': true,
+            });
+          }
+        }
       }
-      await batch.commit();
     } catch (_) {}
-    await _mirrorBulk('admin_notifications', 'mark_all_read');
   }
 
   static Future<void> clearAdminNotifications() async {
-    try {
-      final snap = await firestore.collection('admin_notifications').get();
-      final batch = firestore.batch();
-      for (final d in snap.docs) {
-        batch.delete(d.reference);
-      }
-      await batch.commit();
-    } catch (_) {}
-    await _mirrorBulk('admin_notifications', 'clear');
+    await SupabaseReadService.clearNonLoginAdminNotifications();
+  }
+
+  static Future<void> clearLoginNotifications() async {
+    await SupabaseReadService.clearLoginNotifications();
   }
 
   // ─── Login Tracking & Auto-Block ──────────────────────────────────────────────
@@ -1852,20 +1578,23 @@ class FirebaseService {
           deviceModel = '${info.manufacturer} ${info.model}';
         } catch (_) {}
       }
-      await firestore.collection('login_attempts').add({
+      final docId = 'la_${DateTime.now().millisecondsSinceEpoch}';
+      await _mirrorWrite('login_attempts', docId, {
         'uid': uid,
         'deviceId': deviceId,
         'deviceModel': deviceModel,
         'timestamp': iso,
-        'createdAt': Timestamp.fromDate(now),
+        'createdAt': DateTime.now().toIso8601String(),
       });
       try {
-        await firestore.collection('login_history').doc(uid).collection('logins').add({
-          'timestamp': Timestamp.fromDate(now),
+        final loginHistoryData = {
+          'uid': uid,
+          'timestamp': DateTime.now().toIso8601String(),
           'device': deviceModel,
           'deviceId': deviceId,
           'ip': '',
-        });
+        };
+        await _mirrorWrite('login_history', '${uid}_${now.millisecondsSinceEpoch}', loginHistoryData);
       } catch (_) {}
     } catch (_) {}
   }
@@ -1876,17 +1605,13 @@ class FirebaseService {
       try {
         data = await SupabaseReadService.getUser(uid);
       } catch (_) {}
-      if (data == null) {
-        final doc = await firestore.collection('users').doc(uid).get();
-        if (!doc.exists) return;
-        data = doc.data() as Map<String, dynamic>;
-      }
-      final lastActive = data['lastActiveDate'] as String?;
+      if (data == null) return;
+      final lastActive = (data['lastActiveDate'] as String?) ?? (data['last_active_date'] as String?) ?? '';
       final today = DateTime.now();
       final todayStr = '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
       if (lastActive == todayStr) return;
 
-      int streak = data['streakCount'] as int? ?? 0;
+      int streak = (data['streakCount'] as int?) ?? (data['streak_count'] as int?) ?? (data['streak'] as int?) ?? 0;
       final yesterday = today.subtract(const Duration(days: 1));
       final yesterdayStr = '${yesterday.year}-${yesterday.month.toString().padLeft(2, '0')}-${yesterday.day.toString().padLeft(2, '0')}';
 
@@ -1895,13 +1620,23 @@ class FirebaseService {
       } else {
         streak = 1;
       }
-      final totalDays = data['totalActiveDays'] as int? ?? 0;
-      await firestore.collection('users').doc(uid).update({
+      final totalDays = (data['totalActiveDays'] as int?) ?? (data['total_active_days'] as int?) ?? 0;
+      int streakBest = (data['streakBest'] as int?) ?? (data['streak_best'] as int?) ?? 0;
+      if (streak > streakBest) streakBest = streak;
+      // Read existing JSONB data so we don't destroy name/email/etc
+      Map<String, dynamic>? existingData;
+      try {
+        existingData = await SupabaseReadService.readPrimary('users', uid);
+      } catch (_) {}
+      final mergedData = <String, dynamic>{
+        if (existingData != null) ...existingData,
         'lastActiveDate': todayStr,
         'streakCount': streak,
         'totalActiveDays': totalDays + 1,
-        'lastLogin': Timestamp.fromDate(today),
-      });
+        'streakBest': streakBest,
+        'lastLogin': today.toIso8601String(),
+      };
+      await _mirrorWrite('users', uid, mergedData);
     } catch (_) {}
   }
 
@@ -1909,33 +1644,30 @@ class FirebaseService {
     try {
       final mirror = await SupabaseReadService.getUser(uid);
       if (mirror != null) {
+        final lastActive = (mirror['lastActiveDate'] as String?) ?? (mirror['last_active_date'] as String?) ?? '';
+        int streakCount = (mirror['streakCount'] as int?) ?? (mirror['streak_count'] as int?) ?? (mirror['streak'] as int?) ?? 0;
+        final today = DateTime.now();
+        final todayStr = '${today.year}-${today.month.toString().padLeft(2, '0')}-${today.day.toString().padLeft(2, '0')}';
+        final yesterday = today.subtract(const Duration(days: 1));
+        final yesterdayStr = '${yesterday.year}-${yesterday.month.toString().padLeft(2, '0')}-${yesterday.day.toString().padLeft(2, '0')}';
+        if (lastActive != todayStr && lastActive != yesterdayStr) {
+          streakCount = 0;
+        }
         return {
-          'streakCount': mirror['streakCount'] as int? ?? 0,
-          'totalActiveDays': mirror['totalActiveDays'] as int? ?? 0,
-          'lastActiveDate': mirror['lastActiveDate'] as String? ?? '',
+          'streakCount': streakCount,
+          'totalActiveDays': (mirror['totalActiveDays'] as int?) ?? (mirror['total_active_days'] as int?) ?? 0,
+          'lastActiveDate': lastActive,
         };
       }
     } catch (_) {}
-    try {
-      final doc = await firestore.collection('users').doc(uid).get();
-      if (!doc.exists) return {'streakCount': 0, 'totalActiveDays': 0};
-      final data = doc.data() as Map<String, dynamic>;
-      return {
-        'streakCount': data['streakCount'] as int? ?? 0,
-        'totalActiveDays': data['totalActiveDays'] as int? ?? 0,
-        'lastActiveDate': data['lastActiveDate'] as String? ?? '',
-      };
-    } catch (_) {
-      return {'streakCount': 0, 'totalActiveDays': 0};
-    }
+    return {'streakCount': 0, 'totalActiveDays': 0};
   }
 
   static Future<bool> _isAnyAncestorRestricted(String folderId, String? contentId) async {
     if (contentId == null) return false;
     try {
-      final doc = await firestore.collection('folders').doc(folderId).collection('contents').doc(contentId).get();
-      if (!doc.exists) return false;
-      final data = doc.data() as Map<String, dynamic>?;
+      Map<String, dynamic>? data;
+      try { data = await SupabaseReadService.getContent(folderId, contentId); } catch (_) {}
       if (data == null) return false;
       final locked = data['locked'] as bool? ?? false;
       final invisible = data['invisible'] as bool? ?? false;
@@ -1957,15 +1689,13 @@ class FirebaseService {
       if (locked || updating || invisible) return true;
     }
     if (folderId != null) {
-      final folderDoc = await firestore.collection('folders').doc(folderId).get();
-      if (folderDoc.exists) {
-        final folderData = folderDoc.data() as Map<String, dynamic>?;
-        if (folderData != null) {
-          final folderLocked = folderData['locked'] as bool? ?? false;
-          final folderInvisible = folderData['invisible'] as bool? ?? false;
-          final folderUpdating = folderData['updating'] as bool? ?? false;
-          if (folderLocked || folderInvisible || folderUpdating) return true;
-        }
+      Map<String, dynamic>? folderData;
+      try { folderData = await SupabaseReadService.getFolder(folderId); } catch (_) {}
+      if (folderData != null) {
+        final folderLocked = folderData['locked'] as bool? ?? false;
+        final folderInvisible = folderData['invisible'] as bool? ?? false;
+        final folderUpdating = folderData['updating'] as bool? ?? false;
+        if (folderLocked || folderInvisible || folderUpdating) return true;
       }
       if (parentContentId != null) {
         if (await _isAnyAncestorRestricted(folderId, parentContentId)) return true;
@@ -1976,52 +1706,63 @@ class FirebaseService {
 
   static Future<String?> addNotification(String message, {String? folderId, String? parentContentId, Map<String, dynamic>? contentData}) async {
     if (await _isNotificationBlocked(folderId, parentContentId, contentData)) return null;
-    final users = await firestore.collection('users').get();
-    final batch = firestore.batch();
-    for (final u in users.docs) {
-      final ref = firestore.collection('notifications').doc();
-      batch.set(ref, {
-        'uid': u.id,
-        'message': message,
-        'folderId': folderId,
-        'read': false,
-        'createdAt': FieldValue.serverTimestamp(),
-        'type': folderId != null ? 'folder_update' : 'general',
-      });
+    List<Map<String, dynamic>>? users;
+    try { users = await SupabaseReadService.getAllUsers(); } catch (_) {}
+    final mirrorWrites = <Future>[];
+    if (users != null && users.isNotEmpty) {
+      for (final u in users) {
+        final uid = u['id'] as String? ?? '';
+        if (uid.isEmpty) continue;
+        final notifId = 'nf_${DateTime.now().millisecondsSinceEpoch}_$uid';
+        mirrorWrites.add(_mirrorWrite('notifications', notifId, {
+          'uid': uid,
+          'message': message,
+          'folderId': folderId,
+          'read': false,
+          'createdAt': DateTime.now().toIso8601String(),
+          'type': folderId != null ? 'folder_update' : 'general',
+        }));
+      }
     }
-    await batch.commit();
+    try { await Future.wait(mirrorWrites); } catch (_) {}
     return 'batch';
   }
 
   static Future<String?> addTargetedNotification(String uid, String message, {String? folderId, String? parentContentId, Map<String, dynamic>? contentData}) async {
     if (await _isNotificationBlocked(folderId, parentContentId, contentData)) return null;
-    final doc = await firestore.collection('notifications').add({
+    final docId = 'tn_${DateTime.now().millisecondsSinceEpoch}';
+    await _mirrorWrite('notifications', docId, {
       'uid': uid,
       'message': message,
       'read': false,
-      'createdAt': FieldValue.serverTimestamp(),
+      'createdAt': DateTime.now().toIso8601String(),
       'type': 'targeted',
     });
-    return doc.id;
+    return docId;
   }
 
   /// Broadcasts a notification to every student (role == 'student').
   static Future<int> addNotificationToAllStudents(String message) async {
-    final users = await firestore.collection('users').where('role', isEqualTo: 'student').get();
-    final batch = firestore.batch();
+    List<Map<String, dynamic>>? students;
+    try { students = await SupabaseReadService.getUsersByRole('student'); } catch (_) {}
+    final mirrorWrites = <Future>[];
     int count = 0;
-    for (final u in users.docs) {
-      final ref = firestore.collection('notifications').doc();
-      batch.set(ref, {
-        'uid': u.id,
-        'message': message,
-        'read': false,
-        'createdAt': FieldValue.serverTimestamp(),
-        'type': 'general',
-      });
-      count++;
+    if (students != null && students.isNotEmpty) {
+      for (final s in students) {
+        final uid = s['id'] as String? ?? '';
+        if (uid.isEmpty) continue;
+        final notifId = 'sn_${DateTime.now().millisecondsSinceEpoch}_$uid';
+        mirrorWrites.add(_mirrorWrite('notifications', notifId, {
+          'uid': uid,
+          'message': message,
+          'read': false,
+          'createdAt': DateTime.now().toIso8601String(),
+          'type': 'general',
+        }));
+        count++;
+      }
     }
-    if (count > 0) await batch.commit();
+    try { await Future.wait(mirrorWrites); } catch (_) {}
     return count;
   }
 
@@ -2033,21 +1774,28 @@ class FirebaseService {
     required String type,
     required String folderPath,
   }) async {
-    final doc = await firestore.collection('student_activities').add({
+    final docId = 'sa_${DateTime.now().millisecondsSinceEpoch}';
+    await _mirrorWrite('student_activities', docId, {
       'uid': uid,
       'name': name,
       'type': type,
       'folderPath': folderPath,
-      'startedAt': FieldValue.serverTimestamp(),
+      'startedAt': DateTime.now().toIso8601String(),
     });
-    return doc.id;
+    return docId;
   }
 
   static Future<void> endActivity(String activityId) async {
     try {
-      await firestore.collection('student_activities').doc(activityId).update({
-        'endedAt': FieldValue.serverTimestamp(),
-      });
+      Map<String, dynamic>? existing;
+      try {
+        existing = await SupabaseReadService.readPrimary('student_activities', activityId);
+      } catch (_) {}
+      final merged = <String, dynamic>{
+        if (existing != null) ...existing,
+        'endedAt': DateTime.now().toIso8601String(),
+      };
+      await _mirrorWrite('student_activities', activityId, merged);
     } catch (_) {}
   }
 
@@ -2061,11 +1809,10 @@ class FirebaseService {
       if (mirror != null) return mirror;
     } catch (_) {}
     try {
-      final doc = await firestore.collection('users').doc(uid).get();
-      return doc.exists ? doc.data() : null;
-    } catch (_) {
-      return null;
-    }
+      final fallback = await SupabaseReadService.readPrimary('users', uid);
+      if (fallback != null) return fallback;
+    } catch (_) {}
+    return null;
   }
 
   static Future<List<Map<String, dynamic>>> getStudentFeedbacks(String uid) async {
@@ -2073,15 +1820,7 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getFeedbacksForUser(uid);
       if (mirror != null) return mirror;
     } catch (_) {}
-    try {
-      final snap = await firestore.collection('feedbacks')
-          .where('uid', isEqualTo: uid)
-          .orderBy('createdAt', descending: true)
-          .get();
-      return snap.docs.map((d) => d.data()..['id'] = d.id).toList();
-    } catch (_) {
-      return [];
-    }
+    return [];
   }
 
   // ─── Feedback ──────────────────────────────────────────────────────────────────
@@ -2098,23 +1837,25 @@ class FirebaseService {
           'message': feedback,
           'uid': currentUser?.uid ?? '',
           'student_name': currentUser?.displayName ?? '',
-          'createdAt': FieldValue.serverTimestamp(),
+          'createdAt': DateTime.now().toIso8601String(),
           'status': 'pending',
           'viewed': false,
         };
       } else if (feedback is Map<String, dynamic>) {
         data = Map.from(feedback);
-        data['createdAt'] ??= FieldValue.serverTimestamp();
+        data['createdAt'] ??= DateTime.now().toIso8601String();
         data['viewed'] ??= false;
       } else {
         return null;
       }
-      final doc = await firestore.collection('feedbacks').add(data);
-      final ticketNo = doc.id.substring(0, 6).toUpperCase();
-      await doc.update({'ticketNo': ticketNo});
+      final docId = 'fb_${DateTime.now().millisecondsSinceEpoch}';
+      final ticketNo = docId.substring(0, 6).toUpperCase();
+      final mirrorData = Map<String, dynamic>.from(data);
+      mirrorData['ticketNo'] = ticketNo;
+      await _mirrorWrite('feedbacks', docId, mirrorData);
       final name = currentUser?.displayName ?? 'Unknown';
       await addAdminNotification('feedback', 'New Contact Support message from $name', relatedUid: currentUser?.uid);
-      return doc.id;
+      return docId;
     } finally {
       _submittingFeedback = false;
     }
@@ -2125,12 +1866,7 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getFeedbacksForUser(uid);
       if (mirror != null) return mirror;
     } catch (_) {}
-    final snap = await firestore
-        .collection('feedbacks')
-        .where('uid', isEqualTo: uid)
-        .orderBy('createdAt', descending: true)
-        .get();
-    return snap.docs.map((e) => {'id': e.id, ...e.data()}).toList();
+    return [];
   }
 
   static Stream<QuerySnapshot> getAllFeedbacks() {
@@ -2138,10 +1874,7 @@ class FirebaseService {
   }
 
   static Stream<QuerySnapshot> getPendingFeedbacks() {
-    return _mirrorOrFirestore(
-      SupabaseReadService.streamPendingFeedbacks(),
-      firestoreQuery: () => firestore.collection('feedbacks').where('status', isEqualTo: 'pending').orderBy('createdAt', descending: true).get(),
-    );
+    return SupabaseReadService.streamPendingFeedbacks().map((rows) => _MirrorQuerySnapshot(rows));
   }
 
   static Future<int> getPendingFeedbackCount() async {
@@ -2149,16 +1882,15 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getPendingFeedbackCount();
       if (mirror >= 0) return mirror;
     } catch (_) {}
-    final snap = await firestore.collection('feedbacks').where('status', isEqualTo: 'pending').get();
-    return snap.docs.length;
+    return 0;
   }
 
   static Future<void> updateFeedbackStatus(String id, String status) async {
-    await firestore.collection('feedbacks').doc(id).update({'status': status});
+    await _mirrorWrite('feedbacks', id, {'status': status});
   }
 
   static Future<void> updateFeedbackReply(String id, String reply) async {
-    await firestore.collection('feedbacks').doc(id).update({'reply': reply});
+    await _mirrorWrite('feedbacks', id, {'reply': reply});
   }
 
   // ─── Notes ─────────────────────────────────────────────────────────────────────
@@ -2167,26 +1899,15 @@ class FirebaseService {
     try {
       final uid = currentUser?.uid;
       if (uid == null) return null;
-      final mirror = await SupabaseReadService.getNote(uid, lectureId);
+      final mirror = await SupabaseReadService.getNote(lectureId, uid);
       if (mirror != null) return _MirrorDocumentSnapshot(mirror);
     } catch (_) {}
-    try {
-      final uid = currentUser?.uid;
-      if (uid == null) return null;
-      return await firestore.collection('users').doc(uid).collection('notes').doc(lectureId).get();
-    } catch (_) {
-      return null;
-    }
+    return null;
   }
 
   static Future<void> saveNote(String lectureId, String content, {String? lectureName}) async {
     final uid = currentUser?.uid;
     if (uid == null) return;
-    await firestore.collection('users').doc(uid).collection('notes').doc(lectureId).set({
-      'content': content,
-      'lectureName': lectureName ?? '',
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
     await _mirrorWrite('notes', lectureId, {
       'uid': uid,
       'content': content,
@@ -2202,26 +1923,18 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getNotes(uid);
       if (mirror != null) return mirror;
     } catch (_) {}
-    final snap = await firestore
-        .collection('users')
-        .doc(uid)
-        .collection('notes')
-        .orderBy('updatedAt', descending: true)
-        .get();
-    return snap.docs.map((e) => {'id': e.id, ...e.data()}).toList();
+    return [];
   }
 
   static Future<void> deleteNote(String id) async {
     final uid = currentUser?.uid;
     if (uid == null) return;
-    await firestore.collection('users').doc(uid).collection('notes').doc(id).delete();
     await _mirrorWrite('notes', id, const {}, delete: true);
   }
 
   static Future<void> renameNote(String id, String newName) async {
     final uid = currentUser?.uid;
     if (uid == null) return;
-    await firestore.collection('users').doc(uid).collection('notes').doc(id).update({'lectureName': newName});
     await _mirrorWrite('notes', id, {'uid': uid, 'lectureName': newName});
   }
 
@@ -2236,30 +1949,12 @@ class FirebaseService {
       final map = await SupabaseReadService.getContentAccess(uid);
       if (map.isNotEmpty) return map;
     } catch (_) {}
-    final snap = await firestore
-        .collection('content_Assistant_access')
-        .where('user_id', isEqualTo: uid)
-        .get();
-    final map = <String, List<String>>{};
-    for (final d in snap.docs) {
-      final data = d.data();
-      final folderId = data['folder_id'] as String? ?? 'unknown';
-      final contentId = data['content_id'] as String?;
-      if (contentId != null) {
-        map.putIfAbsent(folderId, () => []).add(contentId);
-      }
-    }
-    return map;
+    return {};
   }
 
   static Future<void> grantAssistantAccess(String uid, String folderId, String name) async {
-    final doc = await firestore.collection('Assistant_access').add({
-      'uid': uid,
-      'folderId': folderId,
-      'name': name,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-    await _mirrorWrite('assistant_access', doc.id, {
+    final docId = 'aa_${DateTime.now().millisecondsSinceEpoch}';
+    await _mirrorWrite('assistant_access', docId, {
       'uid': uid,
       'folderId': folderId,
       'name': name,
@@ -2268,28 +1963,6 @@ class FirebaseService {
   }
 
   static Future<void> revokeAssistantAccess(String uid, String folderId) async {
-    try {
-      final snap = await firestore
-          .collection('Assistant_access')
-          .where('uid', isEqualTo: uid)
-          .where('folderId', isEqualTo: folderId)
-          .get();
-      for (final d in snap.docs) {
-        await d.reference.delete();
-      }
-    } catch (_) {}
-    // Cascade: also revoke content/subfolder access inside this folder so the
-    // assistant loses access at every level that was granted under this folder.
-    try {
-      final contentSnap = await firestore
-          .collection('content_Assistant_access')
-          .where('user_id', isEqualTo: uid)
-          .where('folder_id', isEqualTo: folderId)
-          .get();
-      for (final d in contentSnap.docs) {
-        await d.reference.delete();
-      }
-    } catch (_) {}
     await _mirrorBulk('assistant_access', 'delete_filter', filter: {'uid': uid, 'folder_id': folderId});
     await _mirrorBulk('content_assistant_access', 'delete_filter', filter: {'user_id': uid, 'folder_id': folderId});
   }
@@ -2301,11 +1974,7 @@ class FirebaseService {
         return mirror.map((e) => {'id': e['id'], 'folderId': e['folder_id'] ?? e['folderId']}).toList();
       }
     } catch (_) {}
-    final snap = await firestore
-        .collection('Assistant_access')
-        .where('uid', isEqualTo: uid)
-        .get();
-    return snap.docs.map((e) => {'id': e.id, 'folderId': e.data()['folderId']}).toList();
+    return [];
   }
 
   static Future<Set<String>> getUidsWithFolderAccess(String folderId) async {
@@ -2313,32 +1982,15 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getUidsWithFolderAccess(folderId);
       if (mirror != null) return mirror;
     } catch (_) {}
-    try {
-      final snap = await firestore
-          .collection('Assistant_access')
-          .where('folderId', isEqualTo: folderId)
-          .get();
-      return snap.docs.map((d) => d.data()['uid'] as String).toSet();
-    } catch (_) {
-      return {};
-    }
+    return {};
   }
 
   static Future<Set<String>> getUidsWithContentAccess(String folderId, String contentId) async {
     try {
-      final mirror = await SupabaseReadService.getUidsWithContentAccess(folderId, contentId);
+      final mirror = await SupabaseReadService.getUidsWithContentAccess(contentId, folderId: folderId);
       if (mirror != null) return mirror;
     } catch (_) {}
-    try {
-      final snap = await firestore
-          .collection('content_Assistant_access')
-          .where('folder_id', isEqualTo: folderId)
-          .where('content_id', isEqualTo: contentId)
-          .get();
-      return snap.docs.map((d) => d.data()['user_id'] as String).toSet();
-    } catch (_) {
-      return {};
-    }
+    return {};
   }
 
   // ─── Settings ──────────────────────────────────────────────────────────────────
@@ -2348,12 +2000,37 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getSettings('general');
       if (mirror != null) return mirror;
     } catch (_) {}
-    final snap = await firestore.collection('settings').doc('general').get();
-    return snap.data() ?? {};
+    return {};
   }
 
   static Future<void> updateSetting(String key, dynamic value) async {
-    await firestore.collection('settings').doc('general').set({key: value}, SetOptions(merge: true));
+    SupabaseReadService.invalidateSettingsCache();
+    Map<String, dynamic>? current;
+    try { current = await SupabaseReadService.readPrimary('settings', 'general'); } catch (_) {}
+    current ??= await SupabaseReadService.getSettings('general');
+    final data = Map<String, dynamic>.from(current ?? {});
+    data[key] = value;
+    // ignore: avoid_print
+    print('[UPDATE_SETTING] key=$key value=$value currentKeys=${current?.keys.toList()} writeData=$data');
+    bool writeOk = false;
+    try {
+      writeOk = await SupabaseReadService.writeToAll('settings', 'general', data);
+      // ignore: avoid_print
+      print('[UPDATE_SETTING] writeToAll completed anySuccess=$writeOk');
+    } catch (e) {
+      // ignore: avoid_print
+      print('[UPDATE_SETTING] writeToAll ERROR: $e');
+    }
+    SupabaseReadService.invalidateSettingsCache();
+    // Verify read-back
+    try {
+      final verify = await SupabaseReadService.getSettings('general');
+      // ignore: avoid_print
+      print('[UPDATE_SETTING] verify read: ${verify != null ? "key=$key=${verify[key]}" : "NULL"}');
+    } catch (e) {
+      // ignore: avoid_print
+      print('[UPDATE_SETTING] verify ERROR: $e');
+    }
   }
 
   // ─── AI Conversations ──────────────────────────────────────────────────────────
@@ -2361,17 +2038,13 @@ class FirebaseService {
   static Future<String?> createConversation(String title) async {
     final uid = currentUser?.uid;
     if (uid == null) return null;
-    final doc = await firestore
-        .collection('users')
-        .doc(uid)
-        .collection('conversations')
-        .add({'title': title, 'updatedAt': FieldValue.serverTimestamp()});
-    await _mirrorWrite('conversations', doc.id, {
+    final docId = 'conv_${DateTime.now().millisecondsSinceEpoch}';
+    await _mirrorWrite('conversations', docId, {
       'uid': uid,
       'title': title,
       'updatedAt': DateTime.now().toIso8601String(),
     });
-    return doc.id;
+    return docId;
   }
 
   static Future<List<Map<String, dynamic>>> getConversations() async {
@@ -2381,36 +2054,14 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getConversations(uid);
       if (mirror != null) return mirror;
     } catch (_) {}
-    final snap = await firestore
-        .collection('users')
-        .doc(uid)
-        .collection('conversations')
-        .orderBy('updatedAt', descending: true)
-        .get();
-    return snap.docs.map((e) => {'id': e.id, ...e.data()}).toList();
+    return [];
   }
 
   static Future<void> addMessage(String convId, String role, String content) async {
     final uid = currentUser?.uid;
     if (uid == null) return;
-    final msgRef = firestore
-        .collection('users')
-        .doc(uid)
-        .collection('conversations')
-        .doc(convId)
-        .collection('messages');
-    final msgDoc = await msgRef.add({
-      'role': role,
-      'content': content,
-      'timestamp': FieldValue.serverTimestamp(),
-    });
-    await firestore
-        .collection('users')
-        .doc(uid)
-        .collection('conversations')
-        .doc(convId)
-        .update({'updatedAt': FieldValue.serverTimestamp()});
-    await _mirrorWrite('messages', msgDoc.id, {
+    final msgId = 'msg_${DateTime.now().millisecondsSinceEpoch}';
+    await _mirrorWrite('messages', msgId, {
       'conversationId': convId,
       'uid': uid,
       'role': role,
@@ -2430,40 +2081,26 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getMessages(convId);
       if (mirror != null) return mirror;
     } catch (_) {}
-    final snap = await firestore
-        .collection('users')
-        .doc(uid)
-        .collection('conversations')
-        .doc(convId)
-        .collection('messages')
-        .orderBy('timestamp', descending: false)
-        .get();
-    return snap.docs.map((e) => {'id': e.id, ...e.data()}).toList();
+    return [];
   }
 
   static Future<void> deleteConversation(String convId) async {
     final uid = currentUser?.uid;
     if (uid == null) return;
-    await firestore.collection('users').doc(uid).collection('conversations').doc(convId).delete();
+    await _mirrorWrite('conversations', convId, {}, delete: true);
   }
 
   // ─── App Updates ───────────────────────────────────────────────────────────────
 
   /// The current app version shown in the UI (kept in sync with pubspec.yaml).
-  static const String appVersion = '12.1.7';
+  static const String appVersion = '32.1.13';
 
   static Stream<QuerySnapshot> getAppUpdates() {
-    return _mirrorOrFirestore(
-      SupabaseReadService.streamAppUpdates(),
-      firestoreQuery: () => firestore.collection('app_updates').orderBy('createdAt', descending: true).get(),
-    );
+    return SupabaseReadService.streamAppUpdates().map((rows) => _MirrorQuerySnapshot(rows));
   }
 
   static Stream<QuerySnapshot> getLoginHistory(String uid) {
-    return _mirrorOrFirestore(
-      SupabaseReadService.streamLoginHistory(uid),
-      firestoreQuery: () => firestore.collection('login_history').where('uid', isEqualTo: uid).orderBy('timestamp', descending: true).get(),
-    );
+    return SupabaseReadService.streamLoginHistory(uid).map((rows) => _MirrorQuerySnapshot(rows));
   }
 
   /// Mirror-first single-folder read (returns an adapter snapshot so callers
@@ -2473,29 +2110,11 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getFolder(folderId);
       if (mirror != null) return _MirrorDocumentSnapshot(mirror);
     } catch (_) {}
-    try {
-      return await firestore.collection('folders').doc(folderId).get();
-    } catch (_) {
-      return _MirrorDocumentSnapshot({'id': folderId});
-    }
+    return _MirrorDocumentSnapshot({'id': folderId});
   }
 
-  static Stream<QuerySnapshot> getContentsStream(String folderId) {
-    return SupabaseReadService.streamContents(folderId).asyncExpand((rows) async* {
-      if (rows.isNotEmpty) {
-        yield _MirrorQuerySnapshot(rows);
-        return;
-      }
-      try {
-        final snap = await firestore
-            .collection('folders')
-            .doc(folderId)
-            .collection('contents')
-            .orderBy('createdAt', descending: false)
-            .get();
-        if (snap.docs.isNotEmpty) yield snap;
-      } catch (_) {}
-    });
+  static Stream<QuerySnapshot> getContentsStream(String folderId, {String? parentContentId}) {
+    return SupabaseReadService.streamContents(folderId, parentContentId: parentContentId).map((rows) => _MirrorQuerySnapshot(rows));
   }
 
   static Future<Map<String, dynamic>?> getContentDoc(String folderId, String contentId) async {
@@ -2503,54 +2122,19 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getContent(folderId, contentId);
       if (mirror != null) return mirror;
     } catch (_) {}
-    try {
-      final doc = await firestore.collection('folders').doc(folderId).collection('contents').doc(contentId).get();
-      if (!doc.exists) return null;
-      return {'id': doc.id, ...(doc.data() ?? {})};
-    } catch (_) {
-      return null;
-    }
+    return null;
   }
 
   static Stream<QuerySnapshot> getLoginAttemptsForUser(String uid) {
-    return _mirrorOrFirestore(
-      SupabaseReadService.streamLoginAttemptsForUser(uid),
-      firestoreQuery: () => firestore.collection('login_attempts').where('uid', isEqualTo: uid).orderBy('timestamp', descending: true).get(),
-    );
+    return SupabaseReadService.streamLoginAttemptsForUser(uid).map((rows) => _MirrorQuerySnapshot(rows));
   }
 
   static Stream<QuerySnapshot> getWebSessionsForUser(String uid) {
-    return _mirrorOrFirestore(
-      SupabaseReadService.streamWebSessionsForUser(uid),
-      firestoreQuery: () => firestore.collection('web_sessions').where('uid', isEqualTo: uid).orderBy('timestamp', descending: true).get(),
-    );
+    return SupabaseReadService.streamWebSessionsForUser(uid).map((rows) => _MirrorQuerySnapshot(rows));
   }
 
   static Stream<QuerySnapshot> getTargetedNotificationsForUser(String uid) {
-    return _mirrorOrFirestore(
-      SupabaseReadService.streamTargetedNotificationsForUser(uid),
-      firestoreQuery: () => firestore.collection('notifications').where('uid', isEqualTo: uid).orderBy('createdAt', descending: true).get(),
-    );
-  }
-
-  /// Mirror-first stream that falls back to a real Firestore query whenever the
-  /// mirror returns EMPTY rows (e.g. a table whose backfill hasn't run yet).
-  /// Lets panels like Admin Control / Assistant access / App updates keep
-  /// working with real data the moment Firestore reads are available again.
-  static Stream<QuerySnapshot> _mirrorOrFirestore(
-    Stream<List<Map<String, dynamic>>> mirror, {
-    required Future<QuerySnapshot> Function() firestoreQuery,
-  }) async* {
-    await for (final rows in mirror) {
-      if (rows.isNotEmpty) {
-        yield _MirrorQuerySnapshot(rows);
-        continue;
-      }
-      try {
-        final snap = await firestoreQuery();
-        if (snap.docs.isNotEmpty) yield snap;
-      } catch (_) {}
-    }
+    return SupabaseReadService.streamTargetedNotificationsForUser(uid).map((rows) => _MirrorQuerySnapshot(rows));
   }
 }
 

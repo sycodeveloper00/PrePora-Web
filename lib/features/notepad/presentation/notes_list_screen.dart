@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/services/firebase_service.dart';
 import '../../../core/widgets/professional_loader.dart';
@@ -71,7 +70,8 @@ class _NotesListScreenState extends State<NotesListScreen> {
                     final lectureName = note['lectureName'] as String? ?? 'Unknown Lecture';
                     final content = note['content'] as String? ?? '';
                     final preview = content.length > 100 ? '${content.substring(0, 100)}...' : content;
-                    final time = (note['updatedAt'] as Timestamp?)?.toDate();
+                    final timeStrRaw = note['updatedAt'] as String?;
+                    final time = timeStrRaw != null ? DateTime.tryParse(timeStrRaw) : null;
                     final timeStr = time != null ? '${time.day}/${time.month}/${time.year} ${time.hour}:${time.minute.toString().padLeft(2, '0')}' : '';
                     return Card(
                       color: isDark ? const Color(0xFF1A0533) : Colors.white,
