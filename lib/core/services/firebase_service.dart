@@ -64,6 +64,8 @@ class FirebaseService {
 
   static fb_auth.User? get currentUser => fb_auth.FirebaseAuth.instance.currentUser;
 
+  static FirebaseFirestore get firestore => FirebaseFirestore.instance;
+
   static SupabaseClient get supabase => Supabase.instance.client;
 
   static Future<String> getDeviceId() async {
@@ -1247,12 +1249,23 @@ class FirebaseService {
   // ─── Folders ───────────────────────────────────────────────────────────────────
 
   static Stream<QuerySnapshot> getAllFolders() {
-    return SupabaseReadService.streamFolders().map((rows) => _MirrorQuerySnapshot(rows));
+    return firestore.collection('folders').orderBy('sort_order').snapshots();
   }
 
   static Future<String?> createRootFolder({required String name, String? icon, String? color}) async {
-    final docId = 'fo_${DateTime.now().millisecondsSinceEpoch}';
-    await _mirrorWrite('folders', docId, {
+    final doc = await firestore.collection('folders').add({
+      'name': name,
+      'icon': icon ?? 'folder',
+      'color': color ?? '#4A148C',
+      'item_count': 0,
+      'locked': false,
+      'invisible': false,
+      'updating': false,
+      'group_link': null,
+      'sort_order': 0,
+      'createdAt': FieldValue.serverTimestamp(),
+    });
+    await _mirrorWrite('folders', doc.id, {
       'name': name,
       'icon': icon ?? 'folder',
       'color': color ?? '#4A148C',
@@ -1264,16 +1277,18 @@ class FirebaseService {
       'sort_order': 0,
       'createdAt': DateTime.now().toIso8601String(),
     });
-    return docId;
+    return doc.id;
   }
 
   static Future<void> renameRootFolder(String folderId, String name) async {
+    try { await firestore.collection('folders').doc(folderId).update({'name': name}); } catch (_) {}
     await _mirrorWrite('folders', folderId, {'name': name});
   }
 
   static Future<void> deleteRootFolder(String folderId) async {
     await _deleteAllContentsRecursive(folderId, 'contents');
     await _deleteAllContentsRecursive(folderId, 'content');
+    try { await firestore.collection('folders').doc(folderId).delete(); } catch (_) {}
     await _mirrorWrite('folders', folderId, const {}, delete: true);
   }
 
@@ -1287,6 +1302,7 @@ class FirebaseService {
   }
 
   static Future<void> toggleFolderLock(String folderId, String field, dynamic value) async {
+    try { await firestore.collection('folders').doc(folderId).update({field: value}); } catch (_) {}
     Map<String, dynamic>? existing;
     try { existing = await SupabaseReadService.getFolder(folderId); } catch (_) {}
     final merged = <String, dynamic>{...?existing, field: value};
@@ -1391,24 +1407,30 @@ class FirebaseService {
   // ─── Folder Contents ───────────────────────────────────────────────────────────
 
   static Stream<QuerySnapshot> getContentsForFolder(String folderId) {
-    return SupabaseReadService.streamContents(folderId).map((rows) => _MirrorQuerySnapshot(rows));
+    return firestore.collection('folders').doc(folderId).collection('contents').orderBy('createdAt').snapshots();
   }
 
   static Future<String?> addFolderContent(String folderId, Map<String, dynamic> data) async {
-    final docId = 'fc_${DateTime.now().millisecondsSinceEpoch}';
-    await _mirrorWrite('contents', docId, {
+    final doc = await firestore.collection('folders').doc(folderId).collection('contents').add({
+      'createdAt': FieldValue.serverTimestamp(),
+      ...data,
+    });
+    await firestore.collection('folders').doc(folderId).update({'item_count': FieldValue.increment(1)}).catchError((_) {});
+    await _mirrorWrite('contents', doc.id, {
       'folderId': folderId,
       ...data,
       'createdAt': DateTime.now().toIso8601String(),
     });
-    return docId;
+    return doc.id;
   }
 
   static Future<void> renameFolderContent(String folderId, String contentId, String name) async {
+    try { await firestore.collection('folders').doc(folderId).collection('contents').doc(contentId).update({'name': name}); } catch (_) {}
     await _mirrorWrite('contents', contentId, {'folderId': folderId, 'name': name});
   }
 
   static Future<void> deleteFolderContent(String folderId, String contentId) async {
+    try { await firestore.collection('folders').doc(folderId).collection('contents').doc(contentId).delete(); } catch (_) {}
     await _mirrorWrite('contents', contentId, const {}, delete: true);
   }
 
@@ -1763,19 +1785,30 @@ class FirebaseService {
     required String type,
     required String folderPath,
   }) async {
-    final docId = 'sa_${DateTime.now().millisecondsSinceEpoch}';
-    await _mirrorWrite('student_activities', docId, {
+    final doc = await firestore.collection('student_activities').add({
+      'uid': uid,
+      'name': name,
+      'type': type,
+      'folderPath': folderPath,
+      'startedAt': FieldValue.serverTimestamp(),
+    });
+    await _mirrorWrite('student_activities', doc.id, {
       'uid': uid,
       'name': name,
       'type': type,
       'folderPath': folderPath,
       'startedAt': DateTime.now().toIso8601String(),
     });
-    return docId;
+    return doc.id;
   }
 
   static Future<void> endActivity(String activityId) async {
     try {
+      try {
+        await firestore.collection('student_activities').doc(activityId).update({
+          'endedAt': FieldValue.serverTimestamp(),
+        });
+      } catch (_) {}
       Map<String, dynamic>? existing;
       try {
         existing = await SupabaseReadService.readPrimary('student_activities', activityId);
@@ -1897,6 +1930,13 @@ class FirebaseService {
   static Future<void> saveNote(String lectureId, String content, {String? lectureName}) async {
     final uid = currentUser?.uid;
     if (uid == null) return;
+    try {
+      await firestore.collection('users').doc(uid).collection('notes').doc(lectureId).set({
+        'content': content,
+        'lectureName': lectureName ?? '',
+        'updatedAt': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+    } catch (_) {}
     await _mirrorWrite('notes', lectureId, {
       'uid': uid,
       'content': content,
@@ -1909,7 +1949,22 @@ class FirebaseService {
     final uid = currentUser?.uid;
     if (uid == null) return [];
     
-    // Retry up to 3 times with small delay for mirror sync
+    try {
+      final snap = await firestore.collection('users').doc(uid).collection('notes')
+          .orderBy('updatedAt', descending: true).get();
+      if (snap.docs.isNotEmpty) {
+        return snap.docs.map((d) {
+          final data = d.data();
+          return {
+            'id': d.id,
+            'content': data['content'] as String? ?? '',
+            'lectureName': data['lectureName'] as String? ?? 'Unknown Lecture',
+            'updatedAt': (data['updatedAt'] as Timestamp?)?.toDate()?.toIso8601String() ?? '',
+          };
+        }).toList();
+      }
+    } catch (_) {}
+    
     for (int i = 0; i < 3; i++) {
       try {
         final mirror = await SupabaseReadService.getNotes(uid);
@@ -2101,6 +2156,10 @@ class FirebaseService {
   /// that expect a [DocumentSnapshot] keep working without a Firestore read).
   static Future<DocumentSnapshot> getFolderDoc(String folderId) async {
     try {
+      final doc = await firestore.collection('folders').doc(folderId).get();
+      if (doc.exists) return doc;
+    } catch (_) {}
+    try {
       final mirror = await SupabaseReadService.getFolder(folderId);
       if (mirror != null) return _MirrorDocumentSnapshot(mirror);
     } catch (_) {}
@@ -2108,7 +2167,13 @@ class FirebaseService {
   }
 
   static Stream<QuerySnapshot> getContentsStream(String folderId, {String? parentContentId}) {
-    return SupabaseReadService.streamContents(folderId, parentContentId: parentContentId).map((rows) => _MirrorQuerySnapshot(rows));
+    Query q = firestore.collection('folders').doc(folderId).collection('contents').orderBy('createdAt');
+    if (parentContentId != null) {
+      q = q.where('parentContentId', isEqualTo: parentContentId);
+    } else {
+      q = q.where('parentContentId', isNull: true);
+    }
+    return q.snapshots();
   }
 
   static Future<Map<String, dynamic>?> getContentDoc(String folderId, String contentId) async {
