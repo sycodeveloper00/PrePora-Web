@@ -763,6 +763,8 @@ class FirebaseService {
     required String projectUrl,
     required String serviceRoleKey,
     required String anonKey,
+    int storageLimitMB = 1024,
+    bool autoSwitchEnabled = true,
   }) async {
     final docId = 'as_${DateTime.now().millisecondsSinceEpoch}';
     final bucketResult = await _autoCreateBuckets(projectUrl.trim(), serviceRoleKey.trim());
@@ -775,12 +777,15 @@ class FirebaseService {
       'bucketStatus': bucketResult['status'],
       'failedBuckets': bucketResult['failedBuckets'],
       'isActive': true,
+      'storageLimitMB': storageLimitMB,
+      'autoSwitchEnabled': autoSwitchEnabled,
+      'currentUsageMB': 0,
       'createdAt': DateTime.now().toIso8601String(),
     });
     return docId;
   }
 
-  static Future<void> updateAssistantSupabaseAccount(String id, {String? projectUrl, String? serviceRoleKey, String? anonKey, bool? isActive}) async {
+  static Future<void> updateAssistantSupabaseAccount(String id, {String? projectUrl, String? serviceRoleKey, String? anonKey, bool? isActive, int? storageLimitMB, bool? autoSwitchEnabled}) async {
     // When activating an assistant account, deactivate ALL other accounts for the same assistant first
     if (isActive == true) {
       try {
@@ -805,6 +810,8 @@ class FirebaseService {
         if (serviceRoleKey != null) 'serviceRoleKey': serviceRoleKey.trim(),
         if (anonKey != null) 'anonKey': anonKey.trim(),
         if (isActive != null) 'isActive': isActive,
+        if (storageLimitMB != null) 'storageLimitMB': storageLimitMB,
+        if (autoSwitchEnabled != null) 'autoSwitchEnabled': autoSwitchEnabled,
       });
       SupabaseReadService.invalidateSettingsCache();
     } catch (_) {}
@@ -891,7 +898,7 @@ class FirebaseService {
     return {'status': allReady ? 'ready' : (failed.length == 2 ? 'failed' : 'partial'), 'failedBuckets': failed};
   }
 
-  static Future<String> addSupabaseAccount(String projectUrl, String serviceRoleKey, String anonKey, {bool isActive = true}) async {
+  static Future<String> addSupabaseAccount(String projectUrl, String serviceRoleKey, String anonKey, {bool isActive = true, int storageLimitMB = 1024, bool autoSwitchEnabled = true}) async {
     final docId = 'sa_${DateTime.now().millisecondsSinceEpoch}';
     final bucketResult = await _autoCreateBuckets(projectUrl.trim(), serviceRoleKey.trim());
     await _mirrorWrite('settings', 'supabase_account:$docId', {
@@ -901,12 +908,15 @@ class FirebaseService {
       'bucketStatus': bucketResult['status'],
       'failedBuckets': bucketResult['failedBuckets'],
       'isActive': isActive,
+      'storageLimitMB': storageLimitMB,
+      'autoSwitchEnabled': autoSwitchEnabled,
+      'currentUsageMB': 0,
       'createdAt': DateTime.now().toIso8601String(),
     });
     return docId;
   }
 
-  static Future<void> updateSupabaseAccount(String id, {String? projectUrl, String? serviceRoleKey, String? anonKey, bool? isActive}) async {
+  static Future<void> updateSupabaseAccount(String id, {String? projectUrl, String? serviceRoleKey, String? anonKey, bool? isActive, int? storageLimitMB, bool? autoSwitchEnabled}) async {
     // When activating an account, deactivate ALL others first (mutual exclusion)
     if (isActive == true) {
       try {
@@ -931,6 +941,8 @@ class FirebaseService {
         if (serviceRoleKey != null) 'serviceRoleKey': serviceRoleKey.trim(),
         if (anonKey != null) 'anonKey': anonKey.trim(),
         if (isActive != null) 'isActive': isActive,
+        if (storageLimitMB != null) 'storageLimitMB': storageLimitMB,
+        if (autoSwitchEnabled != null) 'autoSwitchEnabled': autoSwitchEnabled,
       });
       SupabaseReadService.invalidateSettingsCache();
     } catch (_) {}
@@ -998,11 +1010,14 @@ class FirebaseService {
 
   /// Best-effort dual-write of a Firestore doc into the read-mirror Supabase.
   /// Never throws. Plain values only (no FieldValue/Timestamp sentinels).
-  static Future<void> _mirrorWrite(String table, String id, Map<String, dynamic> data, {bool? delete}) async {
+  static Future<void> mirrorWrite(String table, String id, Map<String, dynamic> data, {bool? delete}) async {
     try {
       await SupabaseReadService.writeToAll(table, id, data, delete: delete == true);
     } catch (_) {}
   }
+
+  static Future<void> _mirrorWrite(String table, String id, Map<String, dynamic> data, {bool? delete}) =>
+      mirrorWrite(table, id, data, delete: delete);
 
   /// Best-effort bulk mirror delete across all Supabase projects.
   /// Never throws — the mirror is only a read cache; Firestore stays canonical.
@@ -1893,10 +1908,15 @@ class FirebaseService {
   static Future<List<Map<String, dynamic>>> getAllNotes() async {
     final uid = currentUser?.uid;
     if (uid == null) return [];
-    try {
-      final mirror = await SupabaseReadService.getNotes(uid);
-      if (mirror != null) return mirror;
-    } catch (_) {}
+    
+    // Retry up to 3 times with small delay for mirror sync
+    for (int i = 0; i < 3; i++) {
+      try {
+        final mirror = await SupabaseReadService.getNotes(uid);
+        if (mirror != null && mirror.isNotEmpty) return mirror;
+      } catch (_) {}
+      if (i < 2) await Future.delayed(const Duration(milliseconds: 300));
+    }
     return [];
   }
 
