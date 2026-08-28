@@ -184,26 +184,38 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
   }
 
   Future<void> _saveAnnotationsToNotes() async {
+    final hasStrokes = _strokes.isNotEmpty;
+    final hasText = _textAnnotations.isNotEmpty;
+
     final noteContent = StringBuffer();
     noteContent.writeln('--- PDF Annotations: ${_fileName ?? 'PDF'} ---');
     noteContent.writeln();
-    if (_textAnnotations.isNotEmpty) {
-      noteContent.writeln('Text Notes:');
-      for (final t in _textAnnotations) {
-        noteContent.writeln('- ${t.text}');
+
+    if (!hasStrokes && !hasText) {
+      // Saving an empty annotation = bookmarking the PDF in Notes.
+      noteContent.writeln('PDF bookmarked for later reference.');
+    } else {
+      if (hasText) {
+        noteContent.writeln('Text Notes:');
+        for (final t in _textAnnotations) {
+          noteContent.writeln('- ${t.text}');
+        }
+        noteContent.writeln();
       }
-      noteContent.writeln();
-    }
-    if (_strokes.isNotEmpty) {
-      noteContent.writeln('[${_strokes.length} drawing stroke(s) made]');
+      if (hasStrokes) {
+        noteContent.writeln('[${_strokes.length} drawing stroke(s) made]');
+      }
     }
 
     final lectureId = 'pdf_${DateTime.now().millisecondsSinceEpoch}';
     try {
-      await FirebaseService.saveNote(lectureId, noteContent.toString(), lectureName: 'PDF: ${_fileName ?? 'Unknown'}');
+      await FirebaseService.saveNote(lectureId, noteContent.toString(), lectureName: _fileName ?? 'PDF Note');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Saved to Notes!'), backgroundColor: Colors.green),
+          SnackBar(
+            content: Text(hasStrokes || hasText ? 'Saved to Notes!' : 'PDF added to Notes!'),
+            backgroundColor: Colors.green,
+          ),
         );
       }
     } catch (e) {
@@ -293,7 +305,6 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     final bgColor = isDark ? const Color(0xFF140326) : const Color(0xFFE5DDF5);
     final borderColor = isDark ? Colors.white12 : Colors.black.withValues(alpha: 0.08);
     final textColor = isDark ? Colors.white70 : const Color(0xFF1A0533).withValues(alpha: 0.8);
-    final hasContent = _strokes.isNotEmpty || _textAnnotations.isNotEmpty;
 
     return Container(
       color: bgColor,
@@ -344,29 +355,28 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
             const SizedBox(width: 4),
             _undoRedoBtn(Icons.redo_rounded, _redoStack.isNotEmpty, _redo, isDark),
 
-            if (hasContent) ...[
-              const SizedBox(width: 8),
-              Container(height: 20, width: 1, color: borderColor),
-              const SizedBox(width: 8),
-              GestureDetector(
-                onTap: _saveAnnotationsToNotes,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                  decoration: BoxDecoration(
-                    color: Colors.teal.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: Colors.teal),
-                  ),
-                  child: const Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.save_rounded, color: Colors.teal, size: 14),
-                      SizedBox(width: 4),
-                      Text('Save', style: TextStyle(color: Colors.teal, fontSize: 12, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
+            const SizedBox(width: 8),
+            Container(height: 20, width: 1, color: borderColor),
+            const SizedBox(width: 8),
+            GestureDetector(
+              onTap: _saveAnnotationsToNotes,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                decoration: BoxDecoration(
+                  color: Colors.teal.withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.teal),
+                ),
+                child: const Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(Icons.save_rounded, color: Colors.teal, size: 14),
+                    SizedBox(width: 4),
+                    Text('Save', style: TextStyle(color: Colors.teal, fontSize: 12, fontWeight: FontWeight.bold)),
+                  ],
                 ),
               ),
+            ),
               const SizedBox(width: 6),
               GestureDetector(
                 onTap: () {
