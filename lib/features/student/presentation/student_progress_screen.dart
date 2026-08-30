@@ -42,7 +42,7 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
   bool _freeTrialActive = false;
   DateTime? _freeTrialEndsAt;
   Timer? _trialCountdownTimer;
-  Stream<List<Map<String, dynamic>>>? _activitiesStream;
+  Stream<QuerySnapshot>? _activitiesStream;
 
   late AnimationController _fadeController;
   late Animation<double> _fadeAnimation;
@@ -154,13 +154,13 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
                           ],
                         ),
                       ),
-                      StreamBuilder<List<Map<String, dynamic>>>(
+                      StreamBuilder<QuerySnapshot>(
                         stream: _activitiesStream,
                         builder: (context, snapshot) {
                           if (snapshot.connectionState == ConnectionState.waiting) {
                             return const SliverFillRemaining(child: Center(child: ProfessionalLoader()));
                           }
-                          if (!snapshot.hasData || snapshot.data!.isEmpty) {
+                          if (!snapshot.hasData || snapshot.data!.docs.isEmpty) {
                             return SliverFillRemaining(
                               child: SingleChildScrollView(
                                 child: Column(children: [
@@ -174,7 +174,7 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
                               ),
                             );
                           }
-                          final docs = snapshot.data!.toList()
+                          final docs = snapshot.data!.docs.map((d) => d.data() as Map<String, dynamic>).toList()
                             ..sort((a, b) {
                               final aTime = _parseActivityDate(a['startedAt']);
                               final bTime = _parseActivityDate(b['startedAt']);
@@ -520,7 +520,7 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
     for (final data in docs) {
       final folderPath = data['folderPath'] as String? ?? '';
       final name = data['name'] as String? ?? 'Unknown';
-      final subject = folderPath.isNotEmpty ? folderPath.split('/').first : name;
+      final subject = folderPath.isNotEmpty ? folderPath.split('>').first.trim() : name;
       subjectMap[subject] = (subjectMap[subject] ?? 0) + 1;
     }
     final sortedSubjects = subjectMap.entries.toList()..sort((a, b) => b.value.compareTo(a.value));

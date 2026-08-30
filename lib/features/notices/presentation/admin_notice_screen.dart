@@ -11,6 +11,7 @@ import 'package:open_filex/open_filex.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:http/http.dart' as http;
 import '../../../core/services/firebase_service.dart';
+import '../../../core/services/supabase_read_service.dart';
 import '../../../core/utils.dart';
 import '../../../core/widgets/professional_loader.dart';
 
@@ -107,7 +108,10 @@ class _AdminNoticeScreenState extends State<AdminNoticeScreen> {
   void _showTextBoard(BuildContext context, String content, Map<String, dynamic> data) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final addedBy = data['addedBy'] as String? ?? 'Admin';
-    final time = (data['createdAt'] as Timestamp?)?.toDate();
+    final rawTime = data['createdAt'] ?? data['created_at'];
+    DateTime? time;
+    if (rawTime is DateTime) time = rawTime;
+    else if (rawTime is String) time = DateTime.tryParse(rawTime);
     final timeStr = time != null ? '${time.day}/${time.month}/${time.year} ${time.hour}:${time.minute.toString().padLeft(2, '0')}' : '';
 
     showDialog(
@@ -227,9 +231,12 @@ class _AdminNoticeScreenState extends State<AdminNoticeScreen> {
                   final data = doc.data() as Map<String, dynamic>;
                   final title = data['title'] as String? ?? '';
                   final type = data['fileType'] as String? ?? 'text';
-                  final time = (data['createdAt'] as Timestamp?)?.toDate();
+                  final rawTime = data['createdAt'] ?? data['created_at'];
+                  DateTime? time;
+                  if (rawTime is DateTime) time = rawTime;
+                  else if (rawTime is String) time = DateTime.tryParse(rawTime);
                   if (time != null && now.difference(time).inHours >= 24) {
-                    FirebaseService.firestore.collection('notices').doc(doc.id).delete();
+                    SupabaseReadService.writeToAll('notices', doc.id, {}, delete: true);
                     return const SizedBox.shrink();
                   }
                   final timeStr = time != null ? '${time.day}/${time.month}/${time.year} ${time.hour}:${time.minute.toString().padLeft(2, '0')}' : '';
@@ -280,7 +287,9 @@ class _AdminNoticeScreenState extends State<AdminNoticeScreen> {
                                 icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
                                 padding: EdgeInsets.zero,
                                 constraints: const BoxConstraints(),
-                                onPressed: () => FirebaseService.firestore.collection('notices').doc(doc.id).delete(),
+                                onPressed: () async {
+                                  await SupabaseReadService.writeToAll('notices', doc.id, {}, delete: true);
+                                },
                               ),
                             ]),
                           ],
@@ -292,7 +301,7 @@ class _AdminNoticeScreenState extends State<AdminNoticeScreen> {
                   final icon = _iconForType(type, title);
                   return Card(
                     color: listDark ? const Color(0xFF1A0533) : Colors.white,
-                    margin: const EdgeInsets.only(bottom: 10),
+                    margin: const.only(bottom: 10),
                     child: GestureDetector(
                       onLongPress: () => _showNoticeOptions(doc.id, title),
                       child: ListTile(
@@ -301,7 +310,9 @@ class _AdminNoticeScreenState extends State<AdminNoticeScreen> {
                         subtitle: Text(timeStr, style: TextStyle(color: listDark ? Colors.white38 : Colors.black54, fontSize: 12)),
                         trailing: IconButton(
                           icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
-                          onPressed: () => FirebaseService.firestore.collection('notices').doc(doc.id).delete(),
+                          onPressed: () async {
+                            await SupabaseReadService.writeToAll('notices', doc.id, {}, delete: true);
+                          },
                         ),
                         onTap: () => _openFile(data),
                       ),
@@ -431,9 +442,9 @@ class _AdminNoticeScreenState extends State<AdminNoticeScreen> {
             ListTile(
               leading: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
               title: const Text('Delete', style: TextStyle(color: Colors.redAccent)),
-              onTap: () {
+              onTap: () async {
                 Navigator.pop(context);
-                FirebaseService.firestore.collection('notices').doc(docId).delete();
+                await SupabaseReadService.writeToAll('notices', docId, {}, delete: true);
               },
             ),
           ],
@@ -455,7 +466,7 @@ class _AdminNoticeScreenState extends State<AdminNoticeScreen> {
         TextButton(onPressed: () => Navigator.pop(d), child: Text('Cancel', style: TextStyle(color: isDark ? Colors.white70 : Colors.black54))),
         ElevatedButton(onPressed: () async {
           if (ctrl.text.trim().isEmpty) return;
-          await FirebaseService.firestore.collection('notices').doc(docId).update({'title': ctrl.text.trim()});
+          await SupabaseReadService.writeToAll('notices', docId, {'title': ctrl.text.trim()});
           if (d.mounted) Navigator.pop(d);
         }, child: const Text('Save')),
       ],

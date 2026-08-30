@@ -100,7 +100,10 @@ class StudentNoticeScreen extends StatelessWidget {
   void _showTextBoard(BuildContext context, String content, Map<String, dynamic> data) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final addedBy = data['addedBy'] as String? ?? 'Admin';
-    final time = (data['createdAt'] as Timestamp?)?.toDate();
+    final rawTime = data['createdAt'] ?? data['created_at'];
+    DateTime? time;
+    if (rawTime is DateTime) time = rawTime;
+    else if (rawTime is String) time = DateTime.tryParse(rawTime);
     final timeStr = time != null ? '${time.day}/${time.month}/${time.year} ${time.hour}:${time.minute.toString().padLeft(2, '0')}' : '';
 
     showDialog(
@@ -189,7 +192,10 @@ class StudentNoticeScreen extends StatelessWidget {
               final d = snap.data!.docs[i].data() as Map<String, dynamic>;
               final title = d['title'] as String? ?? '';
               final type = d['fileType'] as String? ?? 'text';
-              final time = (d['createdAt'] as Timestamp?)?.toDate();
+              final rawTime = d['createdAt'] ?? d['created_at'];
+              DateTime? time;
+              if (rawTime is DateTime) time = rawTime;
+              else if (rawTime is String) time = DateTime.tryParse(rawTime);
               final timeStr = time != null ? '${time.day}/${time.month}/${time.year} ${time.hour}:${time.minute.toString().padLeft(2, '0')}' : '';
               final addedBy = d['addedBy'] as String? ?? 'Admin';
 
