@@ -15,6 +15,7 @@ class UploadManager extends ChangeNotifier {
 
   final Map<String, double> _progress = {};
   final Map<String, bool> _filePaused = {};
+  final Set<String> _cancelledIds = {};
   List<Map<String, dynamic>> _queue = [];
   DateTime? _startTime;
   bool _isUploading = false;
@@ -47,8 +48,29 @@ class UploadManager extends ChangeNotifier {
       _queue.where((q) => q['folderId'] == folderId && q['status'] == 'uploading').length;
 
   Set<String> get activeFolderIds =>
-      _queue.where((q) => q['status'] == 'pending' || q['status'] == 'uploading')
+      _queue.where((q) =>
+              q['status'] == 'pending' ||
+              q['status'] == 'uploading' ||
+              q['status'] == 'metadata_failed')
           .map((q) => q['folderId'] as String).toSet();
+
+  int totalBytesForFolder(String folderId) =>
+      _queue.where((q) => q['folderId'] == folderId).fold<int>(0, (sum, q) => sum + (q['totalBytes'] as int? ?? 0));
+
+  int uploadedBytesForFolder(String folderId) {
+    int total = 0;
+    for (final q in _queue.where((q) => q['folderId'] == folderId)) {
+      final totalB = q['totalBytes'] as int? ?? 0;
+      if (q['status'] == 'completed' || q['status'] == 'cancelled' || q['status'] == 'metadata_failed') {
+        total += totalB;
+      } else if (q['status'] == 'uploading') {
+        final fileId = q['id'] as String?;
+        final p = fileId != null ? (_progress[fileId] ?? 0.0) : 0.0;
+        total += (totalB * p).toInt();
+      }
+    }
+    return total;
+  }
 
   void startUpload({
     required String folderId,
@@ -97,11 +119,9 @@ class UploadManager extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> pauseFile(String fileId) async {
+  void pauseFile(String fileId) {
     _filePaused[fileId] = true;
-    _pauseCompleter = Completer<void>();
     notifyListeners();
-    await _pauseCompleter!.future;
   }
 
   void resumeFile(String fileId) {
@@ -110,6 +130,21 @@ class UploadManager extends ChangeNotifier {
       _pauseCompleter!.complete();
     }
     _pauseCompleter = null;
+    notifyListeners();
+  }
+
+  void cancelFile(String fileId) {
+    _cancelledIds.add(fileId);
+    _filePaused.remove(fileId);
+    final item = _queue.where((q) => q['id'] == fileId).firstOrNull;
+    if (item != null) {
+      item['status'] = 'cancelled';
+    }
+    if (_pauseCompleter != null && !_pauseCompleter!.isCompleted) {
+      _pauseCompleter!.complete();
+    }
+    _pauseCompleter = null;
+    _progress.remove(fileId);
     notifyListeners();
   }
 
@@ -131,8 +166,16 @@ class UploadManager extends ChangeNotifier {
         final folderId = item['folderId'] as String;
         final parentContentId = item['parentContentId'] as String?;
 
-        while (_filePaused[id] == true) {
-          await Future.delayed(const Duration(milliseconds: 200));
+        // Wait while paused
+        while (_filePaused[id] == true && !_cancelledIds.contains(id)) {
+          final completer = Completer<void>();
+          _pauseCompleter = completer;
+          await completer.future;
+        }
+        // If cancelled while paused, skip
+        if (_cancelledIds.contains(id)) {
+          _cancelledIds.remove(id);
+          continue;
         }
 
         item['status'] = 'uploading';
@@ -143,18 +186,66 @@ class UploadManager extends ChangeNotifier {
         try {
           final bytes = item['bytes'] as Uint8List;
           downloadUrl = await FirebaseService.uploadFile(bytes, name, onProgress: (p) {
+            if (_cancelledIds.contains(id)) return;
             updateProgress(id, p, ((item['totalBytes'] as int) * p).toInt());
           });
-          markCompleted(id);
           item['url'] = downloadUrl;
         } catch (e) {
-          markFailed(id, e.toString());
+          if (!_cancelledIds.contains(id)) {
+            markFailed(id, e.toString());
+          }
           continue;
         }
 
-        try {
-          await onContentSaved?.call(folderId, name, downloadUrl!, parentContentId);
-        } catch (_) {}
+        // Check if cancelled during upload
+        if (_cancelledIds.contains(id)) {
+          _cancelledIds.remove(id);
+          continue;
+        }
+
+        // Metadata write with retry (up to 3 attempts)
+        bool metadataWritten = false;
+        for (int attempt = 1; attempt <= 3; attempt++) {
+          if (_cancelledIds.contains(id)) break;
+          try {
+            item['status'] = 'writing_metadata';
+            notifyListeners();
+            if (onContentSaved != null) {
+              await onContentSaved!.call(folderId, name, downloadUrl!, parentContentId);
+            } else {
+              final provider = await FirebaseService.getStorageProvider();
+              final actualProvider = provider == 'both'
+                  ? (downloadUrl!.contains('cloudinary.com') ? 'cloudinary' : 'supabase')
+                  : provider;
+              final data = <String, dynamic>{'type': 'file', 'name': name, 'url': downloadUrl, 'source': 'storage', 'provider': actualProvider};
+              if (parentContentId != null) data['parentContentId'] = parentContentId;
+              final newId = await FirebaseService.addFolderContent(folderId, data);
+              if (newId == null) throw Exception('addFolderContent returned null');
+            }
+            metadataWritten = true;
+            break;
+          } catch (e) {
+            if (attempt < 3) {
+              item['metadataError'] = 'Attempt $attempt failed: $e';
+              notifyListeners();
+              await Future.delayed(Duration(seconds: attempt * 2));
+            }
+          }
+        }
+
+        if (_cancelledIds.contains(id)) {
+          _cancelledIds.remove(id);
+          continue;
+        }
+
+        if (metadataWritten) {
+          markCompleted(id);
+        } else {
+          item['status'] = 'metadata_failed';
+          item['metadataError'] = 'Upload succeeded but metadata save failed after 3 retries';
+          _progress.remove(id);
+          notifyListeners();
+        }
       }
     } finally {
       _isProcessing = false;
@@ -164,16 +255,16 @@ class UploadManager extends ChangeNotifier {
   }
 
   void _cleanupFinished() {
-    final hasActive = _queue.any((q) => q['status'] == 'pending' || q['status'] == 'uploading');
+    final hasActive = _queue.any((q) => q['status'] == 'pending' || q['status'] == 'uploading' || q['status'] == 'writing_metadata');
     if (!hasActive) {
       final finishedFolders = <String, Map<String, int>>{};
       for (final q in _queue) {
         final fid = q['folderId'] as String;
-        final bucket = finishedFolders.putIfAbsent(fid, () => {'completed': 0, 'failed': 0, 'cancelled': 0});
+        final bucket = finishedFolders.putIfAbsent(fid, () => {'completed': 0, 'failed': 0, 'cancelled': 0, 'metadata_failed': 0});
         final st = q['status'] as String;
         if (bucket.containsKey(st)) bucket[st] = bucket[st]! + 1;
       }
-      _queue.removeWhere((q) => q['status'] == 'completed' || q['status'] == 'failed');
+      _queue.removeWhere((q) => q['status'] == 'completed' || q['status'] == 'failed' || q['status'] == 'cancelled');
       if (_queue.isEmpty) {
         _isUploading = false;
         _startTime = null;
@@ -187,9 +278,39 @@ class UploadManager extends ChangeNotifier {
       SessionManager.setUploading(false);
     }
   }
+
+  Future<void> retryMetadataFailed() async {
+    for (final item in _queue.where((q) => q['status'] == 'metadata_failed').toList()) {
+      item['status'] = 'pending';
+      item.remove('metadataError');
+    }
+    _startTime ??= DateTime.now();
+    _isUploading = true;
+    notifyListeners();
+    if (!_isProcessing) _processQueue();
+  }
+
+  Future<void> retryOneMetadata(String fileId) async {
+    final item = _queue.where((q) => q['id'] == fileId && q['status'] == 'metadata_failed').firstOrNull;
+    if (item != null) {
+      item['status'] = 'pending';
+      item.remove('metadataError');
+      _startTime ??= DateTime.now();
+      _isUploading = true;
+      notifyListeners();
+      if (!_isProcessing) _processQueue();
+    }
+  }
+
+  List<Map<String, dynamic>> get metadataFailedItems =>
+      _queue.where((q) => q['status'] == 'metadata_failed').toList();
+
   void cancelAll() {
     _isUploading = false;
-    _queue = [];
+    for (final q in _queue.where((q) => q['status'] == 'pending' || q['status'] == 'uploading')) {
+      _cancelledIds.add(q['id'] as String);
+      q['status'] = 'cancelled';
+    }
     _progress.clear();
     _filePaused.clear();
     _startTime = null;
@@ -197,11 +318,16 @@ class UploadManager extends ChangeNotifier {
       _pauseCompleter!.complete();
     }
     _pauseCompleter = null;
+    _cleanupFinished();
     notifyListeners();
   }
 
   void cancelFolder(String folderId) {
-    _queue.removeWhere((q) => q['folderId'] == folderId && q['status'] == 'pending');
+    for (final q in _queue.where((q) => q['folderId'] == folderId && (q['status'] == 'pending' || q['status'] == 'uploading'))) {
+      _cancelledIds.add(q['id'] as String);
+      q['status'] = 'cancelled';
+    }
+    _cleanupFinished();
     notifyListeners();
   }
 }

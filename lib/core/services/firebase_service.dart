@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 import 'supabase_read_service.dart';
+import 'clorabase_service.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import '../../firebase_options.dart';
 
@@ -64,8 +65,6 @@ class FirebaseService {
 
   static fb_auth.User? get currentUser => fb_auth.FirebaseAuth.instance.currentUser;
 
-  static FirebaseFirestore get firestore => FirebaseFirestore.instance;
-
   static SupabaseClient get supabase => Supabase.instance.client;
 
   static Future<String> getDeviceId() async {
@@ -85,18 +84,51 @@ class FirebaseService {
 
   static Future<void> initialize() async {
     if (_initialized) return;
+    // Fast path: load cached Supabase credentials from SharedPreferences (instant)
+    await _loadCachedSupabaseAccountAsync();
     try {
       await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform).timeout(const Duration(seconds: 10));
     } catch (_) {}
-    try {
-      await _loadActiveSupabaseAccount().timeout(const Duration(seconds: 8));
-    } catch (_) {}
+    // Background: refresh active account from Supabase (non-blocking if cache exists)
+    if (supabaseUrl.isEmpty) {
+      try {
+        await _loadActiveSupabaseAccount().timeout(const Duration(seconds: 5));
+        _saveCachedSupabaseAccount();
+      } catch (_) {}
+    } else {
+      // Already cached — refresh in background (don't block startup)
+      _loadActiveSupabaseAccount().then((_) => _saveCachedSupabaseAccount()).catchError((_) {});
+    }
     if (supabaseUrl.isNotEmpty && _supabaseAnonKey.isNotEmpty) {
       try {
         await Supabase.initialize(url: supabaseUrl, anonKey: _supabaseAnonKey).timeout(const Duration(seconds: 5));
       } catch (_) {}
     }
     _initialized = true;
+  }
+
+  static Future<void> _loadCachedSupabaseAccountAsync() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final url = prefs.getString('cached_supabase_url') ?? '';
+      final key = prefs.getString('cached_supabase_service_key') ?? '';
+      final anon = prefs.getString('cached_supabase_anon_key') ?? '';
+      if (url.isNotEmpty && key.isNotEmpty && anon.isNotEmpty) {
+        supabaseUrl = url;
+        serviceRoleKey = key;
+        _supabaseAnonKey = anon;
+      }
+    } catch (_) {}
+  }
+
+  static Future<void> _saveCachedSupabaseAccount() async {
+    try {
+      if (supabaseUrl.isEmpty) return;
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('cached_supabase_url', supabaseUrl);
+      await prefs.setString('cached_supabase_service_key', serviceRoleKey);
+      await prefs.setString('cached_supabase_anon_key', _supabaseAnonKey);
+    } catch (_) {}
   }
 
   /// Keeps the Firebase ID token fresh so long-lived Firestore streams don't
@@ -178,10 +210,13 @@ class FirebaseService {
 
   static Future<void> reinitializeSupabase() async {
     await _loadActiveSupabaseAccount();
+    _saveCachedSupabaseAccount();
     if (supabaseUrl.isNotEmpty && _supabaseAnonKey.isNotEmpty) {
       try {
         await Supabase.initialize(url: supabaseUrl, anonKey: _supabaseAnonKey);
-      } catch (_) {}
+      } catch (e) {
+        print('[reinitializeSupabase] Failed: $e');
+      }
     }
   }
 
@@ -613,7 +648,7 @@ class FirebaseService {
     try {
       final settings = await getSettings();
       final provider = settings[_storageProviderKey] as String?;
-      if (provider == 'supabase' || provider == 'cloudinary' || provider == 'both') {
+      if (provider == 'supabase' || provider == 'cloudinary' || provider == 'both' || provider == 'clorabase' || provider == 'supabase_clorabase') {
         _cachedStorageProvider = provider!;
       }
     } catch (_) {}
@@ -635,7 +670,7 @@ class FirebaseService {
     return [];
   }
 
-  static Future<String> addCloudinaryAccount(String cloudName, String uploadPreset, {bool isActive = true}) async {
+  static Future<String> addCloudinaryAccount(String cloudName, String uploadPreset, {bool isActive = true, int storageLimitMB = 25600}) async {
     final docId = 'ca_${DateTime.now().millisecondsSinceEpoch}';
     if (isActive) {
       await _mirrorWrite('settings', 'cloudinary_accounts', {'isActive': false});
@@ -644,24 +679,25 @@ class FirebaseService {
       'cloudName': cloudName.trim(),
       'uploadPreset': uploadPreset.trim(),
       'isActive': isActive,
+      'storageLimitMB': storageLimitMB,
+      'currentUsageMB': 0,
+      'autoSwitchEnabled': true,
       'createdAt': DateTime.now().toIso8601String(),
     });
     return docId;
   }
 
-  static Future<void> updateCloudinaryAccount(String id, {String? cloudName, String? uploadPreset, bool? isActive}) async {
-    if (isActive == true) {
-      await _mirrorWrite('settings', 'cloudinary_accounts', {'isActive': false});
-    } else if (isActive == false) {
-      await _mirrorWrite('settings', 'cloudinary_accounts', {'isActive': false});
-    }
-    final data = <String, dynamic>{};
+  static Future<void> updateCloudinaryAccount(String id, {String? cloudName, String? uploadPreset, bool? isActive, int? storageLimitMB, int? currentUsageMB, bool? autoSwitchEnabled}) async {
+    Map<String, dynamic> existing = {};
+    try { existing = (await SupabaseReadService.getCloudinaryAccounts())?.firstOrNull ?? {}; } catch (_) {}
+    final data = <String, dynamic>{...existing};
     if (cloudName != null) data['cloudName'] = cloudName.trim();
     if (uploadPreset != null) data['uploadPreset'] = uploadPreset.trim();
     if (isActive != null) data['isActive'] = isActive;
-    if (data.isNotEmpty) {
-      await _mirrorWrite('settings', 'cloudinary_accounts', data);
-    }
+    if (storageLimitMB != null) data['storageLimitMB'] = storageLimitMB;
+    if (currentUsageMB != null) data['currentUsageMB'] = currentUsageMB;
+    if (autoSwitchEnabled != null) data['autoSwitchEnabled'] = autoSwitchEnabled;
+    await _mirrorWrite('settings', 'cloudinary_accounts', data);
   }
 
   static Future<void> deleteCloudinaryAccount(String id) async {
@@ -747,6 +783,122 @@ class FirebaseService {
 
   static Future<void> deleteAssistantCloudinaryAccount(String id) async {
     await _mirrorWrite('settings', 'assistant_cloudinary_$id', {}, delete: true);
+  }
+
+  // ─── Clorabase Multi-Account Upload ────────────────────────────────────────
+
+  static Future<List<Map<String, dynamic>>> getClorabaseAccounts() async {
+    try {
+      final rows = await SupabaseReadService.getClorabaseAccounts();
+      if (rows != null && rows.isNotEmpty) return rows;
+    } catch (_) {}
+    return [];
+  }
+
+  static Future<String> addClorabaseAccount(String githubUsername, String githubToken, String projectName, {bool isActive = true, int storageLimitMB = 1024}) async {
+    final docId = 'cb_${DateTime.now().millisecondsSinceEpoch}';
+    if (isActive) {
+      await _mirrorWrite('settings', 'clorabase_accounts', {'isActive': false});
+    }
+    await _mirrorWrite('settings', 'clorabase_accounts', {
+      'githubUsername': githubUsername.trim(),
+      'githubToken': githubToken.trim(),
+      'projectName': projectName.trim(),
+      'isActive': isActive,
+      'storageLimitMB': storageLimitMB,
+      'currentUsageMB': 0,
+      'autoSwitchEnabled': true,
+      'createdAt': DateTime.now().toIso8601String(),
+    });
+    return docId;
+  }
+
+  static Future<void> updateClorabaseAccount(String id, {String? githubUsername, String? githubToken, String? projectName, bool? isActive, int? storageLimitMB, int? currentUsageMB, bool? autoSwitchEnabled}) async {
+    Map<String, dynamic> existing = {};
+    try { existing = (await SupabaseReadService.getClorabaseAccounts())?.firstOrNull ?? {}; } catch (_) {}
+    final data = <String, dynamic>{...existing};
+    if (githubUsername != null) data['githubUsername'] = githubUsername.trim();
+    if (githubToken != null) data['githubToken'] = githubToken.trim();
+    if (projectName != null) data['projectName'] = projectName.trim();
+    if (isActive != null) data['isActive'] = isActive;
+    if (storageLimitMB != null) data['storageLimitMB'] = storageLimitMB;
+    if (currentUsageMB != null) data['currentUsageMB'] = currentUsageMB;
+    if (autoSwitchEnabled != null) data['autoSwitchEnabled'] = autoSwitchEnabled;
+    await _mirrorWrite('settings', 'clorabase_accounts', data);
+  }
+
+  static Future<void> deleteClorabaseAccount(String id) async {
+    await _mirrorWrite('settings', 'clorabase_accounts', {}, delete: true);
+  }
+
+  static Future<String> uploadToClorabase(Uint8List bytes, String filename) async {
+    final accounts = await getClorabaseAccounts();
+    final active = accounts.firstWhere((a) => a['isActive'] == true, orElse: () => {});
+
+    if (active.isEmpty) {
+      throw Exception('No active Clorabase account. Go to Admin Settings \u2192 Storage Provider \u2192 Clorabase \u2192 Add Account.');
+    }
+
+    final githubUsername = active['githubUsername'] as String;
+    final githubToken = active['githubToken'] as String;
+    final projectName = active['projectName'] as String;
+
+    return await ClorabaseService.uploadFile(
+      username: githubUsername,
+      token: githubToken,
+      project: projectName,
+      bytes: bytes,
+      filename: filename,
+    );
+  }
+
+  // ─── Assistant Clorabase Accounts ─────────────────────────────────────────
+
+  static Future<List<Map<String, dynamic>>> getAssistantClorabaseAccounts() async {
+    try {
+      final rows = await SupabaseReadService.getAssistantClorabaseAccounts();
+      if (rows != null && rows.isNotEmpty) return rows;
+    } catch (_) {}
+    return [];
+  }
+
+  static Future<String> addAssistantClorabaseAccount({
+    required String assistantUid,
+    required String assistantName,
+    required String githubUsername,
+    required String githubToken,
+    required String projectName,
+  }) async {
+    final docId = 'acb_${DateTime.now().millisecondsSinceEpoch}';
+    await _mirrorWrite('settings', 'assistant_clorabase_$docId', {
+      'assistantUid': assistantUid,
+      'assistantName': assistantName,
+      'githubUsername': githubUsername.trim(),
+      'githubToken': githubToken.trim(),
+      'projectName': projectName.trim(),
+      'isActive': true,
+      'createdAt': DateTime.now().toIso8601String(),
+    });
+    return docId;
+  }
+
+  static Future<void> updateAssistantClorabaseAccount(String id, {String? githubUsername, String? githubToken, String? projectName, bool? isActive}) async {
+    if (isActive == true) {
+      await _mirrorWrite('settings', 'assistant_clorabase_$id', {'isActive': true});
+    } else if (isActive == false) {
+      await _mirrorWrite('settings', 'assistant_clorabase_$id', {'isActive': false});
+    }
+    if (githubUsername != null || githubToken != null || projectName != null) {
+      final data = <String, dynamic>{};
+      if (githubUsername != null) data['githubUsername'] = githubUsername.trim();
+      if (githubToken != null) data['githubToken'] = githubToken.trim();
+      if (projectName != null) data['projectName'] = projectName.trim();
+      await _mirrorWrite('settings', 'assistant_clorabase_$id', data);
+    }
+  }
+
+  static Future<void> deleteAssistantClorabaseAccount(String id) async {
+    await _mirrorWrite('settings', 'assistant_clorabase_$id', {}, delete: true);
   }
 
   // ─── Assistant Supabase Accounts ──────────────────────────────────────────
@@ -857,16 +1009,15 @@ class FirebaseService {
     return [];
   }
 
-  static String get _supabaseProxyUrl {
-    final host = Uri.base.host;
-    if (host.contains('vercel.app')) return 'https://prepora-web.vercel.app/api/supabase-proxy';
-    return '/api/supabase-proxy';
-  }
+  static String get _supabaseProxyUrl => 'https://prepora-web.vercel.app/api/supabase-proxy';
 
   static Future<Map<String, dynamic>> _supabaseProxy(String action, String projectUrl, String serviceKey, {String? bucketName}) async {
     final body = <String, dynamic>{'action': action, 'projectUrl': projectUrl, 'serviceKey': serviceKey};
     if (bucketName != null) body['bucketName'] = bucketName;
     final response = await http.post(Uri.parse(_supabaseProxyUrl), headers: {'Content-Type': 'application/json'}, body: jsonEncode(body)).timeout(const Duration(seconds: 20));
+    if (response.statusCode != 200) {
+      throw Exception('Proxy returned HTTP ${response.statusCode}');
+    }
     return jsonDecode(response.body) as Map<String, dynamic>;
   }
 
@@ -886,11 +1037,34 @@ class FirebaseService {
   static Future<Map<String, dynamic>> _autoCreateBuckets(String projectUrl, String serviceKey) async {
     final results = <String, String>{};
     for (final bucket in ['folder_files', 'notices']) {
+      bool exists = false;
+      // Try proxy first
       try {
         final check = await _supabaseProxy('check_bucket', projectUrl, serviceKey, bucketName: bucket);
         if (check['exists'] == true) { results[bucket] = 'ready'; continue; }
+      } catch (_) {}
+      // Proxy failed — try direct Supabase API fallback
+      try {
+        final r = await http.get(
+          Uri.parse('${projectUrl.trim()}/storage/v1/bucket/$bucket'),
+          headers: {'Authorization': 'Bearer ${serviceKey.trim()}'},
+        ).timeout(const Duration(seconds: 15));
+        exists = r.statusCode == 200;
+      } catch (_) {}
+      if (exists) { results[bucket] = 'ready'; continue; }
+      // Bucket doesn't exist — try creating via proxy
+      try {
         final create = await _supabaseProxy('create_bucket', projectUrl, serviceKey, bucketName: bucket);
-        results[bucket] = create['ok'] == true ? 'ready' : 'failed';
+        if (create['ok'] == true) { results[bucket] = 'ready'; continue; }
+      } catch (_) {}
+      // Try creating directly
+      try {
+        final r = await http.post(
+          Uri.parse('${projectUrl.trim()}/storage/v1/bucket'),
+          headers: {'Authorization': 'Bearer ${serviceKey.trim()}', 'Content-Type': 'application/json'},
+          body: jsonEncode({'id': bucket, 'public': true}),
+        ).timeout(const Duration(seconds: 15));
+        results[bucket] = (r.statusCode == 200 || r.statusCode == 201 || r.statusCode == 409) ? 'ready' : 'failed';
       } catch (_) {
         results[bucket] = 'failed';
       }
@@ -900,7 +1074,7 @@ class FirebaseService {
     return {'status': allReady ? 'ready' : (failed.length == 2 ? 'failed' : 'partial'), 'failedBuckets': failed};
   }
 
-  static Future<String> addSupabaseAccount(String projectUrl, String serviceRoleKey, String anonKey, {bool isActive = true, int storageLimitMB = 1024, bool autoSwitchEnabled = true}) async {
+  static Future<String> addSupabaseAccount(String projectUrl, String serviceRoleKey, String anonKey, {bool isActive = true, int storageLimitMB = 1024, bool autoSwitchEnabled = true, String name = '', String email = '', String projectName = ''}) async {
     final docId = 'sa_${DateTime.now().millisecondsSinceEpoch}';
     final bucketResult = await _autoCreateBuckets(projectUrl.trim(), serviceRoleKey.trim());
     await _mirrorWrite('settings', 'supabase_account:$docId', {
@@ -913,41 +1087,50 @@ class FirebaseService {
       'storageLimitMB': storageLimitMB,
       'autoSwitchEnabled': autoSwitchEnabled,
       'currentUsageMB': 0,
+      'name': name.trim(),
+      'email': email.trim(),
+      'projectName': projectName.trim(),
       'createdAt': DateTime.now().toIso8601String(),
     });
     return docId;
   }
 
-  static Future<void> updateSupabaseAccount(String id, {String? projectUrl, String? serviceRoleKey, String? anonKey, bool? isActive, int? storageLimitMB, bool? autoSwitchEnabled}) async {
-    // When activating an account, deactivate ALL others first (mutual exclusion)
+  static Future<void> updateSupabaseAccount(String id, {String? projectUrl, String? serviceRoleKey, String? anonKey, bool? isActive, int? storageLimitMB, bool? autoSwitchEnabled, String? name, String? email, String? projectName}) async {
     if (isActive == true) {
       try {
         final all = await SupabaseReadService.getSupabaseAccounts();
         if (all != null) {
+          final deactivateFutures = <Future>[];
           for (final acc in all) {
             final accId = acc['id'] as String?;
             if (accId == null || accId == id) continue;
             if (acc['isActive'] == true) {
               final existingOther = await SupabaseReadService.getSettings(accId) ?? {};
-              await _mirrorWrite('settings', accId, {...existingOther, 'isActive': false});
+              existingOther['isActive'] = false;
+              deactivateFutures.add(_mirrorWrite('settings', accId, existingOther));
             }
           }
+          await Future.wait(deactivateFutures);
         }
-      } catch (_) {}
+      } catch (e) {
+        print('[updateSupabaseAccount] Failed to deactivate others: $e');
+      }
     }
-    try {
-      final existing = await SupabaseReadService.getSettings(id) ?? {};
-      await _mirrorWrite('settings', id, {
-        ...existing,
-        if (projectUrl != null) 'projectUrl': projectUrl.trim(),
-        if (serviceRoleKey != null) 'serviceRoleKey': serviceRoleKey.trim(),
-        if (anonKey != null) 'anonKey': anonKey.trim(),
-        if (isActive != null) 'isActive': isActive,
-        if (storageLimitMB != null) 'storageLimitMB': storageLimitMB,
-        if (autoSwitchEnabled != null) 'autoSwitchEnabled': autoSwitchEnabled,
-      });
-      SupabaseReadService.invalidateSettingsCache();
-    } catch (_) {}
+    final existing = await SupabaseReadService.getSettings(id) ?? {};
+    final merged = <String, dynamic>{
+      ...existing,
+      if (projectUrl != null) 'projectUrl': projectUrl.trim(),
+      if (serviceRoleKey != null) 'serviceRoleKey': serviceRoleKey.trim(),
+      if (anonKey != null) 'anonKey': anonKey.trim(),
+      if (isActive != null) 'isActive': isActive,
+      if (storageLimitMB != null) 'storageLimitMB': storageLimitMB,
+      if (autoSwitchEnabled != null) 'autoSwitchEnabled': autoSwitchEnabled,
+      if (name != null) 'name': name.trim(),
+      if (email != null) 'email': email.trim(),
+      if (projectName != null) 'projectName': projectName.trim(),
+    };
+    await _mirrorWrite('settings', id, merged);
+    SupabaseReadService.invalidateSettingsCache();
   }
 
   static Future<void> deleteSupabaseAccount(String id) async {
@@ -1144,12 +1327,41 @@ class FirebaseService {
     if (existing == null) return {'status': 'error', 'error': 'Account not found'};
     final projectUrl = existing['projectUrl'] as String;
     final serviceKey = existing['serviceRoleKey'] as String;
+    if (projectUrl.isEmpty || serviceKey.isEmpty) {
+      return {'status': 'error', 'error': 'Account data incomplete (missing projectUrl or serviceRoleKey)'};
+    }
     final result = await _autoCreateBuckets(projectUrl, serviceKey);
+    // Merge with existing data so we don't lose projectUrl, serviceRoleKey, etc.
     await _mirrorWrite('settings', accountId, {
+      ...existing,
       'bucketStatus': result['status'],
       'failedBuckets': result['failedBuckets'],
     });
     return result;
+  }
+
+  /// Directly verify if buckets exist — bypasses proxy, uses Supabase API directly
+  static Future<Map<String, dynamic>> verifyBucketsExist(String projectUrl, String serviceKey) async {
+    final results = <String, String>{};
+    for (final bucket in ['folder_files', 'notices']) {
+      try {
+        final r = await http.get(
+          Uri.parse('${projectUrl.trim()}/storage/v1/bucket/$bucket'),
+          headers: {'Authorization': 'Bearer ${serviceKey.trim()}'},
+        ).timeout(const Duration(seconds: 15));
+        results[bucket] = r.statusCode == 200 ? 'ready' : 'missing';
+      } catch (_) {
+        results[bucket] = 'unknown';
+      }
+    }
+    final missing = results.entries.where((e) => e.value == 'missing').map((e) => e.key).toList();
+    final unknown = results.entries.where((e) => e.value == 'unknown').map((e) => e.key).toList();
+    final failed = results.entries.where((e) => e.value == 'missing').map((e) => e.key).toList();
+    if (unknown.isNotEmpty && missing.isEmpty) {
+      return {'status': 'unknown', 'results': results, 'failedBuckets': <String>[]};
+    }
+    final allReady = missing.isEmpty;
+    return {'status': allReady ? 'ready' : (failed.length == 2 ? 'failed' : 'partial'), 'results': results, 'failedBuckets': failed};
   }
 
   static Future<String> getActiveSupabaseAccountName() async {
@@ -1164,22 +1376,46 @@ class FirebaseService {
   }
 
   static Future<String> uploadFile(Uint8List bytes, String filename, {void Function(double)? onProgress, String? forceProvider}) async {
-    // Web always uses Supabase (Cloudinary removed)
-    if (kIsWeb) {
-      return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
-    }
-
     final provider = forceProvider ?? await getStorageProvider();
+
+    // Pre-upload storage limit check for Supabase providers
+    if (provider == 'supabase' || provider == 'both' || provider == 'supabase_clorabase') {
+      final switchResult = await _checkStorageAndSwitchIfNeeded();
+      if (switchResult['switched'] == true) {
+        // Storage was full, auto-switched to next account
+      }
+    }
 
     if (provider == 'both') {
       if (bytes.length <= 10 * 1024 * 1024) {
         try {
           return await _uploadViaCloudinary(bytes, filename);
         } catch (_) {
-          return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
+          // If Supabase upload fails due to storage limit, try switching account
+          try {
+            return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
+          } catch (e) {
+            if (e.toString().contains('storage') || e.toString().contains('limit') || e.toString().contains('quota')) {
+              final switched = await _checkStorageAndSwitchIfNeeded(forceSwitch: true);
+              if (switched['switched'] == true) {
+                return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
+              }
+            }
+            rethrow;
+          }
         }
       } else {
-        return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
+        try {
+          return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
+        } catch (e) {
+          if (e.toString().contains('storage') || e.toString().contains('limit') || e.toString().contains('quota')) {
+            final switched = await _checkStorageAndSwitchIfNeeded(forceSwitch: true);
+            if (switched['switched'] == true) {
+              return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
+            }
+          }
+          rethrow;
+        }
       }
     }
 
@@ -1187,7 +1423,96 @@ class FirebaseService {
       return await _uploadViaCloudinary(bytes, filename);
     }
 
-    return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
+    if (provider == 'clorabase') {
+      return await _uploadViaClorabase(bytes, filename);
+    }
+
+    if (provider == 'supabase_clorabase') {
+      try {
+        return await _uploadViaClorabase(bytes, filename);
+      } catch (_) {
+        try {
+          return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
+        } catch (e) {
+          if (e.toString().contains('storage') || e.toString().contains('limit') || e.toString().contains('quota')) {
+            final switched = await _checkStorageAndSwitchIfNeeded(forceSwitch: true);
+            if (switched['switched'] == true) {
+              return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
+            }
+          }
+          rethrow;
+        }
+      }
+    }
+
+    // Default: Supabase
+    try {
+      return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
+    } catch (e) {
+      if (e.toString().contains('storage') || e.toString().contains('limit') || e.toString().contains('quota')) {
+        final switched = await _checkStorageAndSwitchIfNeeded(forceSwitch: true);
+        if (switched['switched'] == true) {
+          return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
+        }
+      }
+      rethrow;
+    }
+  }
+
+  /// Check if active Supabase account has storage available, switch if needed
+  static Future<Map<String, dynamic>> _checkStorageAndSwitchIfNeeded({bool forceSwitch = false}) async {
+    try {
+      final accounts = await getSupabaseAccounts();
+      final activeAcc = accounts.firstWhere((a) => a['isActive'] == true, orElse: () => {});
+
+      if (activeAcc.isEmpty) return {'switched': false, 'reason': 'no_active_account'};
+
+      final storageLimitMB = activeAcc['storageLimitMB'] as int? ?? 1024;
+      final autoSwitchEnabled = activeAcc['autoSwitchEnabled'] as bool? ?? true;
+      // Trigger switch 10 MB before the limit (proactive), not at the limit
+      final thresholdMB = storageLimitMB - 10;
+
+      // Try to get current storage usage from the active account
+      final projectUrl = activeAcc['projectUrl'] as String? ?? '';
+      final serviceKey = activeAcc['serviceRoleKey'] as String? ?? '';
+      int realUsageMB = activeAcc['currentUsageMB'] as int? ?? 0;
+
+      if (projectUrl.isNotEmpty && serviceKey.isNotEmpty) {
+        try {
+          final usage = await getStorageUsage(projectUrl, serviceKey);
+          final realUsageBytes = usage['usedBytes'] as int? ?? 0;
+          realUsageMB = (realUsageBytes / (1024 * 1024)).round();
+          await _mirrorWrite('settings', activeAcc['id'], {'currentUsageMB': realUsageMB});
+        } catch (_) {}
+      }
+
+      final isNearLimit = realUsageMB >= thresholdMB || forceSwitch;
+
+      if (isNearLimit) {
+        if (!autoSwitchEnabled && !forceSwitch) return {'switched': false, 'reason': 'auto_switch_disabled'};
+
+        // Find next available account with enough free space
+        for (final acc in accounts) {
+          if (acc['id'] == activeAcc['id']) continue;
+          if (acc['isActive'] == true) continue;
+          if (acc['bucketStatus'] != 'ready') continue;
+
+          final nextUsage = acc['currentUsageMB'] as int? ?? 0;
+          final nextLimit = acc['storageLimitMB'] as int? ?? 1024;
+          final nextFreeMB = nextLimit - nextUsage;
+          // Skip accounts that are also near-full (need at least 50 MB free)
+          if (nextFreeMB < 50) continue;
+
+          // Switch to this account
+          await updateSupabaseAccount(acc['id'], isActive: true);
+          await reinitializeSupabase();
+          return {'switched': true, 'newAccount': acc['id']};
+        }
+
+        return {'switched': false, 'reason': 'no_available_account'};
+      }
+    } catch (_) {}
+    return {'switched': false, 'reason': 'check_failed'};
   }
 
   static Future<String> _uploadViaCloudinary(Uint8List bytes, String filename) async {
@@ -1199,6 +1524,17 @@ class FirebaseService {
       }
     }
     return await uploadToCloudinary(bytes, filename);
+  }
+
+  static Future<String> _uploadViaClorabase(Uint8List bytes, String filename) async {
+    final user = currentUser;
+    if (user != null) {
+      final role = await getUserRole(user.uid);
+      if (role == 'Assistant') {
+        return await _uploadToAssistantClorabase(user.uid, bytes, filename);
+      }
+    }
+    return await uploadToClorabase(bytes, filename);
   }
 
   static Future<String> _uploadViaSupabase(Uint8List bytes, String filename, {void Function(double)? onProgress}) async {
@@ -1246,6 +1582,30 @@ class FirebaseService {
     }
   }
 
+  static Future<String> _uploadToAssistantClorabase(String assistantUid, Uint8List bytes, String filename) async {
+    List<Map<String, dynamic>>? accounts;
+    try { accounts = await SupabaseReadService.getAssistantClorabaseAccounts(); } catch (_) {}
+    final match = accounts?.firstWhere(
+      (a) => a['assistantUid'] == assistantUid && a['isActive'] == true,
+      orElse: () => {},
+    );
+    if (match == null || match.isEmpty) {
+      return await uploadToClorabase(bytes, filename);
+    }
+
+    final githubUsername = match['githubUsername'] as String;
+    final githubToken = match['githubToken'] as String;
+    final projectName = match['projectName'] as String;
+
+    return await ClorabaseService.uploadFile(
+      username: githubUsername,
+      token: githubToken,
+      project: projectName,
+      bytes: bytes,
+      filename: filename,
+    );
+  }
+
   // ─── Folders ───────────────────────────────────────────────────────────────────
 
   static Stream<QuerySnapshot> getAllFolders() {
@@ -1254,19 +1614,8 @@ class FirebaseService {
   }
 
   static Future<String?> createRootFolder({required String name, String? icon, String? color}) async {
-    final doc = await firestore.collection('folders').add({
-      'name': name,
-      'icon': icon ?? 'folder',
-      'color': color ?? '#4A148C',
-      'item_count': 0,
-      'locked': false,
-      'invisible': false,
-      'updating': false,
-      'group_link': null,
-      'sort_order': 0,
-      'createdAt': FieldValue.serverTimestamp(),
-    });
-    await _mirrorWrite('folders', doc.id, {
+    final docId = 'fld_${DateTime.now().millisecondsSinceEpoch}';
+    final folderData = {
       'name': name,
       'icon': icon ?? 'folder',
       'color': color ?? '#4A148C',
@@ -1277,12 +1626,14 @@ class FirebaseService {
       'group_link': null,
       'sort_order': 0,
       'createdAt': DateTime.now().toIso8601String(),
-    });
-    return doc.id;
+    };
+    // Supabase ONLY — Firestore mirror removed
+    final ok = await SupabaseReadService.writeToAll('folders', docId, folderData);
+    if (!ok) return null;
+    return docId;
   }
 
   static Future<void> renameRootFolder(String folderId, String name) async {
-    try { await firestore.collection('folders').doc(folderId).update({'name': name}); } catch (_) {}
     Map<String, dynamic>? existing;
     try { existing = await SupabaseReadService.getFolder(folderId); } catch (_) {}
     final merged = <String, dynamic>{...?existing, 'name': name};
@@ -1292,13 +1643,28 @@ class FirebaseService {
   static Future<void> deleteRootFolder(String folderId) async {
     await _deleteAllContentsRecursive(folderId, 'contents');
     await _deleteAllContentsRecursive(folderId, 'content');
-    try { await firestore.collection('folders').doc(folderId).delete(); } catch (_) {}
     await _mirrorWrite('folders', folderId, const {}, delete: true);
   }
 
   static Future<void> _deleteAllContentsRecursive(String folderId, String subcollection) async {
-    // Supabase-only: bulk delete via mirror
-    await _mirrorBulk('contents', 'delete_filter', filter: {'folderId': folderId});
+    // Supabase-only: recursively delete ALL contents (children, grandchildren, etc.)
+    try {
+      // 1. Fetch ALL contents in this folder (fetchAll = no parent_content_id filter)
+      final allContents = await SupabaseReadService.getFolderContents(folderId, fetchAll: true);
+      if (allContents == null || allContents.isEmpty) return;
+
+      // 2. For each subfolder, recursively delete its children first (deepest first)
+      for (final item in allContents) {
+        if (item['type'] == 'subfolder') {
+          await _deleteSubfolderChildrenRecursive(folderId, item['id'] as String, '');
+        }
+      }
+
+      // 3. Now delete all items (they have no children left)
+      for (final item in allContents) {
+        await SupabaseReadService.writeToAll('contents', item['id'] as String, const {}, delete: true);
+      }
+    } catch (_) {}
   }
 
   static Future<void> deleteFolder(String folderId) async {
@@ -1306,7 +1672,6 @@ class FirebaseService {
   }
 
   static Future<void> toggleFolderLock(String folderId, String field, dynamic value) async {
-    try { await firestore.collection('folders').doc(folderId).update({field: value}); } catch (_) {}
     Map<String, dynamic>? existing;
     try { existing = await SupabaseReadService.getFolder(folderId); } catch (_) {}
     final merged = <String, dynamic>{...?existing, field: value};
@@ -1355,19 +1720,29 @@ class FirebaseService {
 
   static Future<void> setGroupLink(String folderId, String link, {String? parentContentId, bool inheritGroup = true}) async {
     if (parentContentId != null && parentContentId != 'root') {
-      await _mirrorWrite('contents', parentContentId, {
+      // Read-merge-write to preserve existing JSONB fields
+      Map<String, dynamic>? existing;
+      try { existing = await SupabaseReadService.getContent(folderId, parentContentId); } catch (_) {}
+      final merged = <String, dynamic>{
+        if (existing != null) ...existing,
         'folderId': folderId,
         'group_link': link,
         'inherit_group': inheritGroup,
-      });
+      };
+      await _mirrorWrite('contents', parentContentId, merged);
       if (inheritGroup) {
         await _propagateAllDescendants(folderId, parentContentId, link, true);
       }
     } else {
-      await _mirrorWrite('folders', folderId, {
+      // Read-merge-write to preserve existing JSONB fields
+      Map<String, dynamic>? existing;
+      try { existing = await SupabaseReadService.getFolder(folderId); } catch (_) {}
+      final merged = <String, dynamic>{
+        if (existing != null) ...existing,
         'group_link': link,
         'inherit_group': inheritGroup,
-      });
+      };
+      await _mirrorWrite('folders', folderId, merged);
       if (inheritGroup) {
         await _propagateAllDescendants(folderId, null, link, true);
       }
@@ -1379,11 +1754,14 @@ class FirebaseService {
       Map<String, dynamic>? data;
       try { data = await SupabaseReadService.getContent(folderId, parentContentId); } catch (_) {}
       final inherit = data?['inherit_group'] as bool? ?? true;
-      await _mirrorWrite('contents', parentContentId, {
+      // Read-merge-write to preserve existing JSONB fields
+      final merged = <String, dynamic>{
+        if (data != null) ...data,
         'folderId': folderId,
         'group_link': null,
         'inherit_group': true,
-      });
+      };
+      await _mirrorWrite('contents', parentContentId, merged);
       if (inherit) {
         await _propagateAllDescendants(folderId, parentContentId, null, true);
       }
@@ -1391,10 +1769,13 @@ class FirebaseService {
       Map<String, dynamic>? folderData;
       try { folderData = await SupabaseReadService.getFolder(folderId); } catch (_) {}
       final inherit = folderData?['inherit_group'] as bool? ?? true;
-      await _mirrorWrite('folders', folderId, {
+      // Read-merge-write to preserve existing JSONB fields
+      final merged = <String, dynamic>{
+        if (folderData != null) ...folderData,
         'group_link': null,
         'inherit_group': true,
-      });
+      };
+      await _mirrorWrite('folders', folderId, merged);
       if (inherit) {
         await _propagateAllDescendants(folderId, null, null, true);
       }
@@ -1402,10 +1783,36 @@ class FirebaseService {
   }
 
   static Future<void> _propagateAllDescendants(String folderId, String? startParentId, String? link, bool inheritGroup) async {
-    await SupabaseReadService.bulkUpdateWhere('contents', {'folderId': folderId}, {
-      'group_link': link,
-      'inherit_group': inheritGroup,
-    });
+    try {
+      if (startParentId != null) {
+        // Propagate into a specific content subtree
+        final children = await SupabaseReadService.getFolderContents(folderId, parentContentId: startParentId, fetchAll: true);
+        if (children != null) {
+          for (final child in children) {
+            await SupabaseReadService.writeToAll('contents', child['id'] as String, {
+              'group_link': link,
+              'inherit_group': inheritGroup,
+              'folderId': folderId,
+            });
+            if (child['type'] == 'subfolder') {
+              await _propagateAllDescendants(folderId, child['id'] as String, link, inheritGroup);
+            }
+          }
+        }
+      } else {
+        // Propagate from root of the folder
+        final allContents = await SupabaseReadService.getFolderContents(folderId, fetchAll: true);
+        if (allContents != null) {
+          for (final item in allContents) {
+            await SupabaseReadService.writeToAll('contents', item['id'] as String, {
+              'group_link': link,
+              'inherit_group': inheritGroup,
+              'folderId': folderId,
+            });
+          }
+        }
+      }
+    } catch (_) {}
   }
 
   // ─── Folder Contents ───────────────────────────────────────────────────────────
@@ -1416,21 +1823,22 @@ class FirebaseService {
   }
 
   static Future<String?> addFolderContent(String folderId, Map<String, dynamic> data) async {
-    final doc = await firestore.collection('folders').doc(folderId).collection('contents').add({
-      'createdAt': FieldValue.serverTimestamp(),
-      ...data,
-    });
-    await firestore.collection('folders').doc(folderId).update({'item_count': FieldValue.increment(1)}).catchError((_) {});
-    await _mirrorWrite('contents', doc.id, {
+    final docId = 'cnt_${DateTime.now().millisecondsSinceEpoch}';
+    final payload = {
       'folderId': folderId,
       ...data,
       'createdAt': DateTime.now().toIso8601String(),
-    });
-    return doc.id;
+    };
+    // Retry up to 3 times with increasing delay
+    for (int attempt = 1; attempt <= 3; attempt++) {
+      final ok = await SupabaseReadService.writeToAll('contents', docId, payload);
+      if (ok) return docId;
+      if (attempt < 3) await Future.delayed(Duration(seconds: attempt));
+    }
+    return null;
   }
 
   static Future<void> renameFolderContent(String folderId, String contentId, String name) async {
-    try { await firestore.collection('folders').doc(folderId).collection('contents').doc(contentId).update({'name': name}); } catch (_) {}
     Map<String, dynamic>? existing;
     try { existing = await SupabaseReadService.getContent(folderId, contentId); } catch (_) {}
     final merged = <String, dynamic>{...?existing, 'name': name, 'folderId': folderId};
@@ -1438,12 +1846,29 @@ class FirebaseService {
   }
 
   static Future<void> deleteFolderContent(String folderId, String contentId) async {
-    try { await firestore.collection('folders').doc(folderId).collection('contents').doc(contentId).delete(); } catch (_) {}
+    // First, check if this is a subfolder and delete its children recursively
+    try {
+      final content = await SupabaseReadService.getContent(folderId, contentId);
+      if (content != null && content['type'] == 'subfolder') {
+        await _deleteSubfolderChildrenRecursive(folderId, contentId, '');
+      }
+    } catch (_) {}
     await _mirrorWrite('contents', contentId, const {}, delete: true);
   }
 
   static Future<void> _deleteSubfolderChildrenRecursive(String folderId, String parentContentId, String subcollection) async {
-    await _mirrorBulk('contents', 'delete_filter', filter: {'folderId': folderId, 'parentContentId': parentContentId});
+    // Recursively delete all children of a subfolder
+    try {
+      final children = await SupabaseReadService.getFolderContents(folderId, parentContentId: parentContentId);
+      if (children != null) {
+        for (final child in children) {
+          if (child['type'] == 'subfolder') {
+            await _deleteSubfolderChildrenRecursive(folderId, child['id'] as String, subcollection);
+          }
+          await SupabaseReadService.writeToAll('contents', child['id'] as String, const {}, delete: true);
+        }
+      }
+    } catch (_) {}
   }
 
   static Future<void> updateContentField(String folderId, String contentId, String field, dynamic value) async {
@@ -1485,23 +1910,19 @@ class FirebaseService {
         supabaseUrl = await uploadFileToSupabase('notices', fileName, file);
       }
       final docId = 'nt_${DateTime.now().millisecondsSinceEpoch}';
+      final userName = currentUser?.displayName ?? 'Admin';
       await _mirrorWrite('notices', docId, {
         'title': title,
         'fileUrl': supabaseUrl,
         'fileType': fileType,
+        'addedBy': userName,
         'createdAt': DateTime.now().toIso8601String(),
+        'isPinned': false,
       });
       return docId;
     } catch (e) {
-      // Fallback: just save the text notice without file
-      final docId = 'nt_${DateTime.now().millisecondsSinceEpoch}';
-      await _mirrorWrite('notices', docId, {
-        'title': title,
-        'fileUrl': null,
-        'fileType': 'text',
-        'createdAt': DateTime.now().toIso8601String(),
-      });
-      return docId;
+      print('[addNotice] Supabase write failed: $e');
+      return null;
     }
   }
 
@@ -1873,7 +2294,9 @@ class FirebaseService {
       final ticketNo = docId.substring(0, 6).toUpperCase();
       final mirrorData = Map<String, dynamic>.from(data);
       mirrorData['ticketNo'] = ticketNo;
-      await _mirrorWrite('feedbacks', docId, mirrorData);
+      // Supabase FIRST — check if write succeeded
+      final ok = await SupabaseReadService.writeToAll('feedbacks', docId, mirrorData);
+      if (!ok) return null;
       final name = currentUser?.displayName ?? 'Unknown';
       await addAdminNotification('feedback', 'New Contact Support message from $name', relatedUid: currentUser?.uid);
       return docId;
@@ -1907,11 +2330,23 @@ class FirebaseService {
   }
 
   static Future<void> updateFeedbackStatus(String id, String status) async {
-    await _mirrorWrite('feedbacks', id, {'status': status});
+    Map<String, dynamic>? existing;
+    try { existing = await SupabaseReadService.readPrimary('feedbacks', id); } catch (_) {}
+    final merged = <String, dynamic>{
+      if (existing != null) ...existing,
+      'status': status,
+    };
+    await _mirrorWrite('feedbacks', id, merged);
   }
 
   static Future<void> updateFeedbackReply(String id, String reply) async {
-    await _mirrorWrite('feedbacks', id, {'reply': reply});
+    Map<String, dynamic>? existing;
+    try { existing = await SupabaseReadService.readPrimary('feedbacks', id); } catch (_) {}
+    final merged = <String, dynamic>{
+      if (existing != null) ...existing,
+      'reply': reply,
+    };
+    await _mirrorWrite('feedbacks', id, merged);
   }
 
   // ─── Notes ─────────────────────────────────────────────────────────────────────
@@ -1928,17 +2363,20 @@ class FirebaseService {
     return null;
   }
 
-  static Future<bool> saveNote(String lectureId, String content, {String? lectureName}) async {
+  static Future<bool> saveNote(String lectureId, String content, {String? lectureName, String? source, String? pdfUrl}) async {
     final uid = currentUser?.uid;
     if (uid == null) return false;
     try {
-      await SupabaseReadService.writeToAll('notes', lectureId, {
+      final ok = await SupabaseReadService.writeToAll('notes', lectureId, {
         'uid': uid,
         'content': content,
         'lectureName': lectureName ?? '',
+        'source': source ?? 'notepad',
+        'pdfUrl': pdfUrl ?? '',
         'updatedAt': DateTime.now().toIso8601String(),
       });
-      return true;
+      print('[saveNote] writeToAll returned: $ok');
+      return ok;
     } catch (e) {
       print('[saveNote] Supabase write failed: $e');
       return false;
@@ -1970,7 +2408,16 @@ class FirebaseService {
   static Future<void> renameNote(String id, String newName) async {
     final uid = currentUser?.uid;
     if (uid == null) return;
-    await SupabaseReadService.writeToAll('notes', id, {'uid': uid, 'lectureName': newName});
+    // Read-merge-write to preserve existing JSONB fields (content, etc.)
+    Map<String, dynamic>? existing;
+    try { existing = await SupabaseReadService.getNote(id, uid); } catch (_) {}
+    final merged = <String, dynamic>{
+      if (existing != null) ...existing,
+      'uid': uid,
+      'lectureName': newName,
+      'updatedAt': DateTime.now().toIso8601String(),
+    };
+    await SupabaseReadService.writeToAll('notes', id, merged);
   }
 
   // ─── Assistant Access ─────────────────────────────────────────────────────────────
@@ -2040,13 +2487,11 @@ class FirebaseService {
 
   static Future<void> updateSetting(String key, dynamic value) async {
     SupabaseReadService.invalidateSettingsCache();
-    Map<String, dynamic>? current;
-    try { current = await SupabaseReadService.readPrimary('settings', 'general'); } catch (_) {}
-    current ??= await SupabaseReadService.getSettings('general');
+    final current = await SupabaseReadService.getSettings('general');
     final data = Map<String, dynamic>.from(current ?? {});
     data[key] = value;
     // ignore: avoid_print
-    print('[UPDATE_SETTING] key=$key value=$value currentKeys=${current?.keys.toList()} writeData=$data');
+    print('[UPDATE_SETTING] key=$key value=$value writeData.keys=${data.keys.toList()}');
     bool writeOk = false;
     try {
       writeOk = await SupabaseReadService.writeToAll('settings', 'general', data);
@@ -2138,13 +2583,9 @@ class FirebaseService {
     return SupabaseReadService.streamLoginHistory(uid).map((rows) => _MirrorQuerySnapshot(rows));
   }
 
-  /// Mirror-first single-folder read (returns an adapter snapshot so callers
+  /// Supabase-only single-folder read (returns an adapter snapshot so callers
   /// that expect a [DocumentSnapshot] keep working without a Firestore read).
   static Future<DocumentSnapshot> getFolderDoc(String folderId) async {
-    try {
-      final doc = await firestore.collection('folders').doc(folderId).get();
-      if (doc.exists) return doc;
-    } catch (_) {}
     try {
       final mirror = await SupabaseReadService.getFolder(folderId);
       if (mirror != null) return _MirrorDocumentSnapshot(mirror);

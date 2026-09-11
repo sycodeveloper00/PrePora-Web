@@ -1,14 +1,17 @@
 import 'dart:async';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:url_launcher/url_launcher.dart';
+import 'dart:html' as html;
 import '../../../core/widgets/glassmorphic_container.dart';
 import '../../../core/widgets/animated_pressable.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/services/supabase_read_service.dart';
 import '../../../core/services/widget_service.dart';
 import '../../../core/theme/theme_provider.dart';
 import '../../../core/widgets/notification_popup_box.dart';
@@ -53,14 +56,19 @@ class _DashboardScreenState extends State<DashboardScreen>
   bool _isVerified = true;
   bool _isPaidAccess = false;
   bool _isFreeTrialActive = false;
+  DateTime? _freeTrialEndsAt;
+  Timer? _trialCountdownTimer;
+  String _trialCountdownText = '';
+  Set<String> _sentTrialWarnings = {};
   double _price = 0;
   String _accountTitle = '';
   String _accountNo = '';
   String _bankName = '';
 
   // Real-time listener for user verification/blocked status
-  StreamSubscription? _userStatusSub;
-  StreamSubscription? _settingsSub;
+  Timer? _userStatusTimer;
+  Timer? _settingsTimer;
+  Timer? _sessionCheckTimer;
   Stream<QuerySnapshot>? _notificationStream;
   int _streakCount = 0;
   int _totalActiveDays = 0;
@@ -74,6 +82,8 @@ class _DashboardScreenState extends State<DashboardScreen>
     _startTypingAnimation();
     _checkForUpdates();
     _rebuildNotificationStream();
+    _startSessionCheck();
+    _startTrialCountdown();
 
     _floatController = AnimationController(
       vsync: this,
@@ -89,38 +99,51 @@ class _DashboardScreenState extends State<DashboardScreen>
   void _checkStatus() async {
     final uid = FirebaseService.currentUser?.uid;
     if (uid == null) return;
-    final blocked = await FirebaseService.isStudentBlocked(uid);
-    final settings = await FirebaseService.getSettings();
-    final paidAccess = settings['paidAccess'] as bool? ?? false;
-    final verified = await FirebaseService.isStudentVerified(uid);
-    final trial = await FirebaseService.getFreeTrial(uid);
-    final trialActive = trial['active'] == true;
-    final trialEnd = trial['endsAt'] as DateTime?;
-    if (trialActive && trialEnd != null && !trialEnd.isAfter(DateTime.now())) {
-      await FirebaseService.expireFreeTrial(uid);
+
+    // Fire all initial reads in parallel (Supabase-backed)
+    final results = await Future.wait([
+      SupabaseReadService.getUser(uid),
+      SupabaseReadService.getSettings('general'),
+      FirebaseService.getStreak(uid),
+    ]);
+
+    final user = results[0] as Map<String, dynamic>?;
+    final settings = results[1] as Map<String, dynamic>?;
+    final streakData = results[2] as Map<String, dynamic>;
+
+    final blocked = user?['blocked'] as bool? ?? false;
+    var paidAccess = settings?['paidAccess'] as bool? ?? false;
+    final verified = user?['verified'] as bool? ?? false;
+    final trialActive = user?['freeTrialActive'] == true;
+    final endsAt = user?['freeTrialEndsAt'];
+    final trialEnd = endsAt is String ? DateTime.tryParse(endsAt) : null;
+
+    if (!paidAccess && trialEnd != null && trialEnd.isBefore(DateTime.now())) {
+      await FirebaseService.updateSetting('paidAccess', true);
+      paidAccess = true;
     }
-    final user = FirebaseService.currentUser;
-    final userDoc = await FirebaseService.getUser(uid);
-    final createdAt = (userDoc?.data() as Map<String, dynamic>?)?['createdAt'] as Timestamp?;
+
+    final authUser = FirebaseService.currentUser;
+    final createdAtRaw = user?['createdAt'];
+    DateTime? createdAt;
+    if (createdAtRaw is String) createdAt = DateTime.tryParse(createdAtRaw);
+
     if (mounted) setState(() {
       _isBlocked = blocked;
       _isVerified = verified;
       _isPaidAccess = paidAccess;
       _isFreeTrialActive = trialActive && (trialEnd?.isAfter(DateTime.now()) ?? false);
-      _price = (settings['price'] as num?)?.toDouble() ?? 0;
-      _accountTitle = settings['accountTitle'] as String? ?? '';
-      _accountNo = settings['accountNo'] as String? ?? '';
-      _bankName = settings['bankName'] as String? ?? '';
-      _userName = user?.displayName ?? '';
-      _userEmail = user?.email ?? '';
-      _userCreatedAt = createdAt?.toDate() ?? DateTime(2020);
-      _rebuildNotificationStream();
-    });
-    // Load streak
-    final streakData = await FirebaseService.getStreak(uid);
-    if (mounted) setState(() {
+      _freeTrialEndsAt = trialEnd;
+      _price = (settings?['price'] as num?)?.toDouble() ?? 0;
+      _accountTitle = settings?['accountTitle'] as String? ?? '';
+      _accountNo = settings?['accountNo'] as String? ?? '';
+      _bankName = settings?['bankName'] as String? ?? '';
+      _userName = authUser?.displayName ?? user?['name'] as String? ?? '';
+      _userEmail = authUser?.email ?? user?['email'] as String? ?? '';
+      _userCreatedAt = createdAt ?? DateTime(2020);
       _streakCount = streakData['streakCount'] as int? ?? 0;
       _totalActiveDays = streakData['totalActiveDays'] as int? ?? 0;
+      _rebuildNotificationStream();
     });
     WidgetService.updateStreakWidget(_streakCount, _totalActiveDays);
   }
@@ -131,56 +154,123 @@ class _DashboardScreenState extends State<DashboardScreen>
     _notificationStream = FirebaseService.getNotificationsForUser(uid, _userCreatedAt);
   }
 
-  /// Listens to the user's Firestore document in real-time so that verification
-  /// and blocked status updates from admin reflect immediately without a restart.
+  void _startTrialCountdown() {
+    _trialCountdownTimer?.cancel();
+    _updateTrialCountdown();
+    _trialCountdownTimer = Timer.periodic(const Duration(seconds: 1), (_) => _updateTrialCountdown());
+  }
+
+  void _updateTrialCountdown() {
+    if (!mounted || _freeTrialEndsAt == null) return;
+    final now = DateTime.now();
+    final diff = _freeTrialEndsAt!.difference(now);
+    if (diff.isNegative || diff.inSeconds <= 0) {
+      _trialCountdownText = 'Trial expired';
+      _trialCountdownTimer?.cancel();
+      return;
+    }
+    final dd = diff.inDays.toString().padLeft(2, '0');
+    final hh = (diff.inHours % 24).toString().padLeft(2, '0');
+    final mm = (diff.inMinutes % 60).toString().padLeft(2, '0');
+    final ss = (diff.inSeconds % 60).toString().padLeft(2, '0');
+    if (mounted) setState(() => _trialCountdownText = '$dd:$hh:$mm:$ss');
+  }
+
+  /// Polls user status from Supabase mirror every 30s instead of live Firestore listener.
+
   void _listenUserStatus() {
+    _userStatusTimer?.cancel();
+    _pollUserStatus();
+    _userStatusTimer = Timer.periodic(const Duration(seconds: 30), (_) => _pollUserStatus());
+  }
+
+  Future<void> _pollUserStatus() async {
     final uid = FirebaseService.currentUser?.uid;
-    if (uid == null) return;
-    _userStatusSub = FirebaseService.firestore
-        .collection('users')
-        .doc(uid)
-        .snapshots()
-        .listen((snap) async {
-      if (!snap.exists || !mounted) return;
-      final data = snap.data() as Map<String, dynamic>;
-      final blocked = data['blocked'] as bool? ?? false;
-      final settings = await FirebaseService.getSettings();
-      final paidAccess = settings['paidAccess'] as bool? ?? false;
-      final verified = data['verified'] as bool? ?? false;
-      final trialActive = data['freeTrialActive'] == true;
-      final endsAt = data['freeTrialEndsAt'];
-      final trialEnd = endsAt is Timestamp ? endsAt.toDate() : null;
-      if (trialActive && trialEnd != null && !trialEnd.isAfter(DateTime.now())) {
-        await FirebaseService.expireFreeTrial(uid);
+    if (uid == null || !mounted) return;
+    try {
+      final user = await SupabaseReadService.getUser(uid);
+      if (user == null || !mounted) return;
+      final blocked = user['blocked'] as bool? ?? false;
+      final verified = user['verified'] as bool? ?? false;
+      final trialActive = user['freeTrialActive'] == true;
+      final endsAt = user['freeTrialEndsAt'];
+      final trialEnd = endsAt is String ? DateTime.tryParse(endsAt) : null;
+      if (trialEnd != null && trialEnd.isBefore(DateTime.now())) {
+        if (!_isPaidAccess) {
+          await FirebaseService.updateSetting('paidAccess', true);
+          if (mounted) setState(() => _isPaidAccess = true);
+        }
       }
+      final isTrialNow = trialActive && (trialEnd?.isAfter(DateTime.now()) ?? false);
       if (mounted) setState(() {
         _isBlocked = blocked;
         _isVerified = verified;
-        _isPaidAccess = paidAccess;
-        _isFreeTrialActive = trialActive && (trialEnd?.isAfter(DateTime.now()) ?? false);
+        _isFreeTrialActive = isTrialNow;
+        _freeTrialEndsAt = trialEnd;
       });
-    });
+      if (isTrialNow && trialEnd != null && !_isVerified) {
+        _sendTrialExpiryWarning(uid, trialEnd);
+      }
+    } catch (_) {}
   }
 
-  /// Listens to the global `settings/general` document in real-time so that when
-  /// the admin toggles `paidAccess` (or changes price/account info), unverified
-  /// student panels reflect the change immediately WITHOUT restarting the app.
+  void _sendTrialExpiryWarning(String uid, DateTime trialEnd) async {
+    final remaining = trialEnd.difference(DateTime.now());
+    final hours = remaining.inHours;
+    String? warningKey;
+    String? message;
+    if (remaining.inSeconds <= 0 && !_sentTrialWarnings.contains('ended')) {
+      final userData = await SupabaseReadService.getUser(uid);
+      final isVerified = userData?['verified'] == true;
+      if (!isVerified) {
+        warningKey = 'ended';
+        message = 'Free Trial Ended — now pay fee and verify the account.';
+      }
+    } else if (hours <= 1 && hours > 0 && !_sentTrialWarnings.contains('1h')) {
+      warningKey = '1h';
+      message = 'Your free trial expires in less than 1 hour!';
+    } else if (hours <= 6 && hours > 1 && !_sentTrialWarnings.contains('6h')) {
+      warningKey = '6h';
+      message = 'Your free trial expires in less than 6 hours.';
+    } else if (hours <= 24 && hours > 6 && !_sentTrialWarnings.contains('24h')) {
+      warningKey = '24h';
+      message = 'Your free trial expires in less than 24 hours.';
+    } else if (hours <= 48 && hours > 24 && !_sentTrialWarnings.contains('48h')) {
+      warningKey = '48h';
+      message = 'Your free trial expires in less than 48 hours.';
+    }
+    if (warningKey != null && message != null) {
+      _sentTrialWarnings.add(warningKey);
+      FirebaseService.addTargetedNotification(uid, message);
+    }
+  }
+
+  /// Polls settings from Supabase mirror every 30s instead of live Firestore listener.
+
   void _listenSettings() {
-    _settingsSub = FirebaseService.firestore
-        .collection('settings')
-        .doc('general')
-        .snapshots()
-        .listen((snap) {
-      if (!snap.exists || !mounted) return;
-      final data = snap.data() as Map<String, dynamic>;
+    _settingsTimer?.cancel();
+    _pollSettings();
+    _settingsTimer = Timer.periodic(const Duration(seconds: 30), (_) => _pollSettings());
+  }
+
+  Future<void> _pollSettings() async {
+    if (!mounted) return;
+    try {
+      final data = await SupabaseReadService.getSettings('general');
+      if (data == null || !mounted) return;
+      var paidAccess = data['paidAccess'] as bool? ?? false;
+      if (!paidAccess && _freeTrialEndsAt != null && _freeTrialEndsAt!.isBefore(DateTime.now())) {
+        await FirebaseService.updateSetting('paidAccess', true);
+        paidAccess = true;
+      }
       setState(() {
-        _isPaidAccess = data['paidAccess'] as bool? ?? false;
+        _isPaidAccess = paidAccess;
         _price = (data['price'] as num?)?.toDouble() ?? 0;
         _accountTitle = data['accountTitle'] as String? ?? '';
-        _accountNo = data['accountNo'] as String? ?? '';
         _bankName = data['bankName'] as String? ?? '';
+        _accountNo = data['accountNo'] as String? ?? '';
       });
-    });
+    } catch (_) {}
   }
 
   void _startTypingAnimation() {
@@ -219,12 +309,45 @@ class _DashboardScreenState extends State<DashboardScreen>
   @override
   void dispose() {
     _typingTimer?.cancel();
-    _userStatusSub?.cancel();
-    _settingsSub?.cancel();
+    _userStatusTimer?.cancel();
+    _settingsTimer?.cancel();
+    _sessionCheckTimer?.cancel();
+    _trialCountdownTimer?.cancel();
     _floatController.dispose();
     _searchController.dispose();
     _searchDebounce?.cancel();
     super.dispose();
+  }
+
+  int _sessionMismatchCount = 0;
+
+  void _startSessionCheck() {
+    if (!kIsWeb) return;
+    final host = Uri.base.host;
+    if (!host.contains('prepora-web-fop')) return;
+    _sessionCheckTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+      final uid = FirebaseService.currentUser?.uid;
+      if (uid == null) return;
+      try {
+        final userData = await SupabaseReadService.getUser(uid);
+        final remoteSessionId = userData?['currentWebSessionId'] as String?;
+        final localSessionId = html.window.localStorage['fop_session_id'];
+        // Only sign out if BOTH IDs exist AND don't match for 3 consecutive checks
+        // (prevents false sign-outs from Supabase failover or temporary read issues)
+        if (remoteSessionId != null && localSessionId != null && remoteSessionId != localSessionId) {
+          _sessionMismatchCount++;
+          if (_sessionMismatchCount >= 3) {
+            _sessionCheckTimer?.cancel();
+            if (mounted) {
+              await FirebaseService.signOut();
+              context.go('/auth/login');
+            }
+          }
+        } else {
+          _sessionMismatchCount = 0;
+        }
+      } catch (_) {}
+    });
   }
 
   void _showNotifications() {
@@ -816,7 +939,8 @@ class _DashboardScreenState extends State<DashboardScreen>
   bool _isAncestorRestricted(String? contentId, Map<String, Map<String, dynamic>> contentMap, {int depth = 0}) {
     if (contentId == null || contentId == 'root' || depth > 10) return false;
     final data = contentMap[contentId];
-    if (data == null) return false;
+    // Parent not found = orphaned (deleted parent) → treat as restricted
+    if (data == null) return true;
     if (data['invisible'] == true || data['locked'] == true || data['updating'] == true) return true;
     return _isAncestorRestricted(data['parentContentId'] as String?, contentMap, depth: depth + 1);
   }
@@ -829,45 +953,59 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (mounted) setState(() => _isSearching = true);
     final q = query.toLowerCase();
     final results = <_SearchResult>[];
-    final foldersSnap = await FirebaseService.firestore.collection('folders').get();
-    for (final folderDoc in foldersSnap.docs) {
-      final folderData = folderDoc.data() as Map<String, dynamic>;
-      if (folderData['invisible'] == true || folderData['locked'] == true || folderData['updating'] == true) continue;
-      final folderName = folderData['name'] as String? ?? '';
-      final folderId = folderDoc.id;
-      if (folderName.toLowerCase().contains(q)) {
-        results.add(_SearchResult(
-          title: folderName, folderId: folderId, isFolder: true,
-        ));
-      }
-      final contentsSnap = await FirebaseService.firestore
-          .collection('folders').doc(folderId)
-          .collection('contents').get();
-      final contentMap = <String, Map<String, dynamic>>{};
-      for (final doc in contentsSnap.docs) {
-        contentMap[doc.id] = doc.data() as Map<String, dynamic>;
-      }
-      for (final contentDoc in contentsSnap.docs) {
-        final contentData = contentDoc.data() as Map<String, dynamic>;
-        final contentName = contentData['name'] as String? ?? contentData['title'] as String? ?? '';
-        if (contentName.toLowerCase().contains(q)) {
-          if (contentData['invisible'] == true || contentData['locked'] == true || contentData['updating'] == true) continue;
-          final parentContentId = contentData['parentContentId'] as String?;
-          if (_isAncestorRestricted(parentContentId, contentMap)) continue;
-          final docType = contentData['type'] as String?;
-          final isSubfolder = docType == 'subfolder' || (docType == null && contentData['url'] == null);
-          results.add(_SearchResult(
-            title: contentName,
-            folderId: folderId,
-            folderName: folderName,
-            contentId: contentDoc.id,
-            isFolder: false,
-            isSubfolder: isSubfolder,
-            parentContentId: parentContentId,
-          ));
+    try {
+      final folders = await SupabaseReadService.getFolders();
+      if (folders != null) {
+        for (final folderData in folders) {
+          final folderId = folderData['id'] as String? ?? '';
+          // Skip invisible/locked/updating folders
+          if (folderData['invisible'] == true || folderData['locked'] == true || folderData['updating'] == true) continue;
+          // Skip hidden folders (sort_order == -1)
+          final sortVal = folderData['sortOrder'];
+          if (sortVal is int && sortVal == -1) continue;
+          final folderName = folderData['name'] as String? ?? '';
+          if (folderName.toLowerCase().contains(q)) {
+            results.add(_SearchResult(
+              title: folderName, folderId: folderId, isFolder: true,
+            ));
+          }
+          final contents = await SupabaseReadService.getFolderContents(folderId, fetchAll: true);
+          if (contents == null) continue;
+          final contentMap = <String, Map<String, dynamic>>{};
+          for (final c in contents) {
+            final cid = c['id'] as String? ?? '';
+            if (cid.isNotEmpty) contentMap[cid] = c;
+          }
+          for (final contentData in contents) {
+            final contentId = contentData['id'] as String? ?? '';
+            final contentName = contentData['name'] as String? ?? contentData['title'] as String? ?? '';
+            if (contentName.toLowerCase().contains(q)) {
+              // Skip invisible/locked/updating content
+              if (contentData['invisible'] == true || contentData['locked'] == true || contentData['updating'] == true) continue;
+              // Skip hidden content (sort_order == -1)
+              final cSortVal = contentData['order'];
+              if (cSortVal is int && cSortVal == -1) continue;
+              // Skip orphaned content (parent doesn't exist = deleted)
+              final parentContentId = contentData['parentContentId'] as String?;
+              if (parentContentId != null && parentContentId != 'root' && !contentMap.containsKey(parentContentId)) continue;
+              // Skip if any ancestor is restricted
+              if (_isAncestorRestricted(parentContentId, contentMap)) continue;
+              final docType = contentData['type'] as String?;
+              final isSubfolder = docType == 'subfolder' || (docType == null && contentData['url'] == null);
+              results.add(_SearchResult(
+                title: contentName,
+                folderId: folderId,
+                folderName: folderName,
+                contentId: contentId,
+                isFolder: false,
+                isSubfolder: isSubfolder,
+                parentContentId: parentContentId,
+              ));
+            }
+          }
         }
       }
-    }
+    } catch (_) {}
     if (mounted) setState(() { _searchResults = results; _isSearching = false; });
   }
 
@@ -897,7 +1035,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       itemCount: _searchResults.length,
       itemBuilder: (context, index) {
         final r = _searchResults[index];
-        final label = r.isFolder ? 'Folder' : 'Content';
+        final label = r.isFolder ? 'Dashboard Folder' : (r.isSubfolder == true ? 'Folder' : 'File');
         final path = r.isFolder
             ? '/folders/${r.folderId}'
             : r.contentId != null
@@ -1283,19 +1421,20 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (uid == null) return;
     showDialog(context: context, builder: (_) => const Center(child: ProfessionalLoader()), barrierDismissible: false);
     try {
-      final isVerified = await FirebaseService.isStudentVerified(uid);
-      final trial = await FirebaseService.getFreeTrial(uid);
-      final trialEnd = trial['endsAt'] as DateTime?;
-      final inTrial = trial['active'] == true && (trialEnd?.isAfter(DateTime.now()) ?? false);
+      final user = await SupabaseReadService.getUser(uid);
       if (!mounted) return;
       if (context.mounted) Navigator.pop(context);
       if (!mounted) return;
+      final isVerified = user?['verified'] == true;
       if (isVerified) {
         _showFeedbackListDialog(context, uid);
         return;
       }
+      final trialActive = user?['freeTrialActive'] == true;
+      final endsAt = user?['freeTrialEndsAt'];
+      final trialEnd = endsAt is String ? DateTime.tryParse(endsAt) : null;
+      final inTrial = trialActive && (trialEnd?.isAfter(DateTime.now()) ?? false);
       if (inTrial) {
-        // Students on an active free trial get the simple ticket box (no fee form).
         _showFeedbackListDialog(context, uid);
         return;
       }
@@ -1594,7 +1733,11 @@ class _DashboardScreenState extends State<DashboardScreen>
                 const Spacer(),
                 IconButton(icon: const Icon(Icons.add, color: Color(0xFF00B8D4)), onPressed: () {
                   Navigator.pop(ctx);
-                  _showFeedbackTextDialog(context);
+                  if (_isPaidAccess && !_isVerified && !_isFreeTrialActive) {
+                    _showFeedbackWithPaymentDialog(context);
+                  } else {
+                    _showFeedbackTextDialog(context);
+                  }
                 }),
                 IconButton(icon: Icon(Icons.close, color: dimColor), onPressed: () => Navigator.pop(ctx)),
               ]),
@@ -1612,7 +1755,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                         final ticket = data['ticketNo'] as String? ?? '';
                         final msg = data['message'] as String? ?? '';
                         final status = data['status'] as String? ?? 'pending';
-                        final time = (data['createdAt'] as Timestamp?)?.toDate();
+                        final timeRaw = data['createdAt'];
+                        final time = timeRaw is String ? DateTime.tryParse(timeRaw) : (timeRaw as DateTime?);
                         final timeStr = time != null ? '${time.day}/${time.month}/${time.year} ${time.hour}:${time.minute.toString().padLeft(2, '0')}' : '';
                         final statusColor = status == 'completed' ? Colors.green : (status == 'rejected' ? Colors.red : (status == 'verified' ? Colors.teal : Colors.orange));
                         return Card(
@@ -1891,7 +2035,13 @@ class _DashboardGridState extends State<_DashboardGrid> {
         }
         final docs = snapshot.data!.docs.where((doc) {
           final d = doc.data() as Map<String, dynamic>;
-          return d['invisible'] != true;
+          if (d['invisible'] == true) return false;
+          if (d['enabled'] == false) return false;
+          final sortVal = d['sortOrder'];
+          if (sortVal is int && sortVal == -1) return false;
+          final name = d['name'] as String?;
+          if (name == null || name.trim().isEmpty) return false;
+          return true;
         }).toList();
         final colors = [Colors.purple, Colors.teal, Colors.blue, Colors.orange, Colors.pink, Colors.indigo, Colors.green, Colors.amber];
         final screenWidth = MediaQuery.of(context).size.width;
