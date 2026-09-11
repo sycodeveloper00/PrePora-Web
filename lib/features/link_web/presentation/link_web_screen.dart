@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:go_router/go_router.dart';
@@ -10,6 +9,7 @@ import 'package:http/http.dart' as http;
 import 'dart:html' as html;
 import '../../../core/router/app_router.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/services/supabase_read_service.dart';
 
 class LinkWebScreen extends StatefulWidget {
   const LinkWebScreen({super.key});
@@ -30,6 +30,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
   DateTime? _lastUserActivity;
   Timer? _activityCheckTimer;
   Timer? _heartbeatTimer;
+  Timer? _supabasePollSub;
   html.EventListener? _beforeUnloadHandler;
 
   static const String _sessionKey = 'prepora_web_session';
@@ -46,6 +47,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     _expireTimer?.cancel();
     _redirectTimer?.cancel();
     _sessionSub?.cancel();
+    _supabasePollSub?.cancel();
     _activityCheckTimer?.cancel();
     _stopHeartbeat();
     _stopBeforeUnloadListener();
@@ -68,10 +70,13 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     html.window.addEventListener('click', _onUserActivity);
     html.window.addEventListener('keydown', _onUserActivity);
     _activityCheckTimer?.cancel();
+    final role = _sessionData?['userRole'] ?? FirebaseService.cachedRole ?? 'student';
+    final isAdmin = role == 'admin' || role == 'Admin' || role == 'Assistant';
+    final timeoutMinutes = isAdmin ? 20 : 60;
     _activityCheckTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (_lastUserActivity == null) return;
       final inactive = DateTime.now().difference(_lastUserActivity!);
-      if (inactive.inMinutes >= 30) {
+      if (inactive.inMinutes >= timeoutMinutes) {
         _disconnectSession();
       }
     });
@@ -86,15 +91,23 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
 
   void _startHeartbeat() {
     _heartbeatTimer?.cancel();
-    // 5-minute heartbeat (was 30s) — every write triggers re-reads on active
-    // web_sessions collection listeners, which burned the free-tier read quota.
-    _heartbeatTimer = Timer.periodic(const Duration(minutes: 5), (_) {
+    final browserName = _detectBrowser();
+    // Write browser name once on connect
+    if (_sessionId.isNotEmpty) {
+      try {
+        FirebaseService.mirrorWebSession(_sessionId, {
+          'webBrowser': browserName,
+          'lastActive': DateTime.now().toIso8601String(),
+        });
+      } catch (_) {}
+    }
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (_sessionId.isEmpty || _status != 'connected') return;
       final now = DateTime.now();
-      FirebaseFirestore.instance.collection('web_sessions').doc(_sessionId).update({
-        'lastActive': FieldValue.serverTimestamp(),
-      }).catchError((_) {});
-      FirebaseService.mirrorWebSession(_sessionId, {'lastActive': now.toIso8601String()});
+      FirebaseService.mirrorWebSession(_sessionId, {
+        'lastActive': now.toIso8601String(),
+        'webBrowser': browserName,
+      });
     });
   }
 
@@ -107,20 +120,21 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
   /// 2 hours. Runs once per session creation and never throws.
   Future<void> _cleanupStaleSessions() async {
     try {
-      final cutoff = Timestamp.fromDate(DateTime.now().subtract(const Duration(hours: 2)));
-      final stale = await FirebaseFirestore.instance
-          .collection('web_sessions')
-          .where('createdAt', isLessThan: cutoff)
-          .limit(50)
-          .get();
-      for (final doc in stale.docs) {
-        try {
-          final data = doc.data();
-          final status = data['status'] as String?;
-          if (status == 'waiting' || status == 'disconnected') {
-            await doc.reference.delete();
-          }
-        } catch (_) {}
+      final cutoff = DateTime.now().subtract(const Duration(hours: 2));
+      final stale = await SupabaseReadService.getWebSessionsForUser('');
+      if (stale != null) {
+        for (final session in stale) {
+          try {
+            final createdAt = DateTime.tryParse(session['createdAt'] as String? ?? '');
+            final status = session['status'] as String?;
+            if (createdAt != null && createdAt.isBefore(cutoff) && (status == 'waiting' || status == 'disconnected')) {
+              final sessionId = session['id'] as String?;
+              if (sessionId != null) {
+                await SupabaseReadService.writeToAll('web_sessions', sessionId, {}, delete: true);
+              }
+            }
+          } catch (_) {}
+        }
       }
     } catch (_) {}
   }
@@ -179,8 +193,9 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
         data = await FirebaseService.getWebSessionDoc(sessionId);
       } catch (_) {}
       if (data == null) {
-        final doc = await FirebaseFirestore.instance.collection('web_sessions').doc(sessionId).get();
-        if (doc.exists) data = doc.data();
+        try {
+          data = await SupabaseReadService.getWebSession(sessionId);
+        } catch (_) {}
       }
       if (data != null) {
         final status = data['status'];
@@ -248,6 +263,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
               });
             });
             _startActivityTracking();
+            _status = 'connected';
             if (mounted) {
               context.go('/dashboard');
             }
@@ -261,40 +277,36 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
   }
 
   Future<void> _generateSession() async {
-    if (fb_auth.FirebaseAuth.instance.currentUser == null) {
-      try {
-        await fb_auth.FirebaseAuth.instance.signInAnonymously();
-      } catch (_) {}
-    }
-
-    final rng = Random.secure();
-    final token = List.generate(32, (_) => rng.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
-    _sessionId = 'web-$token';
     _createdAt = DateTime.now();
 
-    // Clean up stale waiting/disconnected sessions older than 2 hours so the
-    // web_sessions collection doesn't grow unbounded (each QR page load used
-    // to create a permanent doc, inflating collection reads).
-    _cleanupStaleSessions();
-
     try {
-      await FirebaseFirestore.instance.collection('web_sessions').doc(_sessionId).set({
-        'sessionId': _sessionId,
-        'status': 'waiting',
-        'createdAt': Timestamp.fromDate(_createdAt!),
-        'lastActive': Timestamp.fromDate(_createdAt!),
-        'webBrowser': _detectBrowser(),
-      });
+      final response = await http.post(
+        Uri.parse('/api/create-session'),
+        headers: {'Content-Type': 'application/json'},
+      );
+      if (response.statusCode == 200) {
+        final body = json.decode(response.body) as Map<String, dynamic>;
+        _sessionId = body['sessionId'] as String? ?? '';
+      } else {
+        print('[create-session] Failed: ${response.statusCode}');
+        _sessionId = '';
+      }
     } catch (e) {
-      print('[generateSession] Firestore write failed: $e');
+      print('[create-session] Error: $e');
+      _sessionId = '';
     }
-    await FirebaseService.mirrorWebSession(_sessionId, {
-      'sessionId': _sessionId,
-      'status': 'waiting',
-      'createdAt': _createdAt!.toIso8601String(),
-      'lastActive': _createdAt!.toIso8601String(),
-      'webBrowser': _detectBrowser(),
-    });
+
+    if (_sessionId.isEmpty) {
+      if (mounted) {
+        setState(() => _status = 'error');
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to create session. Tap Refresh.'), backgroundColor: Colors.redAccent),
+        );
+      }
+      return;
+    }
+
+    _cleanupStaleSessions();
 
     _sessionSub = FirebaseService.streamWebSessionDoc(_sessionId).listen((sData) {
       if (sData == null) return;
@@ -306,6 +318,8 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
           _sessionData = sData;
           _countdown = 3;
         });
+        _expireTimer?.cancel();
+        _refreshTimer?.cancel();
         _startRedirectTimer();
         _startHeartbeat();
         _startBeforeUnloadListener();
@@ -315,6 +329,7 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
           _sessionData = null;
         });
         _expireTimer?.cancel();
+        _refreshTimer?.cancel();
         _stopHeartbeat();
         _stopBeforeUnloadListener();
         _generateSession();
@@ -324,10 +339,17 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     _expireTimer = Timer(const Duration(minutes: 5), () {
       if (_status == 'waiting' && mounted) {
         setState(() => _status = 'expired');
+        _sessionSub?.cancel();
       }
     });
 
-    // Refresh timer removed — 5-min expiry is sufficient
+    // Auto-refresh QR every 45 seconds (WhatsApp-style)
+    _refreshTimer?.cancel();
+    _refreshTimer = Timer.periodic(const Duration(seconds: 45), (_) {
+      if (_status == 'waiting' && mounted) {
+        _refreshSession();
+      }
+    });
 
     if (mounted) setState(() {});
   }
@@ -407,36 +429,68 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     _listenToSessionStatus();
 
     if (mounted) {
-      context.go('/dashboard');
+      if (role == 'admin') {
+        context.go('/admin');
+      } else if (role == 'Assistant') {
+        context.go('/assistant');
+      } else {
+        context.go('/dashboard');
+      }
     }
   }
 
   void _listenToSessionStatus() {
     _sessionSub?.cancel();
+    // Listen to Firestore for disconnect (primary path)
     _sessionSub = FirebaseService.streamWebSessionDoc(_sessionId).listen((sData) {
       if (sData == null) return;
       if (sData['status'] == 'disconnected' && mounted) {
-        html.window.localStorage.remove(_sessionKey);
-        _stopActivityTracking();
-        _expireTimer?.cancel();
-        setState(() {
-          _status = 'waiting';
-          _sessionData = null;
-        });
-        _generateSession();
+        _handleRemoteDisconnect();
       }
     });
+    // Also poll Supabase every 5s as backup — if Firestore write failed,
+    // Android will have written 'disconnected' to Supabase directly.
+    _supabasePollSub?.cancel();
+    _supabasePollSub = Timer.periodic(const Duration(seconds: 5), (_) async {
+      if (_sessionId.isEmpty || _status != 'connected') return;
+      try {
+        final res = await http.get(
+          Uri.parse('https://brqdxhqrsfxlvwgstuto.supabase.co/rest/v1/web_sessions?id=eq.$_sessionId&select=status'),
+          headers: {
+            'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJycWR4aHFyc2Z4bHZ3Z3N0dXRvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcxNTY4MzMsImV4cCI6MjAxMjczMjgzM30.qxGfLBm2gTxFHJk2mFPJGiBCxHX0Z0mN_fKzJR6bJuI',
+          },
+        ).timeout(const Duration(seconds: 5));
+        if (res.statusCode == 200) {
+          final rows = json.decode(res.body) as List<dynamic>;
+          if (rows.isNotEmpty) {
+            final status = rows[0]['status'] as String?;
+            if (status == 'disconnected' && mounted) {
+              _handleRemoteDisconnect();
+            }
+          }
+        }
+      } catch (_) {}
+    });
+  }
+
+  void _handleRemoteDisconnect() {
+    html.window.localStorage.remove(_sessionKey);
+    _stopActivityTracking();
+    _stopHeartbeat();
+    _stopBeforeUnloadListener();
+    _expireTimer?.cancel();
+    _refreshTimer?.cancel();
+    _supabasePollSub?.cancel();
+    setState(() {
+      _status = 'waiting';
+      _sessionData = null;
+    });
+    _generateSession();
   }
 
   Future<void> _disconnectSession() async {
     if (_sessionId.isEmpty) return;
     final now = DateTime.now();
-    try {
-      await FirebaseFirestore.instance.collection('web_sessions').doc(_sessionId).update({
-        'status': 'disconnected',
-        'disconnectedAt': Timestamp.fromDate(now),
-      });
-    } catch (_) {}
     await FirebaseService.mirrorWebSession(_sessionId, {
       'status': 'disconnected',
       'disconnectedAt': now.toIso8601String(),
@@ -445,9 +499,14 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     _expireTimer?.cancel();
     _refreshTimer?.cancel();
     _sessionSub?.cancel();
+    _supabasePollSub?.cancel();
     _stopActivityTracking();
+    _stopHeartbeat();
+    _stopBeforeUnloadListener();
     _LinkedWebSession.instance.clear();
-    await fb_auth.FirebaseAuth.instance.signOut();
+    if (fb_auth.FirebaseAuth.instance.currentUser != null) {
+      await fb_auth.FirebaseAuth.instance.signOut();
+    }
     if (mounted) {
       setState(() {
         _status = 'waiting';
@@ -461,23 +520,10 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     if (_sessionId.isEmpty) return;
     final now = DateTime.now();
     try {
-      final docRef = FirebaseFirestore.instance.collection('web_sessions').doc(_sessionId);
-      final snap = await docRef.get();
-      final data = snap.data();
-      final hadUid = data?['uid'] is String && (data?['uid'] as String? ?? '').isNotEmpty;
-      if (hadUid) {
-        await docRef.update({
-          'status': 'disconnected',
-          'disconnectedAt': Timestamp.fromDate(now),
-        });
-        await FirebaseService.mirrorWebSession(_sessionId, {
-          'status': 'disconnected',
-          'disconnectedAt': now.toIso8601String(),
-        });
-      } else {
-        await docRef.delete();
-        await FirebaseService.mirrorWebSession(_sessionId, const {}, delete: true);
-      }
+      await FirebaseService.mirrorWebSession(_sessionId, {
+        'status': 'disconnected',
+        'disconnectedAt': now.toIso8601String(),
+      });
     } catch (_) {}
   }
 
@@ -485,7 +531,12 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     _expireTimer?.cancel();
     _refreshTimer?.cancel();
     _sessionSub?.cancel();
+    _supabasePollSub?.cancel();
     await _cleanupSession();
+    _sessionId = '';
+    _status = 'waiting';
+    _sessionData = null;
+    if (mounted) setState(() {});
     await _generateSession();
   }
 
@@ -634,16 +685,19 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
   }
 
   Widget _buildQRSection(Color cardColor, Color textColor) {
+    final isExpired = _status == 'expired';
+    final isError = _status == 'error';
+    final isChecking = _status == 'checking';
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         Text(
-          _status == 'expired' ? 'QR Code Expired' : 'Scan to Connect',
+          isExpired ? 'QR Code Expired' : isError ? 'Connection Error' : isChecking ? 'Checking session...' : 'Scan to Connect',
           style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: 0.5),
         ),
         const SizedBox(height: 8),
         Text(
-          _status == 'expired' ? 'Tap Refresh to generate a new code' : 'Use your phone\'s camera to scan',
+          isExpired ? 'Tap Refresh to generate a new code' : isError ? 'Tap Refresh to try again' : isChecking ? 'Please wait...' : 'Use your phone\'s camera to scan',
           style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 13),
         ),
         const SizedBox(height: 32),
@@ -668,16 +722,18 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
           ),
           padding: const EdgeInsets.all(14),
           child: Center(
-            child: _status == 'expired'
+            child: (isExpired || isError)
                 ? Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.qr_code_scanner_rounded, size: 64, color: Colors.grey.shade400),
+                      Icon(isExpired ? Icons.qr_code_scanner_rounded : Icons.error_outline_rounded, size: 64, color: isError ? Colors.redAccent.withValues(alpha: 0.6) : Colors.grey.shade400),
                       const SizedBox(height: 12),
-                      Text('Expired', style: TextStyle(color: Colors.grey.shade500, fontSize: 16)),
+                      Text(isExpired ? 'Expired' : 'Failed', style: TextStyle(color: isError ? Colors.redAccent.withValues(alpha: 0.6) : Colors.grey.shade500, fontSize: 16)),
                     ],
                   )
-                : QrImageView(
+                : isChecking
+                    ? const SizedBox(width: 252, height: 252, child: Center(child: CircularProgressIndicator(color: Color(0xFF7C4DFF))))
+                    : QrImageView(
                     data: _qrData,
                     version: QrVersions.auto,
                     size: 252,
