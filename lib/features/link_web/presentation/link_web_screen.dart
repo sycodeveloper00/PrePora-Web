@@ -462,11 +462,8 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
         ).timeout(const Duration(seconds: 5));
         if (res.statusCode == 200) {
           final rows = json.decode(res.body) as List<dynamic>;
-          if (rows.isNotEmpty) {
-            final status = rows[0]['status'] as String?;
-            if (status == 'disconnected' && mounted) {
-              _handleRemoteDisconnect();
-            }
+          if (rows.isEmpty || (rows.isNotEmpty && (rows[0]['status'] as String?) == 'disconnected')) {
+            if (mounted) _handleRemoteDisconnect();
           }
         }
       } catch (_) {}
