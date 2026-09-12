@@ -1105,9 +1105,10 @@ class FirebaseService {
             final accId = acc['id'] as String?;
             if (accId == null || accId == id) continue;
             if (acc['isActive'] == true) {
-              final existingOther = await SupabaseReadService.getSettings(accId) ?? {};
-              existingOther['isActive'] = false;
-              deactivateFutures.add(_mirrorWrite('settings', accId, existingOther));
+              // Use the account data we already have — never wipe fields
+              final deactivateData = Map<String, dynamic>.from(acc);
+              deactivateData['isActive'] = false;
+              deactivateFutures.add(_mirrorWrite('settings', accId, deactivateData));
             }
           }
           await Future.wait(deactivateFutures);
@@ -1503,8 +1504,10 @@ class FirebaseService {
           // Skip accounts that are also near-full (need at least 50 MB free)
           if (nextFreeMB < 50) continue;
 
-          // Switch to this account
-          await updateSupabaseAccount(acc['id'], isActive: true);
+          // Switch to this account — preserve ALL existing fields
+          final switchAccData = Map<String, dynamic>.from(acc);
+          switchAccData['isActive'] = true;
+          await _mirrorWrite('settings', acc['id'], switchAccData);
           await reinitializeSupabase();
           return {'switched': true, 'newAccount': acc['id']};
         }
@@ -1829,11 +1832,11 @@ class FirebaseService {
       ...data,
       'createdAt': DateTime.now().toIso8601String(),
     };
-    // Retry up to 3 times with increasing delay
-    for (int attempt = 1; attempt <= 3; attempt++) {
+    // Retry up to 5 times with progressive delay (for weak internet)
+    for (int attempt = 1; attempt <= 5; attempt++) {
       final ok = await SupabaseReadService.writeToAll('contents', docId, payload);
       if (ok) return docId;
-      if (attempt < 3) await Future.delayed(Duration(seconds: attempt));
+      if (attempt < 5) await Future.delayed(Duration(seconds: attempt * 2));
     }
     return null;
   }

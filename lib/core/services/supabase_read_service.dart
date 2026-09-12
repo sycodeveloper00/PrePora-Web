@@ -231,6 +231,7 @@ class SupabaseReadService {
 
     List<Map<String, dynamic>>? bestResult;
     int consecutiveFailures = 0;
+    final startTime = DateTime.now();
 
     // These tables have RLS or need service_role for reliable reads:
     // notes/notices/student_activities: RLS requires auth.uid() (null for Firebase users)
@@ -238,6 +239,9 @@ class SupabaseReadService {
     final readKey = (table == 'notes' || table == 'notices' || table == 'student_activities' || table == 'settings' || table == 'app_updates') ? 'service' : 'anon';
 
     for (final idx in tryOrder) {
+      // Total timeout: don't spend more than 8 seconds across all projects
+      if (DateTime.now().difference(startTime).inSeconds >= 8 && bestResult != null) break;
+
       final p = _projects[idx];
       final res = await _tryQuery(p['url']!, p[readKey]!, table, q);
 
@@ -268,8 +272,8 @@ class SupabaseReadService {
       _failCounts[idx]++;
       consecutiveFailures++;
 
-      // Give up after 3 consecutive project failures to avoid long startup hangs
-      if (consecutiveFailures >= 3 && bestResult != null) break;
+      // Give up after 2 consecutive project failures to avoid long startup hangs
+      if (consecutiveFailures >= 2 && bestResult != null) break;
 
       if (idx == _activeIndex && _failCounts[idx] >= _maxFailures) {
         final nextIdx = (idx + 1) % _projects.length;
@@ -341,6 +345,17 @@ class SupabaseReadService {
     for (final entry in r.entries) {
       if (entry.key == 'id' || entry.key == 'data') continue;
       if (entry.value != null) flat[entry.key] = entry.value;
+    }
+    // Sync typed columns into JSONB camelCase keys so UI reads work.
+    // e.g. parent_content_id typed column → parentContentId key
+    if (flat['parent_content_id'] != null && flat['parentContentId'] == null) {
+      flat['parentContentId'] = flat['parent_content_id'];
+    }
+    if (flat['folder_id'] != null && flat['folderId'] == null) {
+      flat['folderId'] = flat['folder_id'];
+    }
+    if (flat['created_at'] != null && flat['createdAt'] == null) {
+      flat['createdAt'] = flat['created_at'];
     }
     return flat;
   }
@@ -462,7 +477,7 @@ class SupabaseReadService {
               'apikey': p['service']!,
               'Authorization': 'Bearer ${p['service']!}',
               'Prefer': 'return=minimal',
-            }).timeout(const Duration(seconds: 10));
+            }).timeout(const Duration(seconds: 30));
             // ignore: avoid_print
             print('[WRITE_ALL] DELETE ${p['name']} $table/$id status=${res.statusCode}');
             if (res.statusCode < 300) anySuccess = true;
@@ -479,7 +494,7 @@ class SupabaseReadService {
               Uri.parse('${p['url']!}/rest/v1/$table'),
               headers: headers,
               body: json.encode(sanitized),
-            ).timeout(const Duration(seconds: 10));
+            ).timeout(const Duration(seconds: 30));
             // ignore: avoid_print
             print('[WRITE_ALL] UPSERT ${p['name']} $table/$id status=${res.statusCode} body=${json.encode(sanitized).length}chars${res.statusCode >= 400 ? " err=${res.body.substring(0, res.body.length.clamp(0, 200))}" : ""}');
             if (res.statusCode < 300) anySuccess = true;
@@ -513,7 +528,7 @@ class SupabaseReadService {
           'apikey': p['service']!,
           'Authorization': 'Bearer ${p['service']!}',
           'Prefer': 'return=minimal',
-        }).timeout(const Duration(seconds: 10));
+        }).timeout(const Duration(seconds: 30));
         return res.statusCode < 300;
       } else {
         final headers = {
@@ -527,7 +542,7 @@ class SupabaseReadService {
           Uri.parse('${p['url']!}/rest/v1/$table'),
           headers: headers,
           body: json.encode(body),
-        ).timeout(const Duration(seconds: 10));
+        ).timeout(const Duration(seconds: 30));
         return res.statusCode < 300;
       }
     } catch (_) {
@@ -674,6 +689,37 @@ class SupabaseReadService {
         q += '&parent_content_id=is.null';
       }
     }
+    final rows = await _query('contents', q);
+    if (rows == null) return null;
+    final list = rows.map(_flatten).toList();
+    list.sort((a, b) {
+      final ao = a['order'] as int?;
+      final bo = b['order'] as int?;
+      if (ao != null && bo != null) return ao.compareTo(bo);
+      if (ao != null) return -1;
+      if (bo != null) return 1;
+      final ac = a['createdAt'] as String? ?? '';
+      final bc = b['createdAt'] as String? ?? '';
+      return ac.compareTo(bc);
+    });
+    return list;
+  }
+
+  /// Like [getFolderContents] but filters by content type (e.g. 'subfolder').
+  /// This avoids Supabase's 1000-row cap when the table has many mixed types.
+  static Future<List<Map<String, dynamic>>?> getFolderContentsByType(
+    String folderId, {
+    String? contentType,
+    String? parentContentId,
+    int? limit,
+    int offset = 0,
+  }) async {
+    var q = 'folder_id=eq.$folderId&$_sel&order=created_at.asc';
+    if (contentType != null) q += '&type=eq.$contentType';
+    if (parentContentId != null) {
+      q += '&parent_content_id=eq.$parentContentId';
+    }
+    q += '&limit=${limit ?? 1000}&offset=$offset';
     final rows = await _query('contents', q);
     if (rows == null) return null;
     final list = rows.map(_flatten).toList();
@@ -922,6 +968,18 @@ class SupabaseReadService {
 
   static Future<List<Map<String, dynamic>>?> getAssistantSupabaseAccounts() async {
     final rows = await _query('settings', 'id=like.assistant_supabase:%&$_sel');
+    if (rows == null) return null;
+    return rows.map(_flatten).toList();
+  }
+
+  static Future<List<Map<String, dynamic>>?> getClorabaseAccounts() async {
+    final rows = await _query('settings', 'id=eq.clorabase_accounts&$_sel');
+    if (rows == null || rows.isEmpty) return null;
+    return rows.map(_flatten).toList();
+  }
+
+  static Future<List<Map<String, dynamic>>?> getAssistantClorabaseAccounts() async {
+    final rows = await _query('settings', 'id=like.assistant_clorabase_%&$_sel');
     if (rows == null) return null;
     return rows.map(_flatten).toList();
   }
@@ -1266,5 +1324,51 @@ class SupabaseReadService {
         ).timeout(const Duration(seconds: 10));
       } catch (_) {}
     }
+  }
+
+  // ─── share links ──────────────────────────────────────────────────────────
+
+  static String _generateShortId() {
+    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    final rng = DateTime.now().millisecondsSinceEpoch;
+    var id = '';
+    var n = rng;
+    for (int i = 0; i < 8; i++) {
+      id += chars[n % chars.length];
+      n = (n ~/ 37) + i;
+    }
+    return id;
+  }
+
+  static Future<String?> createShareLink({
+    required String contentId,
+    required String contentType,
+    required String folderId,
+    String slug = '',
+  }) async {
+    final shortId = _generateShortId();
+    final data = {
+      'short_id': shortId,
+      'content_id': contentId,
+      'content_type': contentType,
+      'folder_id': folderId,
+      'slug': slug,
+    };
+    try {
+      final primary = _projects.first;
+      final headers = {
+        'apikey': primary['service']!,
+        'Authorization': 'Bearer ${primary['service']!}',
+        'Content-Type': 'application/json',
+        'Prefer': 'return=minimal',
+      };
+      final res = await http.post(
+        Uri.parse('${primary['url']!}/rest/v1/share_links'),
+        headers: headers,
+        body: json.encode(data),
+      ).timeout(const Duration(seconds: 10));
+      if (res.statusCode >= 200 && res.statusCode < 300) return shortId;
+    } catch (_) {}
+    return null;
   }
 }

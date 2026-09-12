@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'firebase_service.dart';
 
@@ -34,6 +35,22 @@ class UploadManager extends ChangeNotifier {
 
   int get completedCount => _queue.where((q) => q['status'] == 'completed').length;
   int get totalCount => _queue.length;
+
+  /// Restore failed metadata writes — retry any items that were stuck
+  Future<void> restorePendingWrites() async {
+    try {
+      for (final item in _queue.where((q) => q['status'] == 'metadata_failed').toList()) {
+        item['status'] = 'pending';
+        item.remove('metadataError');
+      }
+      if (_queue.any((q) => q['status'] == 'pending')) {
+        _startTime ??= DateTime.now();
+        _isUploading = true;
+        notifyListeners();
+        if (!_isProcessing) _processQueue();
+      }
+    } catch (_) {}
+  }
 
   List<Map<String, dynamic>> filesForFolder(String folderId) =>
       _queue.where((q) => q['folderId'] == folderId).toList();
@@ -203,9 +220,9 @@ class UploadManager extends ChangeNotifier {
           continue;
         }
 
-        // Metadata write with retry (up to 3 attempts)
+        // Metadata write with retry (up to 5 attempts with progressive delay)
         bool metadataWritten = false;
-        for (int attempt = 1; attempt <= 3; attempt++) {
+        for (int attempt = 1; attempt <= 5; attempt++) {
           if (_cancelledIds.contains(id)) break;
           try {
             item['status'] = 'writing_metadata';
@@ -225,10 +242,10 @@ class UploadManager extends ChangeNotifier {
             metadataWritten = true;
             break;
           } catch (e) {
-            if (attempt < 3) {
+            if (attempt < 5) {
               item['metadataError'] = 'Attempt $attempt failed: $e';
               notifyListeners();
-              await Future.delayed(Duration(seconds: attempt * 2));
+              await Future.delayed(Duration(seconds: attempt * 3));
             }
           }
         }
