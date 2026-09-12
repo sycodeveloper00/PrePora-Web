@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import '../services/firebase_service.dart';
+import '../services/supabase_read_service.dart';
 
 class AiService {
   static const String _defaultApiKey =
@@ -20,6 +21,9 @@ class AiService {
   /// The active key's model pool. Each entry pairs the shared key/baseUrl with
   /// one model, so a failed model automatically falls back to the next one.
   static List<Map<String, dynamic>> _keyPool = [];
+
+  /// Models that have hit quota/failure in the current session.
+  static final Set<String> failedModels = {};
 
   /// Caches the last successfully-loaded key so the AI keeps working even if
   /// the Firestore read fails (e.g. free-tier quota exhausted).
@@ -127,11 +131,17 @@ class AiService {
     return '🤖 AI server is unavailable right now. Please try later.';
   }
 
+  static DateTime? _lastPoolFailureNotifiedAt;
+
   static Future<void> _notifyPoolFailure() async {
     try {
+      final now = DateTime.now();
+      if (_lastPoolFailureNotifiedAt != null && now.difference(_lastPoolFailureNotifiedAt!).inMinutes < 60) return;
+      _lastPoolFailureNotifiedAt = now;
+      final names = _keyPool.map((e) => '${e['provider'] ?? 'ai'}/${e['model'] ?? '?'}').toSet().join(', ');
       await FirebaseService.addAdminNotification(
         'ai_failure',
-        'AI model pool exhausted — all ${_keyPool.length} model(s) failed. Check the AI API Keys settings.',
+        'AI pool exhausted — ${_keyPool.length} model(s) failed: ${names.isEmpty ? 'check AI API Keys' : names}',
       );
     } catch (_) {}
   }
@@ -388,8 +398,10 @@ class AiService {
         }
 
         lastError = _errorForStatus(response.statusCode);
+        failedModels.add(_model);
       } catch (e) {
         lastError = '❌ No internet connection. Please check your network and try again.';
+        failedModels.add(_model);
       }
     }
 
@@ -901,24 +913,25 @@ class AiService {
     if (uid == null) return null;
 
     try {
-      final doc = await FirebaseService.firestore.collection('users').doc(uid).get();
-      if (!doc.exists) return null;
+      Map<String, dynamic>? data;
+      try { data = await SupabaseReadService.getUser(uid); } catch (_) {}
+      if (data == null) return null;
 
-      final data = doc.data()!;
       final name = data['name'] as String? ?? data['displayName'] as String? ?? 'Student';
       final email = data['email'] as String? ?? '';
       final role = data['role'] as String? ?? 'student';
       final verified = data['verified'] as bool? ?? true;
       final blocked = data['blocked'] as bool? ?? false;
 
-      // Get enrolled subjects from folders the student has access to
       final subjects = <String>{};
       try {
-        final foldersSnap = await FirebaseService.firestore.collection('folders').get();
-        for (final f in foldersSnap.docs) {
-          final fData = f.data();
-          final name2 = fData['name'] as String? ?? '';
-          if (name2.isNotEmpty) subjects.add(name2);
+        List<Map<String, dynamic>>? folders;
+        try { folders = await SupabaseReadService.getFolders(); } catch (_) {}
+        if (folders != null) {
+          for (final f in folders) {
+            final name2 = f['name'] as String? ?? '';
+            if (name2.isNotEmpty) subjects.add(name2);
+          }
         }
       } catch (_) {}
 
@@ -950,33 +963,37 @@ If the student seems confused, offer simpler explanations. Suggest relevant topi
         'Here is the complete study content catalog available to this user in the PrePora app:');
 
     try {
-      final userDoc = await FirebaseService.firestore.collection('users').doc(uid).get();
-      final role = (userDoc.data()?['role'] as String?) ?? 'student';
+      Map<String, dynamic>? userData;
+      try { userData = await SupabaseReadService.getUser(uid); } catch (_) {}
+      final role = userData?['role'] as String? ?? 'student';
 
       Set<String> allowedFolderIds;
       if (role == 'Assistant') {
-        final accessSnap = await FirebaseService.firestore
-            .collection('Assistant_access')
-            .where('uid', isEqualTo: uid)
-            .get();
-        allowedFolderIds = accessSnap.docs
-            .map((d) => d.data()['folderId'] as String? ?? '')
-            .where((id) => id.isNotEmpty)
-            .toSet();
+        Set<String>? accessIds;
+        try {
+          final accessRows = await SupabaseReadService.getAssistantFolderAccess(uid);
+          if (accessRows != null) {
+            accessIds = accessRows.map((r) => r['folder_id'] as String? ?? '').where((id) => id.isNotEmpty).toSet();
+          }
+        } catch (_) {}
+        if (accessIds == null) {
+          return '';
+        }
+        allowedFolderIds = accessIds;
         if (allowedFolderIds.isEmpty) return '';
       } else {
         allowedFolderIds = {};
       }
 
-      final foldersSnap = await FirebaseService.firestore
-          .collection('folders')
-          .orderBy('createdAt')
-          .get();
+      List<Map<String, dynamic>>? folders;
+      try { folders = await SupabaseReadService.getFolders(); } catch (_) {}
+      if (folders == null) {
+        return '';
+      }
 
-      for (final folderDoc in foldersSnap.docs) {
-        final folderData = folderDoc.data();
+      for (final folderData in folders) {
+        final folderId = folderData['id'] as String? ?? '';
         final folderName = folderData['name'] as String? ?? 'Unnamed';
-        final folderId = folderDoc.id;
         final folderLocked = folderData['locked'] as bool? ?? false;
         final folderUpdating = folderData['updating'] as bool? ?? false;
         final folderInvisible = folderData['invisible'] as bool? ?? false;
@@ -986,16 +1003,16 @@ If the student seems confused, offer simpler explanations. Suggest relevant topi
 
         buffer.writeln('\n📁 Folder: $folderName');
 
-        final contentsSnap = await FirebaseService.firestore
-            .collection('folders')
-            .doc(folderId)
-            .collection('contents')
-            .orderBy('createdAt')
-            .get();
+        List<Map<String, dynamic>>? contents;
+        try { contents = await SupabaseReadService.getFolderContents(folderId, fetchAll: true); } catch (_) {}
+        if (contents == null) {
+          continue;
+        }
 
         final contentMap = <String, Map<String, dynamic>>{};
-        for (final c in contentsSnap.docs) {
-          contentMap[c.id] = c.data();
+        for (final c in contents) {
+          final cId = c['id'] as String? ?? '';
+          if (cId.isNotEmpty) contentMap[cId] = c;
         }
 
         final lockedIds = <String>{};
@@ -1028,8 +1045,8 @@ If the student seems confused, offer simpler explanations. Suggest relevant topi
           return isAncestorLocked(gp, depth: depth + 1);
         }
 
-        for (final contentDoc in contentsSnap.docs) {
-          final data = contentDoc.data();
+        for (final contentEntry in contentMap.entries) {
+          final data = contentEntry.value;
           final type = data['type'] as String? ?? 'file';
           final name = data['name'] as String? ?? 'Unnamed';
           final locked = data['locked'] as bool? ?? false;
@@ -1076,20 +1093,12 @@ If the student seems confused, offer simpler explanations. Suggest relevant topi
         }
       }
 
-      final notesSnap = await FirebaseService.firestore
-          .collection('users')
-          .doc(uid)
-          .collection('notes')
-          .orderBy('updatedAt', descending: true)
-          .limit(10)
-          .get();
-
-      if (notesSnap.docs.isNotEmpty) {
+      List<Map<String, dynamic>>? notes;
+      try { notes = await SupabaseReadService.getNotes(uid); } catch (_) {}
+      if (notes != null && notes.isNotEmpty) {
         buffer.writeln('\n📝 Recent notes:');
-        for (final noteDoc in notesSnap.docs) {
-          final noteData = noteDoc.data();
-          final lectureName =
-              noteData['lectureName'] as String? ?? noteDoc.id;
+        for (final noteData in notes.take(10)) {
+          final lectureName = noteData['lectureName'] as String? ?? noteData['id'] as String? ?? '';
           final preview = (noteData['content'] as String? ?? '');
           buffer.writeln('  - $lectureName');
           if (preview.length > 80) {

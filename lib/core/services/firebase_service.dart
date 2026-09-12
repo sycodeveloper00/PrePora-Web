@@ -1507,7 +1507,13 @@ class FirebaseService {
           // Switch to this account — preserve ALL existing fields
           final switchAccData = Map<String, dynamic>.from(acc);
           switchAccData['isActive'] = true;
-          await _mirrorWrite('settings', acc['id'], switchAccData);
+          // Deactivate the old account too — preserve its fields
+          final oldAccData = Map<String, dynamic>.from(activeAcc);
+          oldAccData['isActive'] = false;
+          await Future.wait([
+            _mirrorWrite('settings', acc['id'], switchAccData),
+            _mirrorWrite('settings', activeAcc['id'], oldAccData),
+          ]);
           await reinitializeSupabase();
           return {'switched': true, 'newAccount': acc['id']};
         }

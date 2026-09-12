@@ -6,7 +6,7 @@ import 'firebase_service.dart';
 import 'supabase_read_service.dart';
 
 /// Keep-alive service for user-added Supabase storage accounts (Admin + Assistant).
-/// Runs independently of SupabaseReadService, pings ALL accounts every 24h
+/// Runs independently of SupabaseReadService, pings ALL accounts every 1h
 /// regardless of isActive toggle state. Toggle only controls uploads.
 class StorageAccountKeepAliveService {
   StorageAccountKeepAliveService._();
@@ -14,7 +14,7 @@ class StorageAccountKeepAliveService {
   static Timer? _timer;
   static DateTime? _lastPingTime;
   static bool _lastPingSuccess = false;
-  static const Duration _pingInterval = Duration(hours: 24);
+  static const Duration _pingInterval = Duration(hours: 1);
   static const int _defaultStorageLimitMB = 1024;
 
   static DateTime? get lastPingTime => _lastPingTime;
@@ -174,12 +174,7 @@ class StorageAccountKeepAliveService {
   /// Updates the account's currentUsageMB in Firestore.
   static Future<void> _updateAccountUsage(String accountId, int usageMB, String projectType) async {
     try {
-      final collection = projectType == 'admin_storage' ? 'settings' : 'settings';
-      final docId = projectType == 'admin_storage' 
-          ? accountId 
-          : accountId; // assistant_supabase:$id format
-      
-      await FirebaseService.mirrorWrite(collection, docId, {
+      await FirebaseService.mirrorWrite('settings', accountId, {
         'currentUsageMB': usageMB,
       });
     } catch (_) {}
@@ -299,11 +294,7 @@ class StorageAccountKeepAliveService {
     } catch (_) {}
   }
 
-  static String _getProxyUrl() {
-    final host = Uri.base.host;
-    if (host.contains('vercel.app')) return 'https://prepora-web.vercel.app/api/supabase-proxy';
-    return '/api/supabase-proxy';
-  }
+  static String _getProxyUrl() => 'https://prepora-web.vercel.app/api/supabase-proxy';
 }
 
 class _PingResult {

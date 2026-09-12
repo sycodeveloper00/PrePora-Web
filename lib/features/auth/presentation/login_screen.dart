@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
+import 'dart:html' as html;
 import '../../../core/router/app_router.dart';
 import '../../../core/widgets/professional_loader.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/services/supabase_read_service.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -18,6 +20,83 @@ class _LoginScreenState extends State<LoginScreen> {
   bool _obscurePassword = true;
   bool _isLoading = false;
   String? _errorMessage;
+
+  @override
+  void initState() {
+    super.initState();
+    if (kIsWeb) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final expired = html.window.localStorage.remove('session_expired_by_inactivity');
+        if (expired == 'true') {
+          _showSessionExpiredDialog();
+        }
+      });
+    }
+  }
+
+  void _showSessionExpiredDialog() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isPC = screenWidth > 900;
+    final dialogWidth = isPC ? 480.0 : (screenWidth > 600 ? 420.0 : screenWidth * 0.85);
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => Dialog(
+        backgroundColor: isDark ? const Color(0xFF1A0533) : Colors.white,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: dialogWidth),
+          child: Padding(
+          padding: EdgeInsets.all(isPC ? 36 : 28),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: isPC ? 72 : 64, height: isPC ? 72 : 64,
+                decoration: BoxDecoration(
+                  color: Colors.orange.withValues(alpha: 0.15),
+                  shape: BoxShape.circle,
+                ),
+                child: Icon(Icons.timer_off_rounded, color: Colors.orange, size: isPC ? 36 : 32),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                'Session Expired',
+                style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: isPC ? 22 : 20, fontWeight: FontWeight.bold),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Your session has expired due to inactivity.\nPlease log in again.',
+                textAlign: TextAlign.center,
+                style: TextStyle(color: isDark ? Colors.white54 : Colors.black54, fontSize: isPC ? 15 : 14),
+              ),
+              const SizedBox(height: 24),
+              SizedBox(
+                width: double.infinity,
+                height: isPC ? 50 : 44,
+                child: ElevatedButton.icon(
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    context.go('/auth/login');
+                  },
+                  icon: const Icon(Icons.login_rounded, size: 18),
+                  label: const Text('Login Again', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 15)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFF7C4DFF),
+                    foregroundColor: Colors.white,
+                    padding: const EdgeInsets.symmetric(vertical: 14),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+        ),
+      ),
+    );
+  }
 
   @override
   void dispose() {
@@ -46,27 +125,62 @@ class _LoginScreenState extends State<LoginScreen> {
           FirebaseService.cachedRole = role;
           AuthGuard.setUserRole(role);
         }
-        if (role == 'admin' || role == 'Assistant') {
-          final isQrDomain = Uri.base.host.contains('prepora-web');
-          SessionManager.configure(
-            timeout: isQrDomain ? const Duration(hours: 1) : const Duration(minutes: 20),
-            redirectPath: isQrDomain ? '/link-web' : '/auth/login',
-          );
-          SessionManager.start(onExpiredCallback: () async {
-            if (context.mounted) context.go(SessionManager.redirectPath);
-            await Future.delayed(const Duration(milliseconds: 500));
-            await FirebaseService.signOut();
-          });
-        }
-        if (mounted) {
-          if (kIsWeb && role != 'admin' && role != 'Assistant') {
-            setState(() => _isLoading = false);
-            await FirebaseService.signOut();
-            _showUnderDevelopmentDialog();
-            return;
+        final isAdmin = role == 'admin' || role == 'Assistant';
+        final host = Uri.base.host;
+        final isFopDomain = host.contains('prepora-web-fop');
+        final isQrDomain = host.contains('prepora-web') && !isFopDomain;
+        final sessionTimeout = isFopDomain
+            ? const Duration(hours: 1)
+            : (isAdmin
+                ? (isQrDomain ? const Duration(hours: 1) : const Duration(minutes: 20))
+                : const Duration(hours: 1));
+        final sessionRedirect = isFopDomain ? '/auth/login' : (isQrDomain ? '/link-web' : '/auth/login');
+        SessionManager.configure(
+          timeout: sessionTimeout,
+          redirectPath: sessionRedirect,
+        );
+        SessionManager.start(onExpiredCallback: () async {
+          html.window.localStorage['session_expired_by_inactivity'] = 'true';
+          final uid = FirebaseService.currentUser?.uid;
+          if (uid != null) {
+            try {
+              await FirebaseService.addTargetedNotification(uid, 'Web app disconnected due to no activity found');
+            } catch (_) {}
           }
+          if (context.mounted) context.go(SessionManager.redirectPath);
+          await Future.delayed(const Duration(milliseconds: 500));
+          await FirebaseService.signOut();
+        });
+        if (mounted) {
           if (kIsWeb) {
             final host = Uri.base.host;
+
+            if (host.contains('prepora-web-fop')) {
+              final email = credential.user!.email?.toLowerCase() ?? '';
+              var allowedFopEmails = FirebaseService.cachedFopEmails;
+              // Load if cache is empty (race condition on cold start)
+              if (allowedFopEmails.isEmpty) {
+                try {
+                  allowedFopEmails = await FirebaseService.getFopAllowedEmails()
+                      .timeout(const Duration(seconds: 5));
+                } catch (_) {}
+              }
+              if (allowedFopEmails.isNotEmpty && !allowedFopEmails.contains(email)) {
+                setState(() => _isLoading = false);
+                await FirebaseService.signOut();
+                _showUnauthorizedDialog();
+                return;
+              }
+              // Single-device: write session ID to Supabase, kick old session
+              final sessionId = DateTime.now().millisecondsSinceEpoch.toString();
+              final existing = await SupabaseReadService.getUser(uid);
+              final merged = Map<String, dynamic>.from(existing ?? {})..['currentWebSessionId'] = sessionId;
+              final writeOk = await SupabaseReadService.writeToAll('users', uid, merged);
+              if (writeOk) {
+                html.window.localStorage['fop_session_id'] = sessionId;
+              }
+            }
+
             if (host.contains('admin-prepora') && role != 'admin') {
               setState(() => _isLoading = false);
               await FirebaseService.signOut();
@@ -163,6 +277,35 @@ class _LoginScreenState extends State<LoginScreen> {
     });
   }
 
+  void _showUnauthorizedDialog() {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: const Color(0xFF1A0533),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Row(children: [
+          Icon(Icons.block_rounded, color: Colors.redAccent, size: 24),
+          SizedBox(width: 10),
+          Text('Unauthorized', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+        ]),
+        content: const Text(
+          'You are not authorized to access this portal.\n\nPlease go to the app and connect to web app via "Link with Web App" with prepora-web.vercel.app.',
+          style: TextStyle(color: Colors.white70, fontSize: 14, height: 1.5),
+        ),
+        actions: [
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade800),
+            child: const Text('OK', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    ).then((_) {
+      setState(() => _isLoading = false);
+    });
+  }
+
   void _forgotPassword() {
     context.push('/auth/forgot-password');
   }
@@ -241,7 +384,13 @@ class _LoginScreenState extends State<LoginScreen> {
           ),
           const SizedBox(height: 8),
           Text(
-            'Sign in to your admin account',
+            kIsWeb
+                ? (Uri.base.host.contains('prepora-web-fop')
+                    ? 'Sign in to your FOP account'
+                    : Uri.base.host.contains('assistant-prepora')
+                        ? 'Sign in to your Assistant account'
+                        : 'Sign in to your admin account')
+                : 'Sign in to your account',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(color: Colors.white54, fontSize: 14),
             textAlign: TextAlign.center,
           ),

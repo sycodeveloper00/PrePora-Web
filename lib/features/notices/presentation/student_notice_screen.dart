@@ -185,11 +185,22 @@ class StudentNoticeScreen extends StatelessWidget {
         builder: (context, snap) {
           if (snap.connectionState == ConnectionState.waiting) return const Center(child: ProfessionalLoader());
           if (!snap.hasData || snap.data!.docs.isEmpty) return Center(child: Text('No notices', style: TextStyle(color: isDark ? Colors.white38 : Colors.black38)));
+          final pinned = <QueryDocumentSnapshot>[];
+          final unpinned = <QueryDocumentSnapshot>[];
+          for (final doc in snap.data!.docs) {
+            final data = doc.data() as Map<String, dynamic>;
+            if (data['isPinned'] == true) {
+              pinned.add(doc);
+            } else {
+              unpinned.add(doc);
+            }
+          }
+          final sorted = [...pinned, ...unpinned];
           return ListView.builder(
             padding: const EdgeInsets.all(16),
-            itemCount: snap.data!.docs.length,
+            itemCount: sorted.length,
             itemBuilder: (context, i) {
-              final d = snap.data!.docs[i].data() as Map<String, dynamic>;
+              final d = sorted[i].data() as Map<String, dynamic>;
               final title = d['title'] as String? ?? '';
               final type = d['fileType'] as String? ?? 'text';
               final rawTime = d['createdAt'] ?? d['created_at'];
@@ -198,6 +209,7 @@ class StudentNoticeScreen extends StatelessWidget {
               else if (rawTime is String) time = DateTime.tryParse(rawTime);
               final timeStr = time != null ? '${time.day}/${time.month}/${time.year} ${time.hour}:${time.minute.toString().padLeft(2, '0')}' : '';
               final addedBy = d['addedBy'] as String? ?? 'Admin';
+              final isPinned = d['isPinned'] == true;
 
               if (type == 'text') {
                 final preview = title.length > 80 ? '${title.substring(0, 80)}...' : title;
@@ -209,11 +221,18 @@ class StudentNoticeScreen extends StatelessWidget {
                     decoration: BoxDecoration(
                       color: isDark ? const Color(0xFF1A0533) : const Color(0xFFFFF8E1),
                       borderRadius: BorderRadius.circular(12),
-                      border: Border.all(color: isDark ? Colors.white12 : Colors.amber.withValues(alpha: 0.4)),
+                      border: Border.all(
+                        color: isPinned
+                            ? (isDark ? Colors.amber.shade300 : Colors.amber.shade700)
+                            : (isDark ? Colors.white12 : Colors.amber.withValues(alpha: 0.4)),
+                        width: isPinned ? 1.5 : 1,
+                      ),
                       boxShadow: [
                         BoxShadow(
-                          color: isDark ? Colors.black26 : Colors.black.withValues(alpha: 0.08),
-                          blurRadius: 6, offset: const Offset(0, 2),
+                          color: isPinned
+                              ? (isDark ? Colors.amber.withValues(alpha: 0.15) : Colors.amber.withValues(alpha: 0.2))
+                              : (isDark ? Colors.black26 : Colors.black.withValues(alpha: 0.08)),
+                          blurRadius: isPinned ? 10 : 6, offset: const Offset(0, 2),
                         ),
                       ],
                     ),
@@ -221,11 +240,15 @@ class StudentNoticeScreen extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
                         Row(children: [
-                          Icon(Icons.push_pin_rounded, size: 18, color: isDark ? Colors.amber.shade300 : Colors.amber.shade700),
+                          Icon(Icons.push_pin_rounded, size: 18, color: isPinned
+                              ? (isDark ? Colors.amber.shade200 : Colors.amber.shade900)
+                              : (isDark ? Colors.amber.shade300 : Colors.amber.shade700)),
                           const SizedBox(width: 8),
                           Expanded(
-                            child: Text('Notice', style: TextStyle(
-                              color: isDark ? Colors.amber.shade300 : Colors.amber.shade700,
+                            child: Text(isPinned ? 'PINNED' : 'Notice', style: TextStyle(
+                              color: isPinned
+                                  ? (isDark ? Colors.amber.shade200 : Colors.amber.shade900)
+                                  : (isDark ? Colors.amber.shade300 : Colors.amber.shade700),
                               fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1,
                             )),
                           ),

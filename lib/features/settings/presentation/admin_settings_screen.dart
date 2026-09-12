@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/services/supabase_read_service.dart';
 import '../../../core/theme/theme_provider.dart';
 import '../../../core/widgets/professional_loader.dart';
 
@@ -241,7 +242,7 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
                         trailing: IconButton(
                           icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
                           onPressed: () async {
-                            await FirebaseService.firestore.collection('app_updates').doc(id).delete();
+                            await SupabaseReadService.writeToAll('app_updates', id, {}, delete: true);
                           },
                         ),
                       );
@@ -288,10 +289,11 @@ class _AdminSettingsScreenState extends State<AdminSettingsScreen> {
             onPressed: () async {
               final version = versionCtrl.text.trim();
               if (version.isEmpty) return;
-              await FirebaseService.firestore.collection('app_updates').add({
+              final docId = 'upd_${DateTime.now().millisecondsSinceEpoch}';
+              await SupabaseReadService.writeToAll('app_updates', docId, {
                 'version': version,
                 'link': linkCtrl.text.trim(),
-                'createdAt': FieldValue.serverTimestamp(),
+                'createdAt': DateTime.now().toIso8601String(),
               });
               if (d.mounted) Navigator.pop(d);
             },

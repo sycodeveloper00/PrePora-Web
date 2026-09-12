@@ -58,11 +58,14 @@ class _NotepadViewState extends State<NotepadView> {
 
   Future<void> _saveNote() async {
     setState(() => _isSaving = true);
-    await FirebaseService.saveNote(widget.lectureId, _textController.text, lectureName: widget.lectureName);
+    final ok = await FirebaseService.saveNote(widget.lectureId, _textController.text, lectureName: widget.lectureName);
     if (mounted) {
       setState(() => _isSaving = false);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('âœ… Note saved!'), backgroundColor: Colors.green),
+        SnackBar(
+          content: Text(ok ? 'Note saved!' : 'Failed to save — please check your connection and try again.'),
+          backgroundColor: ok ? Colors.green : Colors.redAccent,
+        ),
       );
     }
   }
@@ -211,12 +214,12 @@ class _NotepadViewState extends State<NotepadView> {
               child: GestureDetector(
                 onPanStart: (details) {
                   setState(() {
-                    _currentStroke = [DrawPoint(details.localPosition, _isEraser ? Colors.white : _penColor, _isEraser ? 20 : _strokeWidth)];
+                    _currentStroke = [DrawPoint(details.localPosition, _isEraser ? Colors.white : _penColor, _isEraser ? _strokeWidth * 2 : _strokeWidth)];
                   });
                 },
                 onPanUpdate: (details) {
                   setState(() {
-                    _currentStroke.add(DrawPoint(details.localPosition, _isEraser ? Colors.white : _penColor, _isEraser ? 20 : _strokeWidth));
+                    _currentStroke.add(DrawPoint(details.localPosition, _isEraser ? Colors.white : _penColor, _isEraser ? _strokeWidth * 2 : _strokeWidth));
                   });
                 },
                 onPanEnd: (_) {
@@ -357,6 +360,7 @@ class _DrawingPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant _DrawingPainter old) => true;
+  bool shouldRepaint(covariant _DrawingPainter old) =>
+      old.strokes != strokes || old.currentStroke != currentStroke;
 }
 

@@ -4,11 +4,11 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:flutter_markdown/flutter_markdown.dart';
 import 'package:flutter_math_fork/flutter_math.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:markdown/markdown.dart' as md;
 import 'package:connectivity_plus/connectivity_plus.dart';
 import '../../../core/services/ai_service.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/services/supabase_read_service.dart';
 import '../../../core/services/web_scraper_service.dart';
 import '../../../core/services/file_reader_service.dart';
 import '../../../core/widgets/professional_loader.dart';
@@ -226,26 +226,18 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
   Future<void> _saveMessageToHistory(String text, String role) async {
     final uid = FirebaseService.currentUser?.uid;
     if (uid == null || _sessionId == null) return;
-    await FirebaseService.firestore
-        .collection('users')
-        .doc(uid)
-        .collection('conversations')
-        .doc(_sessionId)
-        .collection('messages')
-        .add({
+    await SupabaseReadService.writeToAll('messages', '${_sessionId}_${DateTime.now().millisecondsSinceEpoch}', {
+      'uid': uid,
+      'convId': _sessionId,
       'role': role,
       'content': text,
-      'timestamp': FieldValue.serverTimestamp(),
+      'createdAt': DateTime.now().toIso8601String(),
     });
-    await FirebaseService.firestore
-        .collection('users')
-        .doc(uid)
-        .collection('conversations')
-        .doc(_sessionId)
-        .set({
+    await SupabaseReadService.writeToAll('conversations', _sessionId!, {
+      'uid': uid,
       'lastMessage': text.length > 60 ? '${text.substring(0, 60)}...' : text,
-      'updatedAt': FieldValue.serverTimestamp(),
-    }, SetOptions(merge: true));
+      'updatedAt': DateTime.now().toIso8601String(),
+    });
   }
 
   void _scrollToBottom() {
@@ -275,24 +267,18 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
             child: Text('Chat History', style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 16, fontWeight: FontWeight.bold)),
           ),
           Expanded(
-            child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseService.firestore
-                  .collection('users')
-                  .doc(uid)
-                  .collection('conversations')
-                  .orderBy('updatedAt', descending: true)
-                  .snapshots(),
+            child: FutureBuilder<List<Map<String, dynamic>>>(
+              future: SupabaseReadService.getConversations(uid).then((v) => v ?? []),
               builder: (_, snap) {
-                if (!snap.hasData || snap.data!.docs.isEmpty) {
+                if (!snap.hasData || snap.data!.isEmpty) {
                   return Center(child: Text('No history yet', style: TextStyle(color: isDark ? Colors.white38 : Colors.black45)));
                 }
                 return ListView.separated(
-                  itemCount: snap.data!.docs.length,
+                  itemCount: snap.data!.length,
                   separatorBuilder: (_, __) => Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
                   itemBuilder: (_, i) {
-                    final doc = snap.data!.docs[i];
-                    final data = doc.data() as Map<String, dynamic>;
-                    final sessionId = doc.id;
+                    final data = snap.data![i];
+                    final sessionId = data['id'] as String? ?? '';
                     return ListTile(
                       leading: const Icon(Icons.chat_bubble_outline_rounded, color: Color(0xFF00B8D4)),
                       title: Text(data['lastMessage'] ?? 'Chat', style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 13)),
@@ -309,12 +295,8 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
                           icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 18),
                           tooltip: 'Delete',
                           onPressed: () async {
-                            await FirebaseService.firestore
-                                .collection('users')
-                                .doc(uid)
-                                .collection('conversations')
-                                .doc(sessionId)
-                                .delete();
+                            await SupabaseReadService.writeToAll('conversations', sessionId, {}, delete: true);
+                            await SupabaseReadService.writeToAll('messages', sessionId, {}, delete: true);
                           },
                         ),
                       ]),
@@ -336,17 +318,12 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
   Future<void> _loadSession(String sessionId) async {
     final uid = FirebaseService.currentUser?.uid;
     if (uid == null) return;
-    final snap = await FirebaseService.firestore
-        .collection('users').doc(uid)
-        .collection('conversations').doc(sessionId)
-        .collection('messages')
-        .orderBy('timestamp', descending: false)
-        .get();
-    final msgs = snap.docs.map((d) {
-      final data = d.data();
+    List<Map<String, dynamic>>? rows;
+    try { rows = await SupabaseReadService.getMessages(sessionId); } catch (_) {}
+    final msgs = (rows ?? []).map((d) {
       return _Message(
-        text: data['content'] as String? ?? '',
-        isUser: data['role'] == 'user',
+        text: d['content'] as String? ?? '',
+        isUser: d['role'] == 'user',
       );
     }).toList();
     if (mounted) {

@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/services/supabase_read_service.dart';
 import '../../../core/theme/theme_provider.dart';
 import '../../../core/utils.dart';
 import '../../../core/widgets/professional_loader.dart';
@@ -28,13 +29,19 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
   bool _trialLoading = true;
   Timer? _trialTimer;
   Duration _remaining = Duration.zero;
+  Map<String, int> _dbStats = {};
+  bool _dbStatsLoading = true;
 
   @override
+  bool _trialAutoExpired = false;
+  bool _trialSaving = false;
+
   void initState() {
     super.initState();
     _load();
     _loadTrial();
-    _trialTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+    _loadDbStats();
+    _trialTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
       if (!mounted) return;
       setState(() {
         if (_trialEnd != null) {
@@ -42,6 +49,14 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
           if (_remaining.isNegative) _remaining = Duration.zero;
         }
       });
+      if (_remaining.inSeconds <= 0 && _trialEnd != null && !_paidAccess && !_trialAutoExpired) {
+        _trialAutoExpired = true;
+        await FirebaseService.updateSetting('paidAccess', true);
+        if (mounted) {
+          setState(() => _paidAccess = true);
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Free trial ended — Paid Access turned ON'), backgroundColor: Colors.orange));
+        }
+      }
     });
   }
 
@@ -57,13 +72,40 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
       _trialEnd = end;
       _trialLoading = false;
     });
+    // Auto-expire: trial ended (or no active trial) and paidAccess is OFF → turn it ON
+    final trialEnded = end == null || end.isBefore(DateTime.now());
+    if (trialEnded && !_paidAccess) {
+      // Read DB value FIRST to avoid stale read-modify-write overwriting price
+      final currentSettings = await FirebaseService.getSettings();
+      final dbPaidAccess = currentSettings['paidAccess'] as bool? ?? false;
+      if (!dbPaidAccess) {
+        _trialAutoExpired = true;
+        await FirebaseService.updateSetting('paidAccess', true);
+        if (mounted) setState(() => _paidAccess = true);
+      } else {
+        _trialAutoExpired = true;
+        if (mounted) setState(() => _paidAccess = true);
+      }
+    }
+  }
+
+  Future<void> _loadDbStats() async {
+    final stats = await SupabaseReadService.getDatabaseStats();
+    if (mounted) setState(() {
+      _dbStats = stats;
+      _dbStatsLoading = false;
+    });
   }
 
   Future<void> _load() async {
     final settings = await FirebaseService.getSettings();
     if (mounted) setState(() {
       _price = (settings['price'] as num?)?.toDouble() ?? 0;
-      _paidAccess = settings['paidAccess'] as bool? ?? false;
+      final dbPaidAccess = settings['paidAccess'] as bool? ?? false;
+      // Don't overwrite if trial auto-expire already set it ON
+      if (!_paidAccess || dbPaidAccess) _paidAccess = dbPaidAccess;
+      // Re-sync _trialAutoExpired in case DB value changed externally
+      if (dbPaidAccess) _trialAutoExpired = true;
       _accountTitle = settings['accountTitle'] as String? ?? '';
       _accountNo = settings['accountNo'] as String? ?? '';
       _bankName = settings['bankName'] as String? ?? '';
@@ -75,9 +117,28 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
     if (_paidAccess) return 'Turn OFF Paid Access to enable';
     if (_trialLoading) return 'Checking trial status...';
     final end = _trialEnd;
-    if (end == null) return 'Give unverified students free trial';
-    if (!end.isAfter(DateTime.now())) return 'Trial ended - Give free trial';
-    return 'Active - Ends: ${_formatTrialEndDate(end)}';
+    if (end == null) return 'Default: 3 days — Give unverified students free trial';
+    if (!end.isAfter(DateTime.now())) return 'Trial ended — Give free trial';
+    return _formatTrialEndDate(end);
+  }
+
+  Widget? _buildTrialCountdownBadge() {
+    final end = _trialEnd;
+    if (end == null || !end.isAfter(DateTime.now())) return null;
+    final d = _remaining;
+    final dd = d.inDays.toString().padLeft(2, '0');
+    final hh = (d.inHours % 24).toString().padLeft(2, '0');
+    final mm = (d.inMinutes % 60).toString().padLeft(2, '0');
+    final ss = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      decoration: BoxDecoration(
+        color: Colors.orange.withValues(alpha: 0.2),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+      ),
+      child: Text('$dd:$hh:$mm:$ss', style: const TextStyle(color: Colors.orangeAccent, fontSize: 13, fontWeight: FontWeight.bold, fontFamily: 'monospace')),
+    );
   }
 
   @override
@@ -102,7 +163,7 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
                     value: _paidAccess, activeColor: Colors.blue,
                     onChanged: (v) async { await FirebaseService.updateSetting('paidAccess', v); if (mounted) setState(() => _paidAccess = v); },
                   )),
-                  _ctrlTile(context, Icons.timer_rounded, Colors.orange, 'Free Trial', _trialSubtitle(), onTap: _paidAccess || _trialLoading ? null : () => _showFreeTrialDialog(context)),
+                  _ctrlTile(context, Icons.timer_rounded, Colors.orange, 'Free Trial', _trialSubtitle(), trailing: _buildTrialCountdownBadge(), onTap: _paidAccess || _trialLoading ? null : () => _showFreeTrialDialog(context)),
                   _ctrlTile(context, Icons.attach_money_rounded, Colors.green, 'Set Price', 'Current: Rs.${_price.toStringAsFixed(0)}', onTap: () => _showSetPriceDialog(context)),
                   _ctrlTile(context, Icons.account_balance_rounded, Colors.teal, 'Account Info', _accountTitle.isNotEmpty ? '$_accountTitle - $_bankName' : 'Add bank details', onTap: () => _showAccountInfoDialog(context)),
                 ]),
@@ -110,6 +171,7 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
                 _ctrlSection(context, 'Student Management', [
                   _ctrlTile(context, Icons.admin_panel_settings_rounded, Colors.cyan, 'Control Student Panel', 'Open full admin panel for a student', onTap: () => _showStudentListForPanel(context)),
                   _ctrlTile(context, Icons.history_rounded, Colors.lime, 'Student Activity', 'Login history & device info', onTap: () => _showStudentActivity(context)),
+                  _ctrlTile(context, Icons.login_rounded, Colors.blue, 'Login Details', 'Recent logins, logouts & registrations', onTap: () => _showLoginDetails(context)),
                   _ctrlTile(context, Icons.school_rounded, Colors.blue, 'Students', 'View registered students', onTap: () => _showAllStudents(context)),
                 ]),
                 const SizedBox(height: 8),
@@ -122,6 +184,15 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
                   _ctrlTile(context, Icons.cloud_upload_rounded, Colors.deepPurple, 'Storage Settings', 'Manage Supabase & upload providers', onTap: () => context.push('/admin/storage-settings')),
                   _ctrlTile(context, Icons.auto_awesome_rounded, Colors.indigo, 'AI API Keys', 'Manage AI provider keys & models', onTap: () => context.push('/admin/ai-api-keys')),
                   _ctrlTile(context, Icons.update_rounded, Colors.cyanAccent, 'App Updates', 'Manage version & update banner', onTap: () => _showAppUpdates(context)),
+                  _ctrlTile(context, Icons.storage_rounded, Colors.teal, 'Database Status',
+                    _dbStatsLoading
+                        ? 'Loading...'
+                        : '${_dbStats.values.fold<int>(0, (a, b) => a + b)} total rows across ${_dbStats.length} tables',
+                    onTap: () => _showDatabaseStatus(context)),
+                ]),
+                const SizedBox(height: 8),
+                _ctrlSection(context, 'FOP Portal', [
+                  _ctrlTile(context, Icons.school_rounded, Colors.orange, 'FOP Authorized Emails', 'Manage who can access FOP portal', onTap: () => context.push('/admin/fop-emails')),
                 ]),
               ],
             ),
@@ -238,7 +309,7 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
     final fillColor = isDark ? Colors.white10 : Colors.black12;
     final bgColor = isDark ? const Color(0xFF1A0533) : Colors.white;
     bool hasActiveTrial = _trialEnd != null && _trialEnd!.isAfter(DateTime.now());
-    DateTime selectedEnd = DateTime.now().add(const Duration(days: 3));
+    DateTime selectedEnd = hasActiveTrial ? _trialEnd! : DateTime.now().add(const Duration(days: 3));
 
     Future<void> _pickDateTime() async {
       final date = await showDatePicker(
@@ -262,30 +333,62 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
       );
       if (time != null) {
         selectedEnd = DateTime(date.year, date.month, date.day, time.hour, time.minute);
-        // The dialog will show the selected date via StatefulBuilder
       }
     }
 
     showDialog(context: context, builder: (d) => StatefulBuilder(builder: (ctx, setDialog) {
+      final remaining = hasActiveTrial ? _trialEnd!.difference(DateTime.now()) : Duration.zero;
+      if (remaining.isNegative) {}
+      final rdd = remaining.inDays.toString().padLeft(2, '0');
+      final rhh = (remaining.inHours % 24).toString().padLeft(2, '0');
+      final rmm = (remaining.inMinutes % 60).toString().padLeft(2, '0');
+      final rss = (remaining.inSeconds % 60).toString().padLeft(2, '0');
+      final isExpired = hasActiveTrial && !remaining.isNegative && remaining.inSeconds <= 0;
+
       return AlertDialog(
         backgroundColor: bgColor,
-        title: Text('Free Trial', style: TextStyle(color: baseColor)),
+        title: Row(children: [
+          Icon(Icons.timer_rounded, color: hasActiveTrial ? Colors.orange : Colors.orangeAccent, size: 22),
+          const SizedBox(width: 8),
+          Text('Free Trial', style: TextStyle(color: baseColor, fontSize: 16)),
+        ]),
         content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-          if (hasActiveTrial) ...[
-            Text('Free trial is active for unverified students.', style: TextStyle(color: dimColor, fontSize: 12)),
-            const SizedBox(height: 8),
-            Text('Ends: ${_formatTrialEndDate(_trialEnd!)}', style: TextStyle(color: Colors.orange, fontSize: 14, fontWeight: FontWeight.w600)),
-            const SizedBox(height: 4),
-            Text('Remaining: ${_trialRemainingText()}', style: TextStyle(color: baseColor, fontSize: 12)),
-            const SizedBox(height: 16),
+          if (hasActiveTrial && !isExpired) ...[
+            Text('Free Trial: ${_formatTrialEndDate(_trialEnd!)}', style: TextStyle(color: dimColor, fontSize: 12)),
+            const SizedBox(height: 10),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+              decoration: BoxDecoration(
+                gradient: LinearGradient(colors: [Colors.orange.withValues(alpha: 0.2), Colors.deepOrange.withValues(alpha: 0.15)]),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: Colors.orange.withValues(alpha: 0.3)),
+              ),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.hourglass_bottom_rounded, color: Colors.orangeAccent, size: 20),
+                  const SizedBox(width: 10),
+                  Text('Remaining: $rdd : $rhh : $rmm : $rss', style: const TextStyle(color: Colors.orangeAccent, fontSize: 16, fontWeight: FontWeight.bold, fontFamily: 'monospace')),
+                ],
+              ),
+            ),
+            const SizedBox(height: 12),
             const Divider(),
             const SizedBox(height: 8),
+            Text('Extend the current trial by selecting a new end date/time below.', style: TextStyle(color: dimColor, fontSize: 12)),
+          ] else if (hasActiveTrial && isExpired) ...[
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(color: Colors.redAccent.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+              child: Row(children: [const Icon(Icons.info_outline, color: Colors.redAccent, size: 16), const SizedBox(width: 8), Expanded(child: Text('Trial has expired. Start a new trial below.', style: TextStyle(color: Colors.redAccent, fontSize: 12)))]),
+            ),
+            const SizedBox(height: 12),
+          ] else ...[
+            Text('Give unverified students free access. Default: 3 days. When the trial ends, Paid Access turns ON automatically.', style: TextStyle(color: dimColor, fontSize: 12)),
           ],
-          Text(hasActiveTrial
-              ? 'Extend the current trial by selecting a new end date/time below.'
-              : 'Give unverified students free access until the selected date/time. When the trial ends, Paid Access turns ON automatically.',
-              style: TextStyle(color: dimColor, fontSize: 12)),
-          const SizedBox(height: 16),
+          const SizedBox(height: 14),
           InkWell(
             onTap: () async {
               await _pickDateTime();
@@ -301,24 +404,29 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
               child: Row(children: [
                 Icon(Icons.calendar_today_rounded, color: Colors.orange, size: 20),
                 const SizedBox(width: 12),
-                Expanded(child: Text('End: ${_formatTrialEndDate(selectedEnd)}', style: TextStyle(color: baseColor, fontSize: 14, fontWeight: FontWeight.w500))),
+                Expanded(child: Text(
+                  'End: ${_formatTrialEndDate(selectedEnd)}${!hasActiveTrial ? ' (Default)' : ''}',
+                  style: TextStyle(color: baseColor, fontSize: 14, fontWeight: FontWeight.w500),
+                )),
                 Icon(Icons.edit_rounded, color: dimColor, size: 18),
               ]),
             ),
           ),
         ]),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(d), child: Text('Close', style: TextStyle(color: dimColor))),
-          ElevatedButton(onPressed: () async {
+          TextButton(onPressed: _trialSaving ? null : () => Navigator.pop(d), child: Text('Close', style: TextStyle(color: dimColor))),
+          ElevatedButton(onPressed: _trialSaving ? null : () async {
             final now = DateTime.now();
             if (!selectedEnd.isAfter(now)) {
               ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('End date/time must be in the future'), backgroundColor: Colors.orange));
               return;
             }
-            // Auto-set Paid Access OFF when trial starts
+            setDialog(() => _trialSaving = true);
+            if (mounted) setState(() => _trialSaving = true);
             await FirebaseService.updateSetting('paidAccess', false);
             if (mounted) setState(() => _paidAccess = false);
             final count = await FirebaseService.startFreeTrialForAll(end: selectedEnd);
+            _trialSaving = false;
             if (d.mounted) Navigator.pop(d);
             await _loadTrial();
             if (mounted) {
@@ -327,7 +435,9 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
                 backgroundColor: Colors.green,
               ));
             }
-          }, child: Text(hasActiveTrial ? 'Extend Trial' : 'Start Trial')),
+          }, child: _trialSaving
+              ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+              : Text(hasActiveTrial && !isExpired ? 'Extend Trial' : 'Start Trial')),
         ],
       );
     }));
@@ -347,18 +457,12 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
 
   String _trialRemainingText() {
     final r = _remaining;
-    if (r.inSeconds <= 0) return '0s';
-    final d = r.inDays;
-    final h = r.inHours % 24;
-    final m = r.inMinutes % 60;
-    final s = r.inSeconds % 60;
-    final parts = <String>[
-      if (d > 0) '$d d',
-      if (h > 0) '$h h',
-      if (m > 0) '$m m',
-      if (s > 0) '$s s',
-    ];
-    return parts.join(' ');
+    if (r.inSeconds <= 0) return '00:00:00:00';
+    final dd = r.inDays.toString().padLeft(2, '0');
+    final hh = (r.inHours % 24).toString().padLeft(2, '0');
+    final mm = (r.inMinutes % 60).toString().padLeft(2, '0');
+    final ss = (r.inSeconds % 60).toString().padLeft(2, '0');
+    return '$dd:$hh:$mm:$ss';
   }
 
 
@@ -442,6 +546,108 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
 
   // ─── All Students ─────────────────────────────────────────────────────
 
+  void _showLoginDetails(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final baseColor = isDark ? Colors.white : const Color(0xFF1A0533);
+    final dimColor = isDark ? Colors.white38 : Colors.black54;
+    final bgColor = isDark ? const Color(0xFF1A0533) : Colors.white;
+    final cardBg = isDark ? const Color(0xFF0D0D2E) : Colors.grey.shade50;
+    Navigator.push(context, MaterialPageRoute(
+      fullscreenDialog: true,
+      builder: (_) => _LoginDetailsPage(isDark: isDark, baseColor: baseColor, dimColor: dimColor, bgColor: bgColor, cardBg: cardBg),
+    ));
+  }
+
+  void _showDatabaseStatus(BuildContext context) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final baseColor = isDark ? Colors.white : const Color(0xFF1A0533);
+    final dimColor = isDark ? Colors.white38 : Colors.black54;
+    final bgColor = isDark ? const Color(0xFF1A0533) : Colors.white;
+    final cardBg = isDark ? const Color(0xFF0D0D2E) : Colors.grey.shade50;
+    showModalBottomSheet(
+      context: context, isScrollControlled: true, backgroundColor: bgColor,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (ctx) => StatefulBuilder(builder: (ctx, setLocal) {
+        final pingTime = SupabaseReadService.lastPingTime;
+        final pingOk = SupabaseReadService.lastPingSuccess;
+        return DraggableScrollableSheet(
+          expand: false, maxChildSize: 0.85, initialChildSize: 0.7,
+          builder: (ctx, scrollCtrl) => Column(children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+              child: Row(children: [
+                Icon(Icons.storage_rounded, color: Colors.teal, size: 22),
+                const SizedBox(width: 8),
+                Text('Database Status', style: TextStyle(color: baseColor, fontWeight: FontWeight.bold, fontSize: 16)),
+                const Spacer(),
+                IconButton(icon: Icon(Icons.refresh_rounded, color: Colors.teal), onPressed: () async {
+                  setLocal(() {});
+                  final stats = await SupabaseReadService.getDatabaseStats();
+                  if (mounted) setState(() => _dbStats = stats);
+                  setLocal(() {});
+                }),
+                IconButton(icon: Icon(Icons.close, color: dimColor), onPressed: () => Navigator.pop(ctx)),
+              ]),
+            ),
+            if (pingTime != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Row(children: [
+                  Icon(pingOk ? Icons.check_circle_rounded : Icons.error_rounded, color: pingOk ? Colors.green : Colors.red, size: 14),
+                  const SizedBox(width: 6),
+                  Text('Last ping: ${_fmtPing(pingTime)} · ${pingOk ? "OK" : "Failed"}', style: TextStyle(color: dimColor, fontSize: 11)),
+                ]),
+              ),
+            Divider(color: isDark ? Colors.white12 : Colors.black12),
+            Expanded(
+              child: _dbStatsLoading
+                  ? const Center(child: CircularProgressIndicator(color: Colors.teal))
+                  : ListView.builder(
+                      controller: scrollCtrl, padding: const EdgeInsets.all(16),
+                      itemCount: _dbStats.length,
+                      itemBuilder: (ctx, i) {
+                        final entry = _dbStats.entries.elementAt(i);
+                        final pct = entry.value > 1000 ? 1.0 : entry.value / 1000;
+                        return Card(
+                          color: cardBg, margin: const EdgeInsets.only(bottom: 6),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                              Row(children: [
+                                Text(entry.key, style: TextStyle(color: baseColor, fontWeight: FontWeight.w600, fontSize: 13)),
+                                const Spacer(),
+                                Text('${entry.value}', style: TextStyle(color: entry.value > 500 ? Colors.orangeAccent : Colors.teal, fontWeight: FontWeight.bold, fontSize: 13)),
+                              ]),
+                              const SizedBox(height: 6),
+                              ClipRRect(
+                                borderRadius: BorderRadius.circular(4),
+                                child: LinearProgressIndicator(
+                                  value: pct, backgroundColor: dimColor.withValues(alpha: 0.1),
+                                  color: entry.value > 800 ? Colors.orangeAccent : Colors.teal,
+                                  minHeight: 3,
+                                ),
+                              ),
+                            ]),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+          ]),
+        );
+      }),
+    );
+  }
+
+  String _fmtPing(DateTime dt) {
+    final diff = DateTime.now().difference(dt);
+    if (diff.inMinutes < 1) return 'Just now';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
+    if (diff.inHours < 24) return '${diff.inHours}h ago';
+    return '${diff.inDays}d ago';
+  }
+
   void _showAllStudents(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     final baseColor = isDark ? Colors.white : Colors.black87;
@@ -515,8 +721,8 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
                                   ),
                                 );
                                 if (confirm == true && uid.isNotEmpty) {
-                                  await FirebaseService.firestore.collection('users').doc(uid).delete();
-                                  await FirebaseService.deleteUserFromAuth(uid);
+                                   await SupabaseReadService.writeToAll('users', uid, {}, delete: true);
+                                   await FirebaseService.deleteUserFromAuth(uid);
                                   if (ctx.mounted) Navigator.pop(ctx);
                                 }
                               },
@@ -593,8 +799,13 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
                                   height: 32,
                                   child: TextButton(
                                     onPressed: () async {
-                                      if (!debounce('ctrl_block_$uid')) return;
-                                      await FirebaseService.firestore.collection('users').doc(uid).update({'blocked': !blocked});
+                                       if (!debounce('ctrl_block_$uid')) return;
+                                       final existing = await SupabaseReadService.getUser(uid);
+                                       final merged = Map<String, dynamic>.from(existing ?? {})..['blocked'] = !blocked;
+                                       await SupabaseReadService.writeToAll('users', uid, merged);
+                                       await FirebaseService.addTargetedNotification(uid, !blocked
+                                           ? 'Your account has been unblocked. You can now access all features.'
+                                           : 'Your account has been blocked by the administrator. Contact support for help.');
                                       if (ctx.mounted) setLocal(() => s['blocked'] = !blocked);
                                     },
                                     style: TextButton.styleFrom(backgroundColor: blocked ? Colors.green : Colors.redAccent, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 8)),
@@ -608,8 +819,13 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
                                   height: 32,
                                   child: TextButton(
                                     onPressed: () async {
-                                      if (!debounce('ctrl_verify_$uid')) return;
-                                      await FirebaseService.firestore.collection('users').doc(uid).update({'verified': !verified});
+                                       if (!debounce('ctrl_verify_$uid')) return;
+                                       final existing = await SupabaseReadService.getUser(uid);
+                                       final merged = Map<String, dynamic>.from(existing ?? {})..['verified'] = !verified;
+                                       await SupabaseReadService.writeToAll('users', uid, merged);
+                                       await FirebaseService.addTargetedNotification(uid, !verified
+                                           ? 'Your account has been verified! You now have full access to all content.'
+                                           : 'Your account verification has been removed. Contact support for details.');
                                       if (ctx.mounted) setLocal(() => s['verified'] = !verified);
                                     },
                                     style: TextButton.styleFrom(backgroundColor: verified ? Colors.orange : Colors.blue, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 8)),
@@ -990,7 +1206,9 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
                         title: Text(link.isNotEmpty ? link : 'No link', style: TextStyle(color: baseColor, fontSize: 13)),
                         subtitle: Text(timeStr, style: TextStyle(color: dimColor, fontSize: 11)),
                         trailing: IconButton(icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
-                          onPressed: () async { await FirebaseService.firestore.collection('app_updates').doc(id).delete(); }),
+                          onPressed: () async { 
+                            await SupabaseReadService.writeToAll('app_updates', id, {}, delete: true);
+                          }),
                       );
                     },
                   ),
@@ -1024,7 +1242,12 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
         ElevatedButton(onPressed: () async {
           final version = versionCtrl.text.trim();
           if (version.isEmpty) return;
-          await FirebaseService.firestore.collection('app_updates').add({'version': version, 'link': linkCtrl.text.trim(), 'createdAt': FieldValue.serverTimestamp()});
+          final docId = 'upd_${DateTime.now().millisecondsSinceEpoch}';
+          await SupabaseReadService.writeToAll('app_updates', docId, {
+            'version': version,
+            'link': linkCtrl.text.trim(),
+            'createdAt': DateTime.now().toIso8601String(),
+          });
           if (d.mounted) Navigator.pop(d);
         }, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A148C)), child: const Text('Add', style: TextStyle(color: Colors.white))),
       ],
@@ -1131,8 +1354,7 @@ class _StudentActivityPageState extends State<StudentActivityPage> {
                                 icon: const Icon(Icons.insights_rounded, color: Colors.cyan, size: 20),
                                 tooltip: 'View Progress',
                                 onPressed: () {
-                                  Navigator.pop(context);
-                                  Navigator.push(context, MaterialPageRoute(
+                                  Navigator.pushReplacement(context, MaterialPageRoute(
                                     builder: (_) => StudentProgressScreen(targetUid: uid),
                                   ));
                                 },
@@ -1320,13 +1542,10 @@ class _StudentDevicePageState extends State<_StudentDevicePage> with SingleTicke
   }
 
   Widget _buildDevicesTab() {
-    return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseService.getLoginAttemptsForUser(widget.uid),
+    return StreamBuilder<List<Map<String, dynamic>>>(
+      stream: SupabaseReadService.streamLoginAttemptsForUser(widget.uid),
       builder: (ctx, loginSnap) {
         if (loginSnap.hasError) {
-          if (FirebaseService.currentUser == null) {
-            ctx.go('/auth/login');
-          }
           return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
             Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 32),
             const SizedBox(height: 8),
@@ -1334,12 +1553,7 @@ class _StudentDevicePageState extends State<_StudentDevicePage> with SingleTicke
           ]));
         }
         if (!loginSnap.hasData) return const Center(child: ProfessionalLoader());
-        final loginLogs = loginSnap.data!.docs.toList();
-        loginLogs.sort((a, b) {
-          final aT = (a.data() as Map<String, dynamic>)['timestamp'] as String? ?? '';
-          final bT = (b.data() as Map<String, dynamic>)['timestamp'] as String? ?? '';
-          return bT.compareTo(aT);
-        });
+        final loginLogs = loginSnap.data!;
         if (loginLogs.isEmpty) {
           return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
             Icon(Icons.phone_android_rounded, size: 48, color: widget.dimColor.withValues(alpha: 0.3)),
@@ -1349,26 +1563,26 @@ class _StudentDevicePageState extends State<_StudentDevicePage> with SingleTicke
         }
         final now = DateTime.now();
         final latestTime = loginLogs.isNotEmpty ? (() {
-          final ts = (loginLogs.first.data() as Map<String, dynamic>)['timestamp'] as String? ?? '';
+          final ts = loginLogs.first['timestamp'] as String? ?? '';
           if (ts.isNotEmpty) { try { return DateTime.parse(ts); } catch (_) {} }
           return null;
         })() : null;
         final latestDeviceId = latestTime != null && now.difference(latestTime).inMinutes < 5
-            ? (loginLogs.first.data() as Map<String, dynamic>)['deviceId'] as String?
+            ? loginLogs.first['deviceId'] as String?
             : null;
-        return StreamBuilder<QuerySnapshot>(
-          stream: FirebaseService.getWebSessionsForUser(widget.uid),
+        return StreamBuilder<List<Map<String, dynamic>>>(
+          stream: SupabaseReadService.streamWebSessionsForUser(widget.uid),
           builder: (ctx, webSnap) {
-            final allWebSessions = webSnap.hasData ? webSnap.data!.docs : [];
+            final allWebSessions = webSnap.data ?? [];
             final activeWebSessions = allWebSessions
-                .where((doc) => (doc.data() as Map<String, dynamic>)['status'] == 'connected')
+                .where((doc) => doc['status'] == 'connected')
                 .toList();
             return ListView.separated(
               padding: const EdgeInsets.all(16),
               itemCount: loginLogs.length,
               separatorBuilder: (_, __) => Divider(height: 1, color: widget.isDark ? Colors.white10 : Colors.black12),
               itemBuilder: (_, i) {
-                final d = loginLogs[i].data() as Map<String, dynamic>;
+                final d = loginLogs[i];
                 final deviceModel = d['deviceModel'] as String? ?? 'Unknown device';
                 final deviceId = d['deviceId'] as String? ?? '';
                 final ts = d['timestamp'] as String? ?? '';
@@ -1419,8 +1633,7 @@ class _StudentDevicePageState extends State<_StudentDevicePage> with SingleTicke
                       if (isLatestActive && activeWebSessions.isNotEmpty) ...[
                         const SizedBox(height: 4),
                         ...activeWebSessions.map((w) {
-                          final wd = w.data() as Map<String, dynamic>;
-                          final webBrowser = wd['webBrowser'] as String? ?? 'Web Browser';
+                          final webBrowser = w['webBrowser'] as String? ?? 'Web Browser';
                           return Padding(
                             padding: const EdgeInsets.only(bottom: 2),
                             child: Row(children: [
@@ -1458,13 +1671,10 @@ class _StudentDevicePageState extends State<_StudentDevicePage> with SingleTicke
   }
 
   Widget _buildNotificationsTab() {
-    return StreamBuilder<QuerySnapshot>(
-      stream: FirebaseService.getTargetedNotificationsForUser(widget.uid),
+    return StreamBuilder<List<Map<String, dynamic>>>(
+      stream: SupabaseReadService.streamTargetedNotificationsForUser(widget.uid),
       builder: (ctx, snap) {
         if (snap.hasError) {
-          if (FirebaseService.currentUser == null) {
-            ctx.go('/auth/login');
-          }
           return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
             Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 32),
             const SizedBox(height: 8),
@@ -1473,15 +1683,7 @@ class _StudentDevicePageState extends State<_StudentDevicePage> with SingleTicke
           ]));
         }
         if (!snap.hasData) return const Center(child: ProfessionalLoader());
-        final notifications = snap.data!.docs.toList();
-        notifications.sort((a, b) {
-          final aT = (a.data() as Map<String, dynamic>)['createdAt'] as Timestamp?;
-          final bT = (b.data() as Map<String, dynamic>)['createdAt'] as Timestamp?;
-          if (aT == null && bT == null) return 0;
-          if (aT == null) return 1;
-          if (bT == null) return -1;
-          return bT.compareTo(aT);
-        });
+        final notifications = snap.data!;
         if (notifications.isEmpty) {
           return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
             Icon(Icons.notifications_none_rounded, size: 48, color: widget.dimColor.withValues(alpha: 0.3)),
@@ -1495,9 +1697,13 @@ class _StudentDevicePageState extends State<_StudentDevicePage> with SingleTicke
           padding: const EdgeInsets.all(16),
           itemCount: notifications.length,
           itemBuilder: (_, i) {
-            final d = notifications[i].data() as Map<String, dynamic>;
+            final d = notifications[i];
             final message = d['message'] as String? ?? '';
-            final createdAt = (d['createdAt'] as Timestamp?)?.toDate();
+            final createdAtStr = d['createdAt'] as String? ?? d['created_at'] as String?;
+            DateTime? createdAt;
+            if (createdAtStr != null) {
+              try { createdAt = DateTime.parse(createdAtStr); } catch (_) {}
+            }
             final timeStr = createdAt != null
                 ? '${createdAt.day}/${createdAt.month}/${createdAt.year} ${createdAt.hour}:${createdAt.minute.toString().padLeft(2, '0')}'
                 : 'N/A';
@@ -1621,37 +1827,28 @@ class _AdminLinkHistoryScreenState extends State<_AdminLinkHistoryScreen> {
             ]),
           ),
           Expanded(
-            child: StreamBuilder<QuerySnapshot>(
-              stream: FirebaseService.getWebSessionsForUser(widget.uid),
+            child: StreamBuilder<List<Map<String, dynamic>>>(
+              stream: SupabaseReadService.streamWebSessionsForUser(widget.uid),
               builder: (ctx, snap) {
                 if (snap.hasError) {
-                  if (FirebaseService.currentUser == null) {
-                    ctx.go('/auth/login');
-                  }
                   return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                     Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 32),
                     const SizedBox(height: 8),
                     Text('Could not load history', style: TextStyle(color: Colors.redAccent, fontSize: 13)),
-                    Padding(padding: const EdgeInsets.only(top: 4), child: Text('${snap.error}', style: TextStyle(color: widget.dimColor, fontSize: 10), textAlign: TextAlign.center)),
                   ]));
                 }
                 if (!snap.hasData) {
                   return const Center(child: ProfessionalLoader());
                 }
-                var sessions = snap.data!.docs.toList();
-                sessions.sort((a, b) {
-                  final aT = (a.data() as Map<String, dynamic>)['connectedAt'] as Timestamp?;
-                  final bT = (b.data() as Map<String, dynamic>)['connectedAt'] as Timestamp?;
-                  if (aT == null && bT == null) return 0;
-                  if (aT == null) return 1;
-                  if (bT == null) return -1;
-                  return bT.compareTo(aT);
-                });
-                sessions = sessions.where((doc) {
-                  final data = doc.data() as Map<String, dynamic>;
-                  final devId = data['androidDeviceId'] as String? ?? '';
+                var sessions = snap.data!.where((doc) {
+                  final devId = doc['androidDeviceId'] as String? ?? '';
                   return devId == widget.deviceId;
                 }).toList();
+                sessions.sort((a, b) {
+                  final aT = a['connectedAt'] as String? ?? '';
+                  final bT = b['connectedAt'] as String? ?? '';
+                  return bT.compareTo(aT);
+                });
                 if (sessions.isEmpty) {
                   return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
                     Icon(Icons.language_rounded, size: 48, color: widget.dimColor.withValues(alpha: 0.3)),
@@ -1665,9 +1862,13 @@ class _AdminLinkHistoryScreenState extends State<_AdminLinkHistoryScreen> {
                   padding: const EdgeInsets.all(16),
                   itemCount: sessions.length,
                   itemBuilder: (_, i) {
-                    final d = sessions[i].data() as Map<String, dynamic>;
-                    final connectedAt = (d['connectedAt'] as Timestamp?)?.toDate();
-                    final disconnectedAt = (d['disconnectedAt'] as Timestamp?)?.toDate();
+                    final d = sessions[i];
+                    final connectedAtStr = d['connectedAt'] as String?;
+                    final disconnectedAtStr = d['disconnectedAt'] as String?;
+                    DateTime? connectedAt;
+                    DateTime? disconnectedAt;
+                    try { if (connectedAtStr != null) connectedAt = DateTime.parse(connectedAtStr); } catch (_) {}
+                    try { if (disconnectedAtStr != null) disconnectedAt = DateTime.parse(disconnectedAtStr); } catch (_) {}
                     final status = d['status'] ?? 'disconnected';
                     final isActive = status == 'connected';
                     final deviceInfo = (d['webBrowser'] as String?) ?? 'Web Browser';
@@ -1773,5 +1974,168 @@ class _AdminLinkHistoryScreenState extends State<_AdminLinkHistoryScreen> {
     if (diff.inDays > 0) return '${diff.inDays}d ${diff.inHours % 24}h';
     if (diff.inHours > 0) return '${diff.inHours}h ${diff.inMinutes % 60}m';
     return '${diff.inMinutes}m';
+  }
+}
+
+// ─── Login Details Page (admin_notifications: login/logout/registration) ─────
+
+class _LoginDetailsPage extends StatelessWidget {
+  final bool isDark;
+  final Color baseColor;
+  final Color dimColor;
+  final Color bgColor;
+  final Color cardBg;
+
+  const _LoginDetailsPage({
+    required this.isDark,
+    required this.baseColor,
+    required this.dimColor,
+    required this.bgColor,
+    required this.cardBg,
+  });
+
+  static const _loginTypes = {'login', 'logout', 'registration'};
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: bgColor,
+      appBar: AppBar(
+        backgroundColor: bgColor,
+        leading: IconButton(
+          icon: Icon(Icons.arrow_back_rounded, color: baseColor),
+          onPressed: () => Navigator.pop(context),
+        ),
+        title: Text('Login Details', style: TextStyle(color: baseColor, fontWeight: FontWeight.bold)),
+        centerTitle: true,
+        actions: [
+          IconButton(
+            icon: Icon(Icons.delete_sweep_rounded, color: Colors.redAccent, size: 22),
+            tooltip: 'Clear login details',
+            onPressed: () async {
+              final confirm = await showDialog<bool>(
+                context: context,
+                builder: (d) => AlertDialog(
+                  backgroundColor: bgColor,
+                  title: Text('Clear Login Details?', style: TextStyle(color: baseColor)),
+                  content: Text('This will remove all login, logout, and registration history.', style: TextStyle(color: dimColor)),
+                  actions: [
+                    TextButton(onPressed: () => Navigator.pop(d, false), child: Text('Cancel', style: TextStyle(color: dimColor))),
+                    ElevatedButton(
+                      style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent),
+                      onPressed: () => Navigator.pop(d, true),
+                      child: const Text('Clear'),
+                    ),
+                  ],
+                ),
+              );
+              if (confirm == true) {
+                await FirebaseService.clearLoginNotifications();
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Login details cleared')));
+                }
+              }
+            },
+          ),
+        ],
+      ),
+      body: StreamBuilder<List<Map<String, dynamic>>>(
+        stream: SupabaseReadService.streamAdminNotifications(),
+        builder: (context, snap) {
+          if (snap.hasError) {
+            return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+              Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 32),
+              const SizedBox(height: 8),
+              Text('Could not load login details', style: TextStyle(color: Colors.redAccent, fontSize: 13)),
+            ]));
+          }
+          if (!snap.hasData) {
+            return const Center(child: CircularProgressIndicator(color: Color(0xFF7C4DFF)));
+          }
+          final allItems = snap.data!;
+          final items = allItems.where((r) => _loginTypes.contains(r['type'])).toList();
+          if (items.isEmpty) {
+            return Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.login_rounded, size: 56, color: dimColor.withValues(alpha: 0.2)),
+                  const SizedBox(height: 12),
+                  Text('No login activity yet', style: TextStyle(color: dimColor, fontSize: 14)),
+                ],
+              ),
+            );
+          }
+          return ListView.builder(
+            padding: const EdgeInsets.all(16),
+            itemCount: items.length,
+            itemBuilder: (ctx, i) => _buildLoginCard(items[i]),
+          );
+        },
+      ),
+    );
+  }
+
+  Widget _buildLoginCard(Map<String, dynamic> d) {
+    final type = d['type'] as String? ?? '';
+    final msg = d['message'] as String? ?? '';
+    final createdAt = d['createdAt'] as String? ?? d['created_at'] as String?;
+    final time = createdAt != null ? DateTime.tryParse(createdAt) : null;
+    final timeStr = time != null ? _fmt(time) : '';
+
+    IconData icon;
+    Color color;
+    switch (type) {
+      case 'login': icon = Icons.login_rounded; color = Colors.blue; break;
+      case 'logout': icon = Icons.logout_rounded; color = Colors.blueGrey; break;
+      case 'registration': icon = Icons.person_add_rounded; color = Colors.green; break;
+      default: icon = Icons.circle; color = Colors.grey;
+    }
+
+    return Card(
+      color: cardBg,
+      margin: const EdgeInsets.only(bottom: 8),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+      child: Padding(
+        padding: const EdgeInsets.all(14),
+        child: Row(
+          children: [
+            Container(
+              width: 38, height: 38,
+              decoration: BoxDecoration(color: color.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(10)),
+              child: Icon(icon, color: color, size: 20),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(msg, style: TextStyle(color: baseColor, fontSize: 13, fontWeight: FontWeight.w500), maxLines: 2, overflow: TextOverflow.ellipsis),
+                  if (timeStr.isNotEmpty) ...[
+                    const SizedBox(height: 4),
+                    Text(timeStr, style: TextStyle(color: dimColor, fontSize: 11)),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  static const _days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+  String _fmt(DateTime dt) {
+    final now = DateTime.now();
+    final diff = now.difference(dt);
+    final day = _days[(dt.weekday - 1) % 7];
+    final time = '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    final date = '${dt.day.toString().padLeft(2, '0')}-${dt.month.toString().padLeft(2, '0')}-${dt.year}';
+    if (diff.inMinutes < 1) return 'Just now · $day $time · $date';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago · $day $time · $date';
+    if (diff.inHours < 24) return '${diff.inHours}h ago · $day $time · $date';
+    if (diff.inDays < 7) return '${diff.inDays}d ago · $day $time · $date';
+    return '$day $time · $date';
   }
 }

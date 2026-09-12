@@ -1000,6 +1000,8 @@ class _DashboardScreenState extends State<DashboardScreen>
                 isFolder: false,
                 isSubfolder: isSubfolder,
                 parentContentId: parentContentId,
+                contentType: docType ?? 'file',
+                rawData: contentData,
               ));
             }
           }
@@ -1007,6 +1009,19 @@ class _DashboardScreenState extends State<DashboardScreen>
       }
     } catch (_) {}
     if (mounted) setState(() { _searchResults = results; _isSearching = false; });
+  }
+
+  String _extractYoutubeId(String url) {
+    final patterns = [
+      RegExp(r'youtube\.com/watch\?v=([^&]+)'),
+      RegExp(r'youtu\.be/([^?]+)'),
+      RegExp(r'youtube\.com/embed/([^?]+)'),
+    ];
+    for (final p in patterns) {
+      final m = p.firstMatch(url);
+      if (m != null) return m.group(1) ?? '';
+    }
+    return '';
   }
 
   Widget _buildSearchResults(BuildContext navContext) {
@@ -1044,7 +1059,61 @@ class _DashboardScreenState extends State<DashboardScreen>
         return GestureDetector(
           onTap: () {
             if (!navContext.mounted) return;
-            navContext.push(path);
+            if (r.isFolder) {
+              navContext.push('/folders/${r.folderId}');
+            } else if (r.isSubfolder) {
+              navContext.push('/folders/${r.folderId}/sub/${r.contentId}');
+            } else if (r.rawData != null && r.contentId != null) {
+              final data = r.rawData!;
+              final type = data['type'] as String? ?? 'file';
+              switch (type) {
+                case 'lecture':
+                  final url = data['youtubeUrl'] as String? ?? '';
+                  final videoId = _extractYoutubeId(url);
+                  if (videoId.isNotEmpty) {
+                    navContext.push('/lectures/$videoId', extra: {'name': r.title, 'folderId': r.folderId, 'folderName': r.folderName, 'parentContentId': r.parentContentId});
+                  }
+                  break;
+                case 'mocktest_url':
+                  final url = data['url'] as String? ?? '';
+                  if (url.isNotEmpty) {
+                    navContext.push('/webview', extra: {'url': url, 'title': r.title, 'folderId': r.folderId, 'parentContentId': r.parentContentId, 'isMockTest': true});
+                  }
+                  break;
+                case 'mocktest_code':
+                  final code = data['code'] as String? ?? '';
+                  if (code.isNotEmpty) {
+                    navContext.push('/webview', extra: {'html': code, 'title': r.title, 'folderId': r.folderId, 'parentContentId': r.parentContentId, 'isMockTest': true});
+                  }
+                  break;
+                case 'mocktest_file':
+                  final url = data['url'] as String? ?? '';
+                  final fileType = data['fileType'] as String? ?? 'pdf';
+                  if (url.isNotEmpty) {
+                    if (fileType == 'pdf') {
+                      navContext.push('/pdf_reader/view', extra: {'url': url, 'folderId': r.folderId, 'parentContentId': r.parentContentId, 'title': r.title});
+                    } else {
+                      navContext.push('/webview', extra: {'url': url, 'title': r.title, 'folderId': r.folderId, 'parentContentId': r.parentContentId, 'isMockTest': true});
+                    }
+                  }
+                  break;
+                case 'file':
+                  final url = data['url'] as String? ?? '';
+                  if (url.isNotEmpty) {
+                    final ext = r.title.contains('.') ? r.title.split('.').last.toLowerCase() : '';
+                    if (ext == 'pdf') {
+                      navContext.push('/pdf_reader/view', extra: {'url': url, 'folderId': r.folderId, 'parentContentId': r.parentContentId, 'title': r.title});
+                    } else {
+                      navContext.push('/webview', extra: {'url': url, 'title': r.title, 'folderId': r.folderId, 'parentContentId': r.parentContentId});
+                    }
+                  }
+                  break;
+                default:
+                  navContext.push('/folders/${r.folderId}/sub/${r.contentId}');
+              }
+            } else {
+              navContext.push('/folders/${r.folderId}/sub/${r.contentId}');
+            }
           },
           child: Container(
             margin: const EdgeInsets.only(bottom: 6),
@@ -2144,6 +2213,8 @@ class _SearchResult {
   final bool isFolder;
   final bool isSubfolder;
   final String? parentContentId;
+  final String? contentType;
+  final Map<String, dynamic>? rawData;
 
   _SearchResult({
     required this.title,
@@ -2153,6 +2224,8 @@ class _SearchResult {
     required this.isFolder,
     this.isSubfolder = false,
     this.parentContentId,
+    this.contentType,
+    this.rawData,
   });
 }
 

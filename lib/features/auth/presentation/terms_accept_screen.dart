@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/services/supabase_read_service.dart';
 
 class TermsAcceptScreen extends StatefulWidget {
   const TermsAcceptScreen({super.key});
@@ -121,10 +121,14 @@ class _TermsAcceptScreenState extends State<TermsAcceptScreen> {
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton(
-                        onPressed: _agreed ? () async {
-                          await FirebaseService.firestore.collection('users').doc(FirebaseService.currentUser?.uid)
-                              .set({'termsAccepted': true, 'termsAcceptedAt': FieldValue.serverTimestamp()}, SetOptions(merge: true));
-                          if (context.mounted) context.go('/dashboard');
+                    onPressed: _agreed ? () async {
+                           final uid = FirebaseService.currentUser?.uid ?? '';
+                           final existing = await SupabaseReadService.getUser(uid);
+                           final merged = Map<String, dynamic>.from(existing ?? {})
+                             ..['termsAccepted'] = true
+                             ..['termsAcceptedAt'] = DateTime.now().toIso8601String();
+                           await SupabaseReadService.writeToAll('users', uid, merged);
+                           if (context.mounted) context.go('/dashboard');
                         } : null,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: isDark ? const Color(0xFF4A148C) : const Color(0xFF4A148C),

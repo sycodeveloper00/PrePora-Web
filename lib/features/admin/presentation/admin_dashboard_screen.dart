@@ -8,6 +8,7 @@ import 'package:file_picker/file_picker.dart';
 import '../../../core/widgets/glassmorphic_container.dart';
 import '../../../core/widgets/animated_pressable.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/services/supabase_read_service.dart';
 import '../../../core/services/notification_service.dart';
 import '../../../core/theme/theme_provider.dart';
 import '../../../core/widgets/notification_popup_box.dart';
@@ -25,7 +26,6 @@ class AdminDashboardScreen extends StatefulWidget {
 
 class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   final _folderNameController = TextEditingController();
-  int _pendingFeedbackCount = 0;
   StreamSubscription? _feedbackSub;
   Timer? _feedbackDebounce;
   Timer? _tokenRefreshTimer;
@@ -42,7 +42,6 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   void initState() {
     super.initState();
     _folderStream = FirebaseService.getAllFolders();
-    _loadPendingCount();
     _listenNewFeedbacks();
     _startTokenRefreshTimer();
     _listenTokenChanges();
@@ -74,9 +73,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         if (user == null) {
           _refreshFolderStream();
         } else {
-          _refreshAuthToken().then((_) {
-            if (mounted) _refreshFolderStream();
-          });
+          if (mounted) _refreshFolderStream();
         }
       }
     });
@@ -90,24 +87,24 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
 
   void _markAllFeedbacksViewed() async {
     try {
-      final snap = await FirebaseService.firestore
-          .collection('feedbacks')
-          .where('status', isEqualTo: 'pending')
-          .where('viewed', isEqualTo: false)
-          .get();
-      if (snap.docs.isEmpty) return;
-      final batch = FirebaseService.firestore.batch();
-      for (final d in snap.docs) {
-        batch.update(d.reference, {'viewed': true});
+      final feedbacks = await SupabaseReadService.getAllFeedbacks();
+      if (feedbacks == null || feedbacks.isEmpty) return;
+      final pendingUnviewed = feedbacks.where((f) =>
+          f['status'] == 'pending' && f['viewed'] != true).toList();
+      for (final f in pendingUnviewed) {
+        final fid = f['id'] as String?;
+        if (fid != null) {
+          // Use already-loaded data to avoid readPrimary null corruption
+          final merged = <String, dynamic>{
+            ...f,
+            'viewed': true,
+          };
+          await SupabaseReadService.writeToAll('feedbacks', fid, merged);
+        }
       }
-      await batch.commit();
     } catch (_) {}
   }
 
-  void _loadPendingCount() async {
-    final count = await FirebaseService.getPendingFeedbackCount();
-    if (mounted) setState(() => _pendingFeedbackCount = count);
-  }
 
   void _listenNewFeedbacks() {
     _feedbackSub = FirebaseService.getPendingFeedbacks().listen((snap) {
@@ -118,9 +115,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       final count = all.length;
       _feedbackDebounce?.cancel();
       _feedbackDebounce = Timer(const Duration(milliseconds: 500), () {
-        if (mounted) setState(() => _pendingFeedbackCount = count);
+        NotificationService.setBadgeCount(count);
       });
-      NotificationService.setBadgeCount(count);
       for (final change in snap.docChanges) {
         if (change.type == DocumentChangeType.added) {
           final data = change.doc.data() as Map<String, dynamic>;
@@ -173,7 +169,12 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               final name = _folderNameController.text.trim();
               if (name.isEmpty) return;
               Navigator.pop(ctx);
-              await FirebaseService.createRootFolder(name: name, color: '#4A148C');
+              final result = await FirebaseService.createRootFolder(name: name, color: '#4A148C');
+              if (result == null && mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Failed to create folder. Check connection.'), backgroundColor: Colors.redAccent),
+                );
+              }
             },
             style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A148C)),
             child: const Text('Create', style: TextStyle(color: Colors.white)),
@@ -867,7 +868,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                         title: Text(link.isNotEmpty ? link : 'No link', style: TextStyle(color: baseColor, fontSize: 13)),
                         subtitle: Text(timeStr, style: TextStyle(color: dimColor, fontSize: 11)),
                         trailing: IconButton(icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
-                          onPressed: () async { await FirebaseService.firestore.collection('app_updates').doc(id).delete(); }),
+                          onPressed: () async { await SupabaseReadService.writeToAll('app_updates', id, {}, delete: true); }),
                       );
                     },
                   ),
@@ -901,7 +902,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         ElevatedButton(onPressed: () async {
           final version = versionCtrl.text.trim();
           if (version.isEmpty) return;
-          await FirebaseService.firestore.collection('app_updates').add({'version': version, 'link': linkCtrl.text.trim(), 'createdAt': FieldValue.serverTimestamp()});
+          final docId = 'upd_${DateTime.now().millisecondsSinceEpoch}';
+          await SupabaseReadService.writeToAll('app_updates', docId, {'version': version, 'link': linkCtrl.text.trim(), 'createdAt': DateTime.now().toIso8601String()});
           if (d.mounted) Navigator.pop(d);
         }, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A148C)), child: const Text('Add', style: TextStyle(color: Colors.white))),
       ],
@@ -1062,35 +1064,41 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       backgroundColor: const Color(0xFF1A0533),
       isScrollControlled: true,
       shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
-      builder: (_) => StatefulBuilder(
-        builder: (ctx, setLocal) {
-          Set<String> grantedUids = {};
-          List<Map<String, dynamic>> assistants = [];
+      builder: (_) {
+          final Set<String> grantedUids = {};
+          final List<Map<String, dynamic>> assistants = [];
           bool loading = true;
-          Future<void> load() async {
-            try {
-              final results = await Future.wait([
-                FirebaseService.getAllAssistant().first,
-                FirebaseService.getUidsWithFolderAccess(folderId),
-              ]);
-              final assistantSnap = results[0] as QuerySnapshot;
-              final uids = results[1] as Set<String>;
-              assistants = assistantSnap.docs.map((d) => {
-                'uid': d.id,
-                'name': ((d.data() as Map<String, dynamic>)['name'] as String?) ?? 'Unknown',
-                'email': ((d.data() as Map<String, dynamic>)['email'] as String?) ?? '',
-              }).toList();
-              grantedUids = uids;
-            } catch (_) {
-              assistants = [];
-              grantedUids = {};
-            } finally {
-              loading = false;
-              if (ctx.mounted) setLocal(() {});
-            }
-          }
-          load();
-          return DraggableScrollableSheet(
+          bool loadCalled = false;
+          return StatefulBuilder(
+            builder: (ctx, setLocal) {
+              if (!loadCalled) {
+                loadCalled = true;
+                () async {
+                  try {
+                    final results = await Future.wait([
+                      SupabaseReadService.getUsersByRole('Assistant').then((list) => list ?? []),
+                      SupabaseReadService.getUidsWithFolderAccess(folderId),
+                    ]);
+                    final assistantList = results[0] as List<Map<String, dynamic>>;
+                    final uids = results[1] as Set<String>;
+                    for (final d in assistantList) {
+                      assistants.add({
+                        'uid': d['id'] ?? '',
+                        'name': (d['name'] as String?) ?? 'Unknown',
+                        'email': (d['email'] as String?) ?? '',
+                      });
+                    }
+                    grantedUids.addAll(uids);
+                  } catch (_) {
+                    assistants.clear();
+                    grantedUids.clear();
+                  } finally {
+                    loading = false;
+                    if (ctx.mounted) setLocal(() {});
+                  }
+                }();
+              }
+              return DraggableScrollableSheet(
             initialChildSize: 0.5, minChildSize: 0.3, maxChildSize: 0.7, expand: false,
             builder: (scrollCtx, scrollCtrl) => Column(children: [
               Container(
@@ -1182,7 +1190,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             ]),
           );
         },
-      ),
+      );
+      },
     );
   }
 
@@ -1264,20 +1273,20 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
   Future<List<Map<String, dynamic>>> _fetchContentMatches(String query) async {
     final q = query.toLowerCase();
     final results = <Map<String, dynamic>>[];
-    final foldersSnap = await FirebaseService.firestore.collection('folders').get();
-    for (final folderDoc in foldersSnap.docs) {
-      final data = folderDoc.data() as Map<String, dynamic>;
-      if (data['invisible'] == true) continue;
-      final folderName = data['name'] as String? ?? '';
-      final folderId = folderDoc.id;
+    final folders = await SupabaseReadService.getFolders();
+    if (folders == null) return results;
+    for (final folderData in folders) {
+      if (folderData['invisible'] == true) continue;
+      final folderName = folderData['name'] as String? ?? '';
+      final folderId = folderData['id'] as String? ?? '';
       if (folderName.toLowerCase().contains(q)) continue;
-      final contentsSnap = await FirebaseService.firestore.collection('folders').doc(folderId).collection('contents').get();
-      for (final contentDoc in contentsSnap.docs) {
-        final cData = contentDoc.data() as Map<String, dynamic>;
+      final contents = await SupabaseReadService.getFolderContents(folderId, fetchAll: true);
+      if (contents == null) continue;
+      for (final cData in contents) {
         final contentName = cData['name'] as String? ?? cData['title'] as String? ?? '';
         if (contentName.toLowerCase().contains(q)) {
           final type = cData['type'] as String?;
-          results.add({'folderId': folderId, 'folderName': folderName, 'contentName': contentName, 'contentId': contentDoc.id, 'type': type ?? ''});
+          results.add({'folderId': folderId, 'folderName': folderName, 'contentName': contentName, 'contentId': cData['id'], 'type': type ?? ''});
         }
       }
       if (results.length >= 50) break;
@@ -1764,7 +1773,12 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
           if (!debounce('create_subfolder')) return;
           if (ctrl.text.trim().isEmpty) return;
           Navigator.pop(d);
-          await FirebaseService.addFolderContent(parentFolderId, {'type': 'subfolder', 'name': ctrl.text.trim()});
+          final result = await FirebaseService.addFolderContent(parentFolderId, {'type': 'subfolder', 'name': ctrl.text.trim()});
+          if (result == null && mounted) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Failed to create sub-folder. Check connection.'), backgroundColor: Colors.redAccent),
+            );
+          }
         }, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4A148C)), child: const Text('Create', style: TextStyle(color: Colors.white))),
       ],
     ));
@@ -1851,7 +1865,13 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
             StreamBuilder<QuerySnapshot>(
               stream: FirebaseService.getAdminNotifications(),
               builder: (context, snap) {
-                final unread = snap.hasData ? snap.data!.docs.where((d) => (d.data() as Map<String, dynamic>)['read'] == false).length : 0;
+                const skipTypes = {'login', 'logout', 'registration'};
+                final unread = snap.hasData ? snap.data!.docs.where((d) {
+                  final data = d.data() as Map<String, dynamic>;
+                  if (data['read'] == true) return false;
+                  final type = data['type'] as String? ?? '';
+                  return !skipTypes.contains(type);
+                }).length : 0;
                 return IconButton(
                   icon: Stack(
                     clipBehavior: Clip.none,
@@ -1878,7 +1898,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               icon: Icon(Icons.more_vert, color: isDark ? Colors.white70 : const Color(0xFF1A0533), size: 28),
               color: isDark ? const Color(0xFF2D2D2D) : Colors.white,
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              onOpened: () { _loadPendingCount(); _markAllFeedbacksViewed(); },
+              onOpened: () { _markAllFeedbacksViewed(); },
               itemBuilder: (_) => [
                 PopupMenuItem(value: 'notices', child: Row(children: [Icon(Icons.campaign_rounded, size: 18, color: Colors.amber), SizedBox(width: 10), Text('Notice Board', style: TextStyle(color: isDark ? Colors.white : Colors.black87))])),
                 PopupMenuItem(value: 'control_panel', child: Row(children: [Icon(Icons.admin_panel_settings_rounded, size: 18, color: Colors.cyan), SizedBox(width: 10), Text('Control Panel', style: TextStyle(color: isDark ? Colors.white : Colors.black87))])),
@@ -1922,20 +1942,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               if (snapshot.hasError) {
                 if (!_isReconnecting) {
                   _isReconnecting = true;
-                  Future.delayed(const Duration(seconds: 3), () async {
-                    try {
-                      final user = FirebaseService.currentUser;
-                      if (user == null) {
-                        if (mounted) context.go('/auth/login');
-                        return;
-                      }
-                      await _refreshAuthToken();
-                    } catch (_) {
-                      if (FirebaseService.currentUser == null && mounted) {
-                        context.go('/auth/login');
-                        return;
-                      }
-                    }
+                  Future.delayed(const Duration(seconds: 5), () async {
                     if (mounted) {
                       _isReconnecting = false;
                       _refreshFolderStream();
@@ -1990,12 +1997,11 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
                   reordered.insert(newIndex, moved);
                   // Optimistic local update
                   setState(() => _localDocs = reordered);
-                  // Save to Firestore
+                  // Save to Supabase — merge sortOrder into existing data to avoid overwriting other fields
                   for (int i = 0; i < reordered.length; i++) {
-                    await FirebaseService.firestore
-                        .collection('folders')
-                        .doc(reordered[i].id)
-                        .update({'sortOrder': i}).catchError((_) {});
+                    final existing = reordered[i].data() as Map<String, dynamic>;
+                    final merged = Map<String, dynamic>.from(existing)..['sortOrder'] = i;
+                    await SupabaseReadService.writeToAll('folders', reordered[i].id, merged).catchError((_) {});
                   }
                 },
                 buildDefaultDragHandles: false,

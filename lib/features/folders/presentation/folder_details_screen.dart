@@ -1290,9 +1290,11 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     final locked = data['locked'] as bool? ?? false;
     final updating = data['updating'] as bool? ?? false;
     final invisible = data['invisible'] as bool? ?? false;
+    final enabled = data['enabled'] as bool? ?? true;
     if (!widget.isAdmin && locked) return true;
     if (!widget.isAdmin && updating) return true;
     if (!widget.isAdmin && invisible) return true;
+    if (!widget.isAdmin && !enabled) return true;
     if (widget.assistantContentAccess != null && _assistantAccess.isNotEmpty && !_assistantAccess.contains(contentId)) return true;
     return false;
   }
@@ -1484,7 +1486,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
     if (!widget.isAdmin) {
       final currentUser = FirebaseService.currentUser;
       if (currentUser != null) {
-        final folderPath = await _buildFullPath(widget.parentContentId);
+        final parentPath = await _buildFullPath(widget.parentContentId);
+        final folderPath = parentPath.isNotEmpty ? '$parentPath > $name' : name;
         activityId = await FirebaseService.logActivity(uid: currentUser.uid, name: name, type: type, folderPath: folderPath, contentId: contentId);
       }
     }
@@ -1821,16 +1824,12 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                           }).toList();
 
                     final filteredDocs = _searchQuery.isNotEmpty ? _filterDocs(parentFiltered, _searchQuery) : parentFiltered;
-                    final visibleDocs = widget.isAdmin
-                        ? filteredDocs
-                        : filteredDocs.where((doc) {
-                            final d = doc.data() as Map<String, dynamic>;
-                            if (d['invisible'] == true) return false;
-                            if (d['locked'] == true) return false;
-                            if (d['updating'] == true) return false;
-                            if (d['enabled'] == false) return false;
-                            return true;
-                          }).toList();
+                    final visibleDocs = filteredDocs.where((doc) {
+                      final d = doc.data() as Map<String, dynamic>;
+                      if (d['invisible'] == true) return false;
+                      if (d['enabled'] == false) return false;
+                      return true;
+                    }).toList();
 
                     if (!_hasLocalOrder && visibleDocs.isNotEmpty) {
                       _localOrderMap.clear();
@@ -2664,7 +2663,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                 }
                 final currentUser = FirebaseService.currentUser;
                 if (currentUser != null) {
-                  final folderPath = await _buildFullPath(widget.parentContentId);
+                  final parentPath = await _buildFullPath(widget.parentContentId);
+                  final folderPath = parentPath.isNotEmpty ? '$parentPath > $name' : name;
                   FirebaseService.logActivity(uid: currentUser.uid, name: name, type: 'subfolder', folderPath: folderPath, contentId: id);
                 }
               }

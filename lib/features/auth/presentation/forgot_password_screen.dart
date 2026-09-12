@@ -1,9 +1,9 @@
 import 'dart:convert';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
+import '../../../core/services/supabase_read_service.dart';
 import '../../../core/widgets/professional_loader.dart';
 
 class ForgotPasswordScreen extends StatefulWidget {
@@ -103,13 +103,10 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     }
     setState(() { _isLoading = true; _error = null; });
     try {
-      final q = await FirebaseFirestore.instance
-          .collection('users')
-          .where('email', isEqualTo: email)
-          .limit(1)
-          .get();
-      if (q.docs.isNotEmpty) {
-        final role = q.docs.first.data()['role'] as String?;
+      List<Map<String, dynamic>>? users;
+      try { users = await SupabaseReadService.getUsersWhere('email=eq.$email'); } catch (_) {}
+      if (users != null && users.isNotEmpty) {
+        final role = users.first['role'] as String?;
         if (role == 'Assistant') {
           if (mounted) setState(() { _isLoading = false; });
           _showAssistantDialog();
@@ -135,6 +132,9 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isPC = screenWidth > 900;
+    final cardWidth = isPC ? 480.0 : (screenWidth > 600 ? 420.0 : double.infinity);
     return Scaffold(
       body: Container(
         width: double.infinity, height: double.infinity,
@@ -143,9 +143,10 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
         ),
         child: Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
+            padding: EdgeInsets.symmetric(horizontal: isPC ? 0 : 24, vertical: 24),
             child: Container(
-              padding: const EdgeInsets.all(32),
+              width: cardWidth,
+              padding: EdgeInsets.all(isPC ? 40 : 32),
               decoration: BoxDecoration(
                 color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.white.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(24),
@@ -153,10 +154,10 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
               ),
               child: Column(mainAxisSize: MainAxisSize.min, children: [
                 Icon(_sent ? Icons.mark_email_read_rounded : Icons.lock_reset_rounded,
-                    size: 64, color: isDark ? Colors.white70 : Colors.white),
+                    size: isPC ? 72 : 64, color: isDark ? Colors.white70 : Colors.white),
                 const SizedBox(height: 16),
                 Text(_sent ? 'Email Sent' : 'Forgot Password',
-                    style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w900)),
+                    style: TextStyle(color: Colors.white, fontSize: isPC ? 30 : 26, fontWeight: FontWeight.w900)),
                 const SizedBox(height: 8),
                 Text(_sent
                     ? 'A password reset link has been sent to\n${_emailCtrl.text.trim()}\n\nCheck your email and follow the link to reset your password.'

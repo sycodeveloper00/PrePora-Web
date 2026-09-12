@@ -223,11 +223,32 @@ class _AdminNoticeScreenState extends State<AdminNoticeScreen> {
               if (snap.connectionState == ConnectionState.waiting) return const Center(child: ProfessionalLoader());
               if (!snap.hasData || snap.data!.docs.isEmpty) return Center(child: Text('No notices', style: TextStyle(color: listDark ? Colors.white38 : Colors.black54)));
               final now = DateTime.now();
+              final validDocs = <QueryDocumentSnapshot>[];
+              final pinnedDocs = <QueryDocumentSnapshot>[];
+              for (final doc in snap.data!.docs) {
+                final data = doc.data() as Map<String, dynamic>;
+                final isPinned = data['isPinned'] == true;
+                final rawTime = data['createdAt'] ?? data['created_at'];
+                DateTime? time;
+                if (rawTime is DateTime) time = rawTime;
+                else if (rawTime is String) time = DateTime.tryParse(rawTime);
+                if (time != null && now.difference(time).inHours >= 24 && !isPinned) {
+                  SupabaseReadService.writeToAll('notices', doc.id, {}, delete: true);
+                } else {
+                  if (isPinned) {
+                    pinnedDocs.add(doc);
+                  } else {
+                    validDocs.add(doc);
+                  }
+                }
+              }
+              final sortedDocs = [...pinnedDocs, ...validDocs];
+              if (sortedDocs.isEmpty) return Center(child: Text('No notices', style: TextStyle(color: listDark ? Colors.white38 : Colors.black54)));
               return ListView.builder(
                 padding: const EdgeInsets.all(16),
-                itemCount: snap.data!.docs.length,
+                itemCount: sortedDocs.length,
                 itemBuilder: (context, i) {
-                  final doc = snap.data!.docs[i];
+                  final doc = sortedDocs[i];
                   final data = doc.data() as Map<String, dynamic>;
                   final title = data['title'] as String? ?? '';
                   final type = data['fileType'] as String? ?? 'text';
@@ -235,27 +256,31 @@ class _AdminNoticeScreenState extends State<AdminNoticeScreen> {
                   DateTime? time;
                   if (rawTime is DateTime) time = rawTime;
                   else if (rawTime is String) time = DateTime.tryParse(rawTime);
-                  if (time != null && now.difference(time).inHours >= 24) {
-                    SupabaseReadService.writeToAll('notices', doc.id, {}, delete: true);
-                    return const SizedBox.shrink();
-                  }
                   final timeStr = time != null ? '${time.day}/${time.month}/${time.year} ${time.hour}:${time.minute.toString().padLeft(2, '0')}' : '';
 
                   if (type == 'text') {
                     final preview = title.length > 80 ? '${title.substring(0, 80)}...' : title;
+                    final isPinned = data['isPinned'] == true;
                     return GestureDetector(
-                      onLongPress: () => _showNoticeOptions(doc.id, title),
+                      onLongPress: () => _showNoticeOptions(doc.id, title, isPinned: isPinned),
                       child: Container(
                         margin: const EdgeInsets.only(bottom: 16),
                         padding: const EdgeInsets.all(16),
                         decoration: BoxDecoration(
                           color: listDark ? const Color(0xFF1A0533) : const Color(0xFFFFF8E1),
                           borderRadius: BorderRadius.circular(12),
-                          border: Border.all(color: listDark ? Colors.white12 : Colors.amber.withValues(alpha: 0.4)),
+                          border: Border.all(
+                            color: isPinned
+                                ? (listDark ? Colors.amber.shade300 : Colors.amber.shade700)
+                                : (listDark ? Colors.white12 : Colors.amber.withValues(alpha: 0.4)),
+                            width: isPinned ? 1.5 : 1,
+                          ),
                           boxShadow: [
                             BoxShadow(
-                              color: listDark ? Colors.black26 : Colors.black.withValues(alpha: 0.08),
-                              blurRadius: 6, offset: const Offset(0, 2),
+                              color: isPinned
+                                  ? (listDark ? Colors.amber.withValues(alpha: 0.15) : Colors.amber.withValues(alpha: 0.2))
+                                  : (listDark ? Colors.black26 : Colors.black.withValues(alpha: 0.08)),
+                              blurRadius: isPinned ? 10 : 6, offset: const Offset(0, 2),
                             ),
                           ],
                         ),
@@ -263,10 +288,14 @@ class _AdminNoticeScreenState extends State<AdminNoticeScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Row(children: [
-                              Icon(Icons.push_pin_rounded, size: 18, color: listDark ? Colors.amber.shade300 : Colors.amber.shade700),
+                              Icon(Icons.push_pin_rounded, size: 18, color: isPinned
+                                  ? (listDark ? Colors.amber.shade200 : Colors.amber.shade900)
+                                  : (listDark ? Colors.amber.shade300 : Colors.amber.shade700)),
                               const SizedBox(width: 8),
-                              Text('NOTICE', style: TextStyle(
-                                color: listDark ? Colors.amber.shade300 : Colors.amber.shade700,
+                              Text(isPinned ? 'PINNED' : 'NOTICE', style: TextStyle(
+                                color: isPinned
+                                    ? (listDark ? Colors.amber.shade200 : Colors.amber.shade900)
+                                    : (listDark ? Colors.amber.shade300 : Colors.amber.shade700),
                                 fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1,
                               )),
                             ]),
@@ -283,14 +312,42 @@ class _AdminNoticeScreenState extends State<AdminNoticeScreen> {
                             const SizedBox(height: 8),
                             Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                               Text(timeStr, style: TextStyle(color: listDark ? Colors.white24 : Colors.black26, fontSize: 11)),
-                              IconButton(
-                                icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
-                                padding: EdgeInsets.zero,
-                                constraints: const BoxConstraints(),
-                                onPressed: () async {
-                                  await SupabaseReadService.writeToAll('notices', doc.id, {}, delete: true);
-                                },
-                              ),
+                              Row(mainAxisSize: MainAxisSize.min, children: [
+                                IconButton(
+                                  icon: Icon(Icons.push_pin_rounded, size: 20,
+                                    color: isPinned ? Colors.amber : Colors.white38),
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(),
+                                  onPressed: () async {
+                                    await SupabaseReadService.writeToAll('notices', doc.id, {'isPinned': !isPinned});
+                                    if (mounted) setState(() {});
+                                  },
+                                  tooltip: isPinned ? 'Unpin' : 'Pin',
+                                ),
+                                const SizedBox(width: 12),
+                                IconButton(
+                                  icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
+                                  padding: EdgeInsets.zero,
+                                  constraints: const BoxConstraints(),
+                                  onPressed: () async {
+                                    final confirm = await showDialog<bool>(
+                                      context: context,
+                                      builder: (d) => AlertDialog(
+                                        backgroundColor: listDark ? const Color(0xFF1A0533) : Colors.white,
+                                        title: Text('Delete Notice?', style: TextStyle(color: listDark ? Colors.white : Colors.black87)),
+                                        content: Text('Are you sure you want to delete this notice?', style: TextStyle(color: listDark ? Colors.white70 : Colors.black54)),
+                                        actions: [
+                                          TextButton(onPressed: () => Navigator.pop(d, false), child: Text('Cancel', style: TextStyle(color: listDark ? Colors.white70 : Colors.black54))),
+                                          ElevatedButton(onPressed: () => Navigator.pop(d, true), style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent), child: const Text('Delete', style: TextStyle(color: Colors.white))),
+                                        ],
+                                      ),
+                                    );
+                                    if (confirm == true) {
+                                      await SupabaseReadService.writeToAll('notices', doc.id, {}, delete: true);
+                                    }
+                                  },
+                                ),
+                              ]),
                             ]),
                           ],
                         ),
@@ -299,21 +356,64 @@ class _AdminNoticeScreenState extends State<AdminNoticeScreen> {
                   }
 
                   final icon = _iconForType(type, title);
+                  final isPinned = data['isPinned'] == true;
                   return Card(
-                    color: listDark ? const Color(0xFF1A0533) : Colors.white,
-                    margin: const.only(bottom: 10),
+                    color: listDark
+                        ? (isPinned ? const Color(0xFF2A1A063) : const Color(0xFF1A0533))
+                        : (isPinned ? const Color(0xFFFFF3E0) : Colors.white),
+                    margin: const EdgeInsets.only(bottom: 10),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                      side: isPinned
+                          ? BorderSide(color: listDark ? Colors.amber.shade300 : Colors.amber.shade700, width: 1.5)
+                          : BorderSide.none,
+                    ),
                     child: GestureDetector(
-                      onLongPress: () => _showNoticeOptions(doc.id, title),
+                      onLongPress: () => _showNoticeOptions(doc.id, title, isPinned: isPinned),
                       child: ListTile(
                         leading: Icon(icon, color: const Color(0xFF00B8D4)),
                         title: Text(title, style: TextStyle(color: listDark ? Colors.white : Colors.black87, fontWeight: FontWeight.bold)),
-                        subtitle: Text(timeStr, style: TextStyle(color: listDark ? Colors.white38 : Colors.black54, fontSize: 12)),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
-                          onPressed: () async {
-                            await SupabaseReadService.writeToAll('notices', doc.id, {}, delete: true);
-                          },
-                        ),
+                        subtitle: Row(children: [
+                          if (isPinned) ...[
+                            Icon(Icons.push_pin_rounded, size: 12, color: Colors.amber),
+                            const SizedBox(width: 4),
+                          ],
+                          Text(timeStr, style: TextStyle(color: listDark ? Colors.white38 : Colors.black54, fontSize: 12)),
+                        ]),
+                        trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                          IconButton(
+                            icon: Icon(Icons.push_pin_rounded, size: 20,
+                              color: isPinned ? Colors.amber : Colors.white38),
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints(),
+                            onPressed: () async {
+                              await SupabaseReadService.writeToAll('notices', doc.id, {'isPinned': !isPinned});
+                              if (mounted) setState(() {});
+                            },
+                            tooltip: isPinned ? 'Unpin' : 'Pin',
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent),
+                            onPressed: () async {
+                              final confirm = await showDialog<bool>(
+                                context: context,
+                                builder: (d) => AlertDialog(
+                                  backgroundColor: listDark ? const Color(0xFF1A0533) : Colors.white,
+                                  title: Text('Delete Notice?', style: TextStyle(color: listDark ? Colors.white : Colors.black87)),
+                                  content: Text('Are you sure you want to delete "$title"?', style: TextStyle(color: listDark ? Colors.white70 : Colors.black54)),
+                                  actions: [
+                                    TextButton(onPressed: () => Navigator.pop(d, false), child: Text('Cancel', style: TextStyle(color: listDark ? Colors.white70 : Colors.black54))),
+                                    ElevatedButton(onPressed: () => Navigator.pop(d, true), style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent), child: const Text('Delete', style: TextStyle(color: Colors.white))),
+                                  ],
+                                ),
+                              );
+                              if (confirm == true) {
+                                await SupabaseReadService.writeToAll('notices', doc.id, {}, delete: true);
+                              }
+                            },
+                          ),
+                        ]),
                         onTap: () => _openFile(data),
                       ),
                     ),
@@ -374,7 +474,7 @@ class _AdminNoticeScreenState extends State<AdminNoticeScreen> {
         if (bytes == null) continue;
         if (bytes.length > maxSize) {
           if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(content: Text('${file.name} too large (${(bytes.length / 1024 / 1024).toStringAsFixed(1)}MB). Max: 10MB'), backgroundColor: Colors.redAccent),
+            SnackBar(content: Text('${file.name} too large (${(bytes.length / 1024 / 1024).toStringAsFixed(1)}MB). Max: 50MB'), backgroundColor: Colors.redAccent),
           );
           continue;
         }
@@ -414,7 +514,7 @@ class _AdminNoticeScreenState extends State<AdminNoticeScreen> {
     }
   }
 
-  void _showNoticeOptions(String docId, String currentTitle) {
+  void _showNoticeOptions(String docId, String currentTitle, {bool isPinned = false}) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
     showModalBottomSheet(
       context: context,
@@ -423,6 +523,15 @@ class _AdminNoticeScreenState extends State<AdminNoticeScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
+            ListTile(
+              leading: Icon(isPinned ? Icons.push_pin_outlined : Icons.push_pin_rounded, color: Colors.amber),
+              title: Text(isPinned ? 'Unpin Notice' : 'Pin to Top', style: TextStyle(color: isDark ? Colors.white : Colors.black87)),
+              onTap: () async {
+                Navigator.pop(context);
+                await SupabaseReadService.writeToAll('notices', docId, {'isPinned': !isPinned});
+                if (mounted) setState(() {});
+              },
+            ),
             ListTile(
               leading: const Icon(Icons.edit_rounded, color: Color(0xFF00B8D4)),
               title: Text('Edit', style: TextStyle(color: isDark ? Colors.white : Colors.black87)),

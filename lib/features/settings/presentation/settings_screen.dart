@@ -1,19 +1,49 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/services/supabase_read_service.dart';
 import '../../../core/theme/theme_provider.dart';
 
-class SettingsScreen extends StatelessWidget {
+class SettingsScreen extends StatefulWidget {
   const SettingsScreen({super.key});
+  @override
+  State<SettingsScreen> createState() => _SettingsScreenState();
+}
+
+class _SettingsScreenState extends State<SettingsScreen> {
+  String _userName = 'User';
+  String _userEmail = '';
+  String _userGender = '';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadUserInfo();
+  }
+
+  Future<void> _loadUserInfo() async {
+    final user = FirebaseService.currentUser;
+    final email = user?.email ?? '';
+    var name = user?.displayName ?? 'User';
+    var gender = '';
+    if (user?.uid != null) {
+      try {
+        final userData = await SupabaseReadService.getUser(user!.uid);
+        if (userData != null) {
+          if (userData['name'] != null && (userData['name'] as String).isNotEmpty) {
+            name = userData['name'] as String;
+          }
+          gender = (userData['gender'] as String?) ?? (userData['data']?['gender'] as String?) ?? '';
+        }
+      } catch (_) {}
+    }
+    if (mounted) setState(() { _userName = name; _userEmail = email; _userGender = gender; });
+  }
 
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final user = FirebaseService.currentUser;
-    final userName = user?.displayName ?? 'User';
-    final userEmail = user?.email ?? '';
     final textColor = isDark ? Colors.white : const Color(0xFF1A0533);
     final hintColor = isDark ? Colors.white38 : Colors.black54;
     final cardColor = isDark ? const Color(0xFF1E1E1E) : const Color(0xFFFFFFFF);
@@ -31,10 +61,10 @@ class SettingsScreen extends StatelessWidget {
             child: ListTile(
               leading: CircleAvatar(
                 backgroundColor: isDark ? Colors.white10 : const Color(0xFF4A148C).withValues(alpha: 0.1),
-                child: Text(userName[0].toUpperCase(), style: TextStyle(color: isDark ? Colors.white : const Color(0xFF4A148C), fontWeight: FontWeight.bold)),
+                child: Text(_userName[0].toUpperCase(), style: TextStyle(color: isDark ? Colors.white : const Color(0xFF4A148C), fontWeight: FontWeight.bold)),
               ),
-              title: Text(userName, style: TextStyle(color: textColor, fontWeight: FontWeight.bold)),
-              subtitle: Text(userEmail, style: TextStyle(color: hintColor, fontSize: 12)),
+              title: Text(_userName, style: TextStyle(color: textColor, fontWeight: FontWeight.bold)),
+              subtitle: Text(_userEmail, style: TextStyle(color: hintColor, fontSize: 12)),
             ),
           ),
           const SizedBox(height: 16),

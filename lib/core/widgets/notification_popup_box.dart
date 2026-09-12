@@ -32,11 +32,17 @@ class NotificationPopupBox extends StatelessWidget {
     }
     onRead?.call();
 
+    final filteredDocs = docs.where((d) {
+      final data = d.data() as Map<String, dynamic>;
+      final type = data['type'] as String? ?? '';
+      return type != 'login' && type != 'logout' && type != 'registration';
+    }).toList();
+
     showDialog(
       context: context,
       barrierColor: Colors.black26,
       builder: (_) => _NotificationPopupDialog(
-        docs: docs,
+        docs: filteredDocs,
         panelType: panelType,
         onDismiss: onDismiss,
       ),
@@ -148,8 +154,16 @@ class _NotificationPopupDialog extends StatelessWidget {
     final msg = d['message'] as String? ?? '';
     final userName = d['userName'] as String? ?? '';
     final role = d['role'] as String? ?? '';
-    final time = d['createdAt'] as Timestamp?;
-    final timeStr = time != null ? _formatTimestamp(time) : '';
+    final rawTime = d['createdAt'] ?? d['created_at'];
+    DateTime? time;
+    if (rawTime is DateTime) {
+      time = rawTime;
+    } else if (rawTime is String) {
+      try { time = DateTime.parse(rawTime); } catch (_) {}
+    } else if (rawTime is Timestamp) {
+      time = rawTime.toDate();
+    }
+    final timeStr = time != null ? _formatTimestamp(Timestamp.fromDate(time)) : '';
 
     IconData icon;
     Color color;
@@ -160,6 +174,7 @@ class _NotificationPopupDialog extends StatelessWidget {
         case 'login': icon = Icons.login_rounded; color = Colors.blue; break;
         case 'logout': icon = Icons.logout_rounded; color = Colors.blueGrey; break;
         case 'auto_block': case 'blocked': icon = Icons.block_rounded; color = Colors.red; break;
+        case 'supabase_failover': icon = Icons.sync_problem_rounded; color = Colors.deepOrange; break;
         default: icon = Icons.circle_rounded; color = Colors.grey;
       }
     } else {

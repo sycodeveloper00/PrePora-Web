@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/widgets/glassmorphic_container.dart';
 import '../../../core/widgets/notification_popup_box.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/services/supabase_read_service.dart';
 import '../../../core/widgets/professional_loader.dart';
 
 class AssistantDashboardScreen extends StatefulWidget {
@@ -271,7 +272,8 @@ class _AssistantDashboardScreenState extends State<AssistantDashboardScreen> {
   bool _isAncestorRestricted(String? contentId, Map<String, Map<String, dynamic>> contentMap, {int depth = 0}) {
     if (contentId == null || contentId == 'root' || depth > 10) return false;
     final data = contentMap[contentId];
-    if (data == null) return false;
+    // Parent not found = orphaned (deleted parent) → treat as restricted
+    if (data == null) return true;
     if (data['invisible'] == true || data['locked'] == true || data['updating'] == true) return true;
     return _isAncestorRestricted(data['parentContentId'] as String?, contentMap, depth: depth + 1);
   }
@@ -286,10 +288,15 @@ class _AssistantDashboardScreenState extends State<AssistantDashboardScreen> {
       final extraFolderIds = _contentAccess.keys.where((fid) => !accessibleIds.contains(fid)).toList();
       final allIds = {...accessibleIds, ...extraFolderIds};
       for (final folderId in allIds) {
-        final folderDoc = await FirebaseService.firestore.collection('folders').doc(folderId).get();
-        if (!folderDoc.exists) continue;
-        final folderData = folderDoc.data() as Map<String, dynamic>;
+        Map<String, dynamic>? folderData;
+        try { folderData = await SupabaseReadService.getFolder(folderId); } catch (_) {}
+        if (folderData == null) {
+          continue;
+        }
         if (folderData['invisible'] == true || folderData['locked'] == true || folderData['updating'] == true) continue;
+        // Skip hidden folders (sort_order == -1)
+        final sortVal = folderData['sortOrder'];
+        if (sortVal is int && sortVal == -1) continue;
         final folderName = folderData['name'] as String? ?? '';
         if (folderName.toLowerCase().contains(q)) {
           results.add({
@@ -297,22 +304,30 @@ class _AssistantDashboardScreenState extends State<AssistantDashboardScreen> {
             'subtitle': 'Folder',
           });
         }
-        final contentSnap = await FirebaseService.firestore
-            .collection('folders').doc(folderId).collection('content').get();
-        final contentMap = <String, Map<String, dynamic>>{};
-        for (final doc in contentSnap.docs) {
-          contentMap[doc.id] = doc.data() as Map<String, dynamic>;
+        List<Map<String, dynamic>> contents;
+        try { contents = await SupabaseReadService.getFolderContents(folderId, fetchAll: true) ?? []; } catch (_) { contents = []; }
+        if (contents.isEmpty) {
+          continue;
         }
-        for (final contentDoc in contentSnap.docs) {
-          final contentData = contentDoc.data() as Map<String, dynamic>;
+        final contentMap = <String, Map<String, dynamic>>{};
+        for (final item in contents) {
+          final cid = item['id'] as String? ?? '';
+          if (cid.isNotEmpty) contentMap[cid] = item;
+        }
+        for (final contentData in contents) {
           if (contentData['invisible'] == true || contentData['locked'] == true || contentData['updating'] == true) continue;
+          // Skip hidden content (sort_order == -1)
+          final cSortVal = contentData['order'];
+          if (cSortVal is int && cSortVal == -1) continue;
           final parentContentId = contentData['parentContentId'] as String?;
+          // Skip orphaned content (parent doesn't exist = deleted)
+          if (parentContentId != null && parentContentId != 'root' && !contentMap.containsKey(parentContentId)) continue;
           if (_isAncestorRestricted(parentContentId, contentMap)) continue;
           final contentName = contentData['name'] as String? ?? '';
           if (contentName.toLowerCase().contains(q)) {
             results.add({
               'name': contentName, 'type': 'content', 'folderId': folderId,
-              'contentId': contentDoc.id,
+              'contentId': contentData['id'],
               'subtitle': '$folderName › ${contentData['type'] ?? 'item'}',
             });
           }
@@ -328,17 +343,26 @@ class _AssistantDashboardScreenState extends State<AssistantDashboardScreen> {
     final allIds = [...accessibleIds, ...extraFolderIds];
     final colors = [Colors.purple, Colors.teal, Colors.blue, Colors.orange, Colors.pink, Colors.indigo];
 
-    return FutureBuilder<List<DocumentSnapshot>>(
-      future: Future.wait(allIds.map((id) => FirebaseService.firestore.collection('folders').doc(id).get())),
+    return FutureBuilder<List<Map<String, dynamic>>>(
+      future: () async {
+        final allFolders = <Map<String, dynamic>>[];
+        for (final id in allIds) {
+          Map<String, dynamic>? folderData;
+          try { folderData = await SupabaseReadService.getFolder(id); } catch (_) {}
+          if (folderData != null) {
+            allFolders.add(folderData);
+          }
+        }
+        return allFolders;
+      }(),
       builder: (context, snapshot) {
         final isDark = Theme.of(context).brightness == Brightness.dark;
         if (snapshot.connectionState == ConnectionState.waiting) return const Center(child: ProfessionalLoader());
         if (!snapshot.hasData) return Center(child: Text('Error loading folders', style: TextStyle(color: isDark ? Colors.white38 : Colors.black54)));
-        final docs = snapshot.data!.where((d) => d.exists).toList();
+        final docs = snapshot.data!;
         final filtered = _searchQuery.isNotEmpty
             ? docs.where((d) {
-                final data = d.data() as Map<String, dynamic>;
-                final name = (data['name'] as String? ?? '').toLowerCase();
+                final name = (d['name'] as String? ?? '').toLowerCase();
                 return name.contains(_searchQuery.toLowerCase());
               }).toList()
             : docs;
@@ -346,8 +370,8 @@ class _AssistantDashboardScreenState extends State<AssistantDashboardScreen> {
           padding: const EdgeInsets.symmetric(horizontal: 16),
           itemCount: filtered.length,
           itemBuilder: (context, index) {
-            final data = filtered[index].data() as Map<String, dynamic>;
-            final folderId = filtered[index].id;
+            final data = filtered[index];
+            final folderId = data['id'] as String;
             final name = data['name'] as String? ?? 'Folder';
             final count = data['itemCount'] ?? 0;
             final color = colors[index % colors.length];

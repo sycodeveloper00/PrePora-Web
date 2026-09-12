@@ -1,11 +1,12 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:youtube_player_flutter/youtube_player_flutter.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/services/supabase_read_service.dart';
 import '../../notepad/presentation/notepad_view.dart';
 import 'dart:js' as js;
 
@@ -24,6 +25,7 @@ class VideoPlayerScreen extends StatefulWidget {
 
 class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   late final YoutubePlayerController _controller;
+  Timer? _videoSessionTimer;
 
   // Notepad state
   bool _isNotepadOpen = false;
@@ -32,8 +34,8 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   double _dragStartY = 0;
   double _dragStartHeight = 0;
 
-  // Cache the folder future to prevent blinking
-  Future<DocumentSnapshot>? _folderFuture;
+  // Pre-fetch folder data to cache it
+  Future<void>? _folderPreload;
   Future<String?>? _groupLinkFuture;
 
   @override
@@ -48,8 +50,11 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
         showFullscreenButton: true,
       ),
     );
+    _videoSessionTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      SessionManager.reset();
+    });
     if (widget.folderId != null) {
-      _folderFuture = FirebaseService.firestore.collection('folders').doc(widget.folderId).get();
+      _folderPreload = SupabaseReadService.getFolder(widget.folderId!);
       _groupLinkFuture = FirebaseService.getGroupLinkForLevel(widget.folderId!, parentContentId: widget.parentContentId);
     }
     _controller.setFullScreenListener(_onFullScreenChange);
@@ -87,6 +92,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 
   @override
   void dispose() {
+    _videoSessionTimer?.cancel();
     _controller.close();
     SystemChrome.setPreferredOrientations([
       DeviceOrientation.portraitUp,

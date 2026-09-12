@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/services/supabase_read_service.dart';
 import '../../../core/services/notification_service.dart';
 import '../../../core/utils.dart';
 import '../../../core/widgets/professional_loader.dart';
@@ -15,31 +17,87 @@ class AdminFeedbackScreen extends StatefulWidget {
 class _AdminFeedbackScreenState extends State<AdminFeedbackScreen> {
   List<Map<String, dynamic>>? _students;
   bool _loading = true;
+  Map<String, int> _pendingCounts = {};
+  Map<String, List<Map<String, dynamic>>> _feedbackCache = {};
+  Timer? _refreshTimer;
 
   @override
   void initState() {
     super.initState();
     NotificationService.clearBadge();
-    _markAllAsViewed();
-    _loadStudents();
+    _init();
+  }
+
+  Future<void> _init() async {
+    await _markAllAsViewed();
+    await _loadStudents();
+    // Auto-refresh every 15 seconds to catch new tickets
+    _refreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (mounted) _loadStudents();
+    });
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _markAllAsViewed() async {
-    final snap = await FirebaseService.firestore
-        .collection('feedbacks')
-        .where('status', isEqualTo: 'pending')
-        .where('viewed', isEqualTo: false)
-        .get();
-    final batch = FirebaseService.firestore.batch();
-    for (final d in snap.docs) {
-      batch.update(d.reference, {'viewed': true});
-    }
-    await batch.commit();
+    try {
+      List<Map<String, dynamic>>? feedbacks;
+      try {
+        feedbacks = await SupabaseReadService.getAllFeedbacks();
+      } catch (_) {}
+      feedbacks ??= [];
+      final pendingUnviewed = feedbacks.where((f) =>
+          f['status'] == 'pending' && f['viewed'] != true).toList();
+      if (pendingUnviewed.isEmpty) return;
+      for (final f in pendingUnviewed) {
+        final fid = f['id'] as String?;
+        if (fid != null) {
+          // Use the already-loaded data from the list instead of re-reading
+          // This avoids the readPrimary null issue that corrupts data
+          final merged = <String, dynamic>{
+            ...f,
+            'viewed': true,
+          };
+          await SupabaseReadService.writeToAll('feedbacks', fid, merged);
+        }
+      }
+    } catch (_) {}
   }
 
   Future<void> _loadStudents() async {
-    final students = await FirebaseService.getAllStudents();
-    if (mounted) setState(() { _students = students; _loading = false; });
+    try {
+      List<Map<String, dynamic>>? feedbacks;
+      try {
+        feedbacks = await SupabaseReadService.getAllFeedbacks();
+      } catch (_) {}
+      feedbacks ??= [];
+
+      final counts = <String, int>{};
+      final cache = <String, List<Map<String, dynamic>>>{};
+      for (final f in feedbacks) {
+        final uid = f['uid'] as String? ?? '';
+        if (uid.isEmpty) continue;
+        cache.putIfAbsent(uid, () => []).add(f);
+        if (f['status'] == 'pending') {
+          counts[uid] = (counts[uid] ?? 0) + 1;
+        }
+      }
+
+      final uidsWithFeedback = cache.keys.toSet();
+      if (uidsWithFeedback.isEmpty) {
+        if (mounted) setState(() { _students = []; _pendingCounts = {}; _feedbackCache = {}; _loading = false; });
+        return;
+      }
+      final allStudents = await FirebaseService.getAllStudents();
+      final filtered = allStudents?.where((s) => uidsWithFeedback.contains(s['id'] as String? ?? '')).toList();
+      if (mounted) setState(() { _students = filtered; _pendingCounts = counts; _feedbackCache = cache; _loading = false; });
+    } catch (_) {
+      if (mounted) setState(() { _students = []; _loading = false; });
+    }
   }
 
   Future<int> _pendingCount(String uid) async {
@@ -48,7 +106,7 @@ class _AdminFeedbackScreenState extends State<AdminFeedbackScreen> {
   }
 
   void _showStudentFeedbacks(String uid, String name, Map<String, dynamic> studentData) async {
-    final feedbacks = await FirebaseService.getStudentFeedbacksOnce(uid);
+    final feedbacks = _feedbackCache[uid] ?? await FirebaseService.getStudentFeedbacksOnce(uid);
     if (!mounted) return;
     final isBlocked = studentData['blocked'] as bool? ?? false;
     final isVerified = studentData['verified'] as bool? ?? true;
@@ -94,7 +152,15 @@ class _AdminFeedbackScreenState extends State<AdminFeedbackScreen> {
                         final ticket = data['ticketNo'] as String? ?? '';
                         final msg = data['message'] as String? ?? '';
                         final status = data['status'] as String? ?? 'pending';
-                        final time = (data['createdAt'] as Timestamp?)?.toDate();
+                        final rawTime = data['createdAt'] ?? data['created_at'];
+                        DateTime? time;
+                        if (rawTime is DateTime) {
+                          time = rawTime;
+                        } else if (rawTime is String) {
+                          try { time = DateTime.parse(rawTime); } catch (_) {}
+                        } else if (rawTime is Timestamp) {
+                          time = rawTime.toDate();
+                        }
                         final timeStr = time != null ? '${time.day}/${time.month}/${time.year} ${time.hour}:${time.minute.toString().padLeft(2, '0')}' : '';
                         final isUpdating = updatingIds.contains(data['id'] as String);
                         return Card(
@@ -340,10 +406,8 @@ class _AdminFeedbackScreenState extends State<AdminFeedbackScreen> {
                           child: Icon(isBlocked ? Icons.block_rounded : Icons.person, color: isBlocked ? Colors.redAccent : (isDark ? Colors.white38 : Colors.black54), size: 20),
                         ),
                         title: Text(name, style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontWeight: FontWeight.bold)),
-                        subtitle: FutureBuilder<int>(
-                          future: _pendingCount(uid),
-                          builder: (ctx, snap) {
-                            final count = snap.hasData ? snap.data! : 0;
+                        subtitle: Builder(builder: (ctx) {
+                            final count = _pendingCounts[uid] ?? 0;
                             if (count == 0) return const SizedBox.shrink();
                             return Row(children: [
                               Container(
@@ -354,8 +418,7 @@ class _AdminFeedbackScreenState extends State<AdminFeedbackScreen> {
                               if (isBlocked)
                                 const Padding(padding: EdgeInsets.only(left: 6), child: Icon(Icons.block_rounded, color: Colors.redAccent, size: 14)),
                             ]);
-                          },
-                        ),
+                          },),
                         trailing: Row(mainAxisSize: MainAxisSize.min, children: [
                           IconButton(
                             icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 20),
@@ -370,10 +433,13 @@ class _AdminFeedbackScreenState extends State<AdminFeedbackScreen> {
                                 ],
                               ));
                               if (confirm == true) {
-                                final snap = await FirebaseService.firestore.collection('feedbacks').where('uid', isEqualTo: uid).get();
-                                final batch = FirebaseService.firestore.batch();
-                                for (final d in snap.docs) { batch.delete(d.reference); }
-                                await batch.commit();
+                                final feedbacks = await FirebaseService.getStudentFeedbacksOnce(uid);
+                                for (final f in feedbacks) {
+                                  final fid = f['id'] as String?;
+                                  if (fid != null) {
+                                    await SupabaseReadService.writeToAll('feedbacks', fid, {}, delete: true);
+                                  }
+                                }
                                 _loadStudents();
                               }
                             },

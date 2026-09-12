@@ -77,6 +77,9 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isPC = screenWidth > 900;
+    final cardWidth = isPC ? 480.0 : (screenWidth > 600 ? 420.0 : double.infinity);
     return Scaffold(
       body: Container(
         width: double.infinity, height: double.infinity,
@@ -85,9 +88,10 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
         ),
         child: Center(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.all(24),
+            padding: EdgeInsets.symmetric(horizontal: isPC ? 0 : 24, vertical: 24),
             child: Container(
-              padding: const EdgeInsets.all(32),
+              width: cardWidth,
+              padding: EdgeInsets.all(isPC ? 40 : 32),
               decoration: BoxDecoration(
                 color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.white.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(24),
@@ -95,10 +99,10 @@ class _ResetPasswordScreenState extends State<ResetPasswordScreen> {
               ),
               child: Column(mainAxisSize: MainAxisSize.min, children: [
                 Icon(_success ? Icons.check_circle_rounded : Icons.lock_reset_rounded,
-                    size: 64, color: _success ? Colors.greenAccent : (isDark ? Colors.white70 : Colors.white)),
+                    size: isPC ? 72 : 64, color: _success ? Colors.greenAccent : (isDark ? Colors.white70 : Colors.white)),
                 const SizedBox(height: 16),
                 Text(_success ? 'Password Reset!' : 'Create New Password',
-                    style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w900)),
+                    style: TextStyle(color: Colors.white, fontSize: isPC ? 30 : 26, fontWeight: FontWeight.w900)),
                 const SizedBox(height: 8),
                 Text(_success
                     ? 'Your password has been reset successfully.\nYou can now log in with your new password.'

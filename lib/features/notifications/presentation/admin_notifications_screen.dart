@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/services/supabase_read_service.dart';
 import '../../../core/widgets/professional_loader.dart';
 
 class AdminNotificationsScreen extends StatefulWidget {
@@ -83,6 +84,9 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
                 case 'feedback': icon = Icons.support_agent_rounded; iconColor = Colors.orange; break;
                 case 'login': icon = Icons.login_rounded; iconColor = Colors.blue; break;
                 case 'auto_block': icon = Icons.block_rounded; iconColor = Colors.red; break;
+                case 'supabase_failover': icon = Icons.sync_problem_rounded; iconColor = Colors.deepOrange; break;
+                case 'storage_auto_switch': icon = Icons.swap_horiz_rounded; iconColor = Colors.teal; break;
+                case 'storage_no_account': icon = Icons.storage_rounded; iconColor = Colors.redAccent; break;
                 default: icon = Icons.circle_rounded; iconColor = Colors.grey;
               }
               return Container(
@@ -109,10 +113,10 @@ class _AdminNotificationsScreenState extends State<AdminNotificationsScreen> {
                       const SizedBox(height: 4),
                       Text(timeStr, style: TextStyle(color: dimColor, fontSize: 11)),
                     ])),
-                    if (!isRead)
+                      if (!isRead)
                       GestureDetector(
                         onTap: () async {
-                          await FirebaseService.firestore.collection('admin_notifications').doc(id).update({'read': true});
+                          await SupabaseReadService.writeToAll('admin_notifications', id, {'read': true});
                         },
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),

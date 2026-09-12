@@ -259,7 +259,7 @@ class UploadManager extends ChangeNotifier {
           markCompleted(id);
         } else {
           item['status'] = 'metadata_failed';
-          item['metadataError'] = 'Upload succeeded but metadata save failed after 3 retries';
+          item['metadataError'] = 'Upload succeeded but metadata save failed after 5 retries';
           _progress.remove(id);
           notifyListeners();
         }

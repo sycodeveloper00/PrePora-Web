@@ -79,13 +79,54 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
       }
 
       if (kIsWeb) {
-        final proxyUrl = Uri.parse('https://prepora-web.vercel.app/api/download-file?url=${Uri.encodeComponent(url)}');
-        final headers = <String, String>{};
-        if (url.contains('supabase.co') && FirebaseService.serviceRoleKey.isNotEmpty) {
-          headers['Authorization'] = 'Bearer ${FirebaseService.serviceRoleKey}';
+        // Strategy: try direct URL first (works for public Supabase buckets),
+        // then fallback to proxy (for private buckets needing auth)
+        final bool isPublicSupabaseUrl = url.contains('supabase.co') && url.contains('/public/');
+        http.Response? response;
+
+        // Step 1: Try direct fetch (fastest, avoids CORS proxy)
+        try {
+          final directResp = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 30));
+          if (directResp.statusCode == 200) {
+            final ct = directResp.headers['content-type'] ?? '';
+            if (!ct.contains('text/html') && !ct.contains('text/plain')) {
+              _localPath = createBlobUrl(directResp.bodyBytes, 'application/pdf');
+              _isLoading = false;
+              if (mounted) setState(() {});
+              return;
+            }
+          }
+        } catch (_) {}
+
+        // Step 2: Try via proxy (handles auth for private buckets)
+        try {
+          final proxyUrl = Uri.parse('https://prepora-web.vercel.app/api/download-file?url=${Uri.encodeComponent(url)}');
+          final headers = <String, String>{};
+          if (url.contains('supabase.co') && FirebaseService.serviceRoleKey.isNotEmpty) {
+            headers['Authorization'] = 'Bearer ${FirebaseService.serviceRoleKey}';
+          }
+          response = await http.get(proxyUrl, headers: headers).timeout(const Duration(seconds: 30));
+          // If 401/403 with auth, retry without auth (public bucket or paused project)
+          if ((response.statusCode == 401 || response.statusCode == 403) && headers.containsKey('Authorization')) {
+            response = await http.get(proxyUrl).timeout(const Duration(seconds: 30));
+          }
+        } catch (_) {}
+
+        // Step 3: Try direct again with auth (for private buckets where proxy failed)
+        if (response == null || response.statusCode != 200) {
+          try {
+            final headers = <String, String>{};
+            if (url.contains('supabase.co') && FirebaseService.serviceRoleKey.isNotEmpty) {
+              headers['Authorization'] = 'Bearer ${FirebaseService.serviceRoleKey}';
+            }
+            final directResp = await http.get(Uri.parse(url), headers: headers).timeout(const Duration(seconds: 30));
+            if (directResp.statusCode == 200) {
+              response = directResp;
+            }
+          } catch (_) {}
         }
-        final response = await http.get(proxyUrl, headers: headers);
-        if (response.statusCode == 200) {
+
+        if (response != null && response.statusCode == 200) {
           final ct = response.headers['content-type'] ?? '';
           if (ct.contains('text/html') || ct.contains('text/plain')) {
             setState(() { _error = 'Failed to load PDF'; _isLoading = false; });
@@ -95,7 +136,7 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
           _isLoading = false;
           if (mounted) setState(() {});
         } else {
-          setState(() { _error = 'Failed to download PDF (${response.statusCode})'; _isLoading = false; });
+          setState(() { _error = 'Failed to download PDF. Check your connection and try again.'; _isLoading = false; });
         }
         return;
       }
@@ -208,20 +249,18 @@ class _PdfReaderScreenState extends State<PdfReaderScreen> {
     }
 
     final lectureId = 'pdf_${DateTime.now().millisecondsSinceEpoch}';
-    try {
-      await FirebaseService.saveNote(lectureId, noteContent.toString(), lectureName: _fileName ?? 'PDF Note');
-      if (mounted) {
+    final ok = await FirebaseService.saveNote(lectureId, noteContent.toString(), lectureName: _fileName ?? 'PDF Note', source: 'pdf', pdfUrl: widget.documentId);
+    if (mounted) {
+      if (ok) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(hasStrokes || hasText ? 'Saved to Notes!' : 'PDF added to Notes!'),
             backgroundColor: Colors.green,
           ),
         );
-      }
-    } catch (e) {
-      if (mounted) {
+      } else {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Save failed: $e'), backgroundColor: Colors.redAccent),
+          const SnackBar(content: Text('Failed to save — please check your connection and try again.'), backgroundColor: Colors.redAccent),
         );
       }
     }

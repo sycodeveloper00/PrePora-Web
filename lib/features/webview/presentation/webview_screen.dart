@@ -3,7 +3,6 @@ import 'package:flutter/foundation.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:webview_flutter/webview_flutter.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'webview_stub.dart'
     if (dart.library.html) 'webview_web.dart';
 import '../../../core/services/firebase_service.dart';

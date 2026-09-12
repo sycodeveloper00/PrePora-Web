@@ -3,6 +3,8 @@
   "version": "1.0.0",
   "private": true,
   "dependencies": {
-    "firebase-admin": "^12.7.0"
+    "@supabase/supabase-js": "^2.45.0",
+    "firebase-admin": "^12.7.0",
+    "postgres": "^3.4.9"
   }
 }

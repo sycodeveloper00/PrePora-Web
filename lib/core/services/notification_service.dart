@@ -1,8 +1,9 @@
-﻿import 'package:flutter/foundation.dart';
+﻿import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'dart:html' as html show Notification;
 import 'firebase_service.dart';
+import 'supabase_read_service.dart';
 
 class NotificationService {
   static final FlutterLocalNotificationsPlugin _plugin = FlutterLocalNotificationsPlugin();
@@ -44,12 +45,10 @@ class NotificationService {
     if (user == null) return;
 
     if (kIsWeb) {
-      final doc = await FirebaseService.firestore.collection('users').doc(user.uid).get();
-      if (!doc.exists) return;
-      final lastLogin = (doc.data()?['lastLogin'] as Timestamp?)?.toDate();
-      await FirebaseService.firestore.collection('users').doc(user.uid).update({
-        'lastLogin': Timestamp.fromDate(DateTime.now()),
-      });
+      final userData = await SupabaseReadService.getUser(user.uid);
+      if (userData == null) return;
+      final lastLogin = DateTime.tryParse(userData['lastLogin'] as String? ?? '');
+      await FirebaseService.updateStreak(user.uid);
       if (lastLogin == null) return;
       final hoursSince = DateTime.now().difference(lastLogin).inHours;
       if (hoursSince >= 72) {
@@ -60,15 +59,13 @@ class NotificationService {
       return;
     }
 
-    final doc = await FirebaseService.firestore.collection('users').doc(user.uid).get();
-    if (!doc.exists) return;
+    final userData = await SupabaseReadService.getUser(user.uid);
+    if (userData == null) return;
 
-    final lastLogin = (doc.data()?['lastLogin'] as Timestamp?)?.toDate();
+    final lastLogin = DateTime.tryParse(userData['lastLogin'] as String? ?? '');
     final now = DateTime.now();
 
-    await FirebaseService.firestore.collection('users').doc(user.uid).update({
-      'lastLogin': Timestamp.fromDate(now),
-    });
+    await FirebaseService.updateStreak(user.uid);
 
     if (lastLogin == null) return;
 
@@ -139,21 +136,33 @@ class NotificationService {
     await _plugin.cancel(id: _badgeNotificationId);
   }
 
+  static String? _lastNotifiedId;
+  static StreamSubscription? _notifSub;
+
   static void startListeningForNotifications(String uid) {
     if (!kIsWeb) return;
-    FirebaseService.firestore
-        .collection('notifications')
-        .where('uid', isEqualTo: uid)
-        .orderBy('createdAt', descending: true)
-        .limit(1)
-        .snapshots()
-        .listen((snap) {
-      if (snap.docs.isEmpty) return;
-      final data = snap.docs.first.data() as Map<String, dynamic>;
-      final msg = data['message'] as String? ?? '';
-      if (msg.isNotEmpty) {
+    _notifSub?.cancel();
+    bool isFirstEmit = true;
+    final since = DateTime.now().subtract(const Duration(days: 3));
+    _notifSub = SupabaseReadService.streamNotifications(uid, since).listen((rows) {
+      if (rows.isEmpty) return;
+      if (isFirstEmit) {
+        isFirstEmit = false;
+        _lastNotifiedId = rows.first['id'] as String? ?? '';
+        return;
+      }
+      final latest = rows.first;
+      final id = latest['id'] as String? ?? '';
+      final msg = latest['message'] as String? ?? '';
+      if (msg.isNotEmpty && id != _lastNotifiedId) {
+        _lastNotifiedId = id;
         _showWebNotification('PrePora', msg);
       }
     });
+  }
+
+  static void stopListening() {
+    _notifSub?.cancel();
+    _notifSub = null;
   }
 }

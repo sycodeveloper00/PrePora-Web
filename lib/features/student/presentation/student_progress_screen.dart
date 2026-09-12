@@ -34,6 +34,7 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
   double _paidAmount = 0;
   List<Map<String, dynamic>> _feedbacks = [];
   bool _loadingUser = true;
+  List<Map<String, dynamic>> _mainFolders = [];
 
   int _streakCount = 0;
   int _totalActiveDays = 0;
@@ -81,10 +82,12 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
         FirebaseService.getUserData(uid),
         FirebaseService.getStudentFeedbacks(uid),
         FirebaseService.getStreak(uid),
+        SupabaseReadService.getFolders() ?? Future.value(null),
       ]);
       final userData = results[0] as Map<String, dynamic>?;
       final feedbacks = results[1] as List<Map<String, dynamic>>;
       final streak = results[2] as Map<String, dynamic>;
+      final folders = results[3] as List<Map<String, dynamic>>?;
       final trialActive = (userData?['freeTrialActive'] == true) || (userData?['free_trial_active'] == true);
       final endsAt = userData?['freeTrialEndsAt'] ?? userData?['free_trial_ends_at'];
       final trialEnd = endsAt is String ? DateTime.tryParse(endsAt) : null;
@@ -103,6 +106,7 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
           _streakBest = (userData?['streakBest'] as int?) ?? (userData?['streak_best'] as int?) ?? _streakCount;
           _freeTrialActive = isTrialActive;
           _freeTrialEndsAt = trialEnd;
+          _mainFolders = (folders ?? []).where((f) => f['parentFolderId'] == null && f['invisible'] != true && f['enabled'] != false).toList();
           _loadingUser = false;
         });
         if (isTrialActive) {
@@ -175,6 +179,7 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
                             );
                           }
                           final docs = snapshot.data!.docs.map((d) => d.data() as Map<String, dynamic>).toList()
+                            ..removeWhere((d) => (d['type'] as String? ?? '') == 'subfolder')
                             ..sort((a, b) {
                               final aTime = _parseActivityDate(a['startedAt']);
                               final bTime = _parseActivityDate(b['startedAt']);
@@ -517,10 +522,23 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
     final maxMonthly = monthlyCounts.isNotEmpty ? monthlyCounts.reduce((a, b) => a > b ? a : b).toDouble() : 5.0;
 
     final subjectMap = <String, int>{};
+    final mainFolderNames = _mainFolders.map((f) => (f['name'] as String? ?? '').trim()).where((n) => n.isNotEmpty).toList();
     for (final data in docs) {
       final folderPath = data['folderPath'] as String? ?? '';
       final name = data['name'] as String? ?? 'Unknown';
-      final subject = folderPath.isNotEmpty ? folderPath.split('>').first.trim() : name;
+      final firstPart = folderPath.isNotEmpty ? folderPath.split('>').first.trim() : '';
+      String subject;
+      if (firstPart.isNotEmpty && mainFolderNames.contains(firstPart)) {
+        subject = firstPart;
+      } else if (firstPart.isNotEmpty) {
+        final matched = mainFolderNames.firstWhere(
+          (mf) => mf.toLowerCase() == firstPart.toLowerCase(),
+          orElse: () => '',
+        );
+        subject = matched.isNotEmpty ? matched : (firstPart.isNotEmpty ? firstPart : name);
+      } else {
+        subject = name;
+      }
       subjectMap[subject] = (subjectMap[subject] ?? 0) + 1;
     }
     final sortedSubjects = subjectMap.entries.toList()..sort((a, b) => b.value.compareTo(a.value));
@@ -1051,7 +1069,9 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
             ? 'Mock Test'
             : 'File';
 
-    return Container(
+    return GestureDetector(
+      onTap: () => _showActivityDetail(item, isDark),
+      child: Container(
       margin: const EdgeInsets.only(bottom: 6),
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
@@ -1105,7 +1125,84 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
           ),
         ],
       ),
+    ),
     );
+  }
+
+  void _showActivityDetail(Map<String, dynamic> item, bool isDark) {
+    final name = item['name'] as String? ?? 'Unknown';
+    final type = item['type'] as String? ?? 'file';
+    final folderPath = item['folderPath'] as String? ?? '';
+    final startedAt = _parseActivityDate(item['startedAt']);
+    final endedAt = _parseActivityDate(item['endedAt']);
+    final textColor = isDark ? Colors.white : Colors.black87;
+    final dimColor = isDark ? Colors.white54 : Colors.black45;
+    final cardColor = isDark ? const Color(0xFF13132D) : Colors.white;
+
+    String duration = '';
+    if (startedAt != null && endedAt != null) {
+      final diff = endedAt.difference(startedAt);
+      if (diff.inHours > 0) {
+        duration = '${diff.inHours}h ${diff.inMinutes % 60}m';
+      } else if (diff.inMinutes > 0) {
+        duration = '${diff.inMinutes}m';
+      } else {
+        duration = '${diff.inSeconds}s';
+      }
+    }
+
+    final typeLabel = type == 'lecture'
+        ? 'Lecture'
+        : type.contains('mocktest')
+            ? 'Mock Test'
+            : type == 'subfolder' ? 'Folder' : 'File';
+
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (ctx) => Container(
+        margin: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: cardColor,
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(child: Container(width: 40, height: 4, decoration: BoxDecoration(color: dimColor, borderRadius: BorderRadius.circular(2)))),
+            const SizedBox(height: 20),
+            Text(name, style: TextStyle(color: textColor, fontWeight: FontWeight.bold, fontSize: 18)),
+            const SizedBox(height: 16),
+            _detailRow('Type', typeLabel, textColor, dimColor),
+            if (folderPath.isNotEmpty) _detailRow('Path', folderPath, textColor, dimColor),
+            if (startedAt != null) _detailRow('Started', _formatDateTime(startedAt), textColor, dimColor),
+            if (endedAt != null) _detailRow('Ended', _formatDateTime(endedAt), textColor, dimColor),
+            if (duration.isNotEmpty) _detailRow('Duration', duration, textColor, dimColor),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _detailRow(String label, String value, Color textColor, Color dimColor) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(width: 80, child: Text(label, style: TextStyle(color: dimColor, fontSize: 13))),
+          Expanded(child: Text(value, style: TextStyle(color: textColor, fontSize: 13), maxLines: 3, overflow: TextOverflow.ellipsis)),
+        ],
+      ),
+    );
+  }
+
+  String _formatDateTime(DateTime dt) {
+    return '${dt.day}/${dt.month}/${dt.year} ${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
   }
 
   // ─── Helpers ────────────────────────────────────────────────────────────────

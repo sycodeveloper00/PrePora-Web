@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:firebase_core/firebase_core.dart';
 import '../../../core/services/firebase_service.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/widgets/professional_loader.dart';
@@ -19,12 +18,8 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   void _navigate() async {
-    for (int i = 0; i < 50; i++) {
-      try {
-        if (Firebase.apps.isNotEmpty) break;
-      } catch (_) {}
-      await Future.delayed(const Duration(milliseconds: 100));
-    }
+    // Wait briefly for Firebase to initialize (set in main())
+    await Future.delayed(const Duration(milliseconds: 500));
     final user = FirebaseService.currentUser;
     if (user != null) {
       _checkRoleAndRedirect(user.uid);

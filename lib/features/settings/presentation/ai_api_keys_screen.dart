@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'dart:async';
+import 'package:http/http.dart' as http;
 import '../../../core/services/firebase_service.dart';
 import '../../../core/services/ai_service.dart';
 import '../../../core/widgets/professional_loader.dart';
@@ -139,8 +141,19 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
     required VoidCallback onToggle, required VoidCallback onEdit, required VoidCallback onDelete,
   }) {
     final name = k['name'] as String? ?? 'AI Key';
-    final model = k['model'] as String? ?? '';
     final provider = k['provider'] as String? ?? 'openai';
+    final rawModels = k['models'];
+    final models = rawModels is List
+        ? rawModels.map((m) => m.toString()).where((m) => m.trim().isNotEmpty).toList()
+        : <String>[];
+    if (models.isEmpty) {
+      final singleModel = k['model'] as String? ?? '';
+      if (singleModel.isNotEmpty) models.add(singleModel);
+    }
+    final totalModels = models.length;
+    final workingModel = totalModels > 0 ? models.first : '';
+    final workingCount = workingModel.isNotEmpty ? 1 : 0;
+    final failedCount = models.where((m) => AiService.failedModels.contains(m)).length;
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
@@ -165,22 +178,227 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
             ]),
             const SizedBox(height: 2),
             Text(_providerLabel(provider), style: TextStyle(color: hintColor, fontSize: 11)),
-            if (model.isNotEmpty)
-              Text(model, style: TextStyle(color: hintColor, fontSize: 11), overflow: TextOverflow.ellipsis),
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Row(children: [
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                  decoration: BoxDecoration(
+                    color: totalModels > 0
+                        ? Colors.deepPurple.withValues(alpha: 0.12)
+                        : Colors.grey.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: Text(
+                    totalModels > 0 ? '$workingCount/$totalModels' : '0 models',
+                    style: TextStyle(
+                      color: totalModels > 0 ? Colors.deepPurple : Colors.grey,
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+                if (failedCount > 0) ...[
+                  const SizedBox(width: 6),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: Colors.redAccent.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Row(mainAxisSize: MainAxisSize.min, children: [
+                      const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 10),
+                      const SizedBox(width: 3),
+                      Text('$failedCount', style: const TextStyle(color: Colors.redAccent, fontSize: 10, fontWeight: FontWeight.w700)),
+                    ]),
+                  ),
+                ],
+                if (totalModels > 0) ...[
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                      decoration: BoxDecoration(
+                        color: isDark ? Colors.white.withValues(alpha: 0.06) : Colors.black.withValues(alpha: 0.05),
+                        borderRadius: BorderRadius.circular(4),
+                      ),
+                      child: Text(workingModel, style: TextStyle(color: hintColor, fontSize: 10), overflow: TextOverflow.ellipsis, maxLines: 1),
+                    ),
+                  ),
+                ],
+              ]),
+            ),
           ]),
         ),
         const SizedBox(width: 8),
         Switch(value: isActive, activeThumbColor: Colors.deepPurple, onChanged: (_) => onToggle()),
         PopupMenuButton<String>(
           icon: Icon(Icons.more_vert_rounded, size: 18, color: hintColor),
-          onSelected: (v) { if (v == 'edit') onEdit(); if (v == 'delete') onDelete(); },
+          onSelected: (v) { if (v == 'preview') _showPreviewDialog(k); if (v == 'edit') onEdit(); if (v == 'delete') onDelete(); },
           itemBuilder: (_) => [
+            const PopupMenuItem(value: 'preview', child: Row(children: [Icon(Icons.visibility_rounded, size: 16), SizedBox(width: 8), Text('Preview')])),
             const PopupMenuItem(value: 'edit', child: Row(children: [Icon(Icons.edit_rounded, size: 16), SizedBox(width: 8), Text('Edit')])),
             const PopupMenuItem(value: 'delete', child: Row(children: [Icon(Icons.delete_rounded, size: 16, color: Colors.redAccent), SizedBox(width: 8), Text('Delete', style: TextStyle(color: Colors.redAccent))])),
           ],
         ),
       ]),
     );
+  }
+
+  void _showPreviewDialog(Map<String, dynamic> k) {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final baseColor = isDark ? Colors.white : Colors.black87;
+    final dimColor = isDark ? Colors.white38 : Colors.black54;
+    final bgColor = isDark ? const Color(0xFF1A0533) : Colors.white;
+    final cardBg = isDark ? const Color(0xFF0D0D2E) : Colors.grey.shade50;
+    final apiKey = k['apiKey'] as String? ?? '';
+    final maskedKey = apiKey.length > 12
+        ? '${apiKey.substring(0, 8)}${'•' * (apiKey.length - 12)}${apiKey.substring(apiKey.length - 4)}'
+        : '••••••••';
+    final rawModels = k['models'];
+    final models = rawModels is List
+        ? rawModels.map((m) => m.toString()).where((m) => m.trim().isNotEmpty).toList()
+        : <String>[];
+    if (models.isEmpty) {
+      final singleModel = k['model'] as String? ?? '';
+      if (singleModel.isNotEmpty) models.add(singleModel);
+    }
+    final baseUrl = k['baseUrl'] as String? ?? '';
+    final provider = k['provider'] as String? ?? 'openai';
+    final isActive = k['isActive'] as bool? ?? false;
+
+    showDialog(
+      context: context,
+      builder: (d) => StatefulBuilder(builder: (ctx, setDialog) {
+        return AlertDialog(
+          backgroundColor: bgColor,
+          title: Row(children: [
+            Icon(Icons.visibility_rounded, color: Colors.deepPurple, size: 22),
+            const SizedBox(width: 8),
+            Expanded(child: Text(k['name'] as String? ?? 'AI Key', style: TextStyle(color: baseColor, fontSize: 16), overflow: TextOverflow.ellipsis)),
+            if (isActive)
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(color: Colors.green.withValues(alpha: 0.2), borderRadius: BorderRadius.circular(6)),
+                child: const Text('ACTIVE', style: TextStyle(color: Colors.green, fontSize: 10, fontWeight: FontWeight.w700)),
+              ),
+          ]),
+          content: SizedBox(
+            width: 440,
+            child: Column(mainAxisSize: MainAxisSize.min, children: [
+              _previewRow('Provider', _providerLabel(provider), Icons.business_rounded, baseColor, dimColor),
+              _previewRow('Base URL', baseUrl, Icons.link_rounded, baseColor, dimColor),
+              _previewRow('API Key', maskedKey, Icons.vpn_key_rounded, baseColor, dimColor),
+              const SizedBox(height: 12),
+              Row(children: [
+                Icon(Icons.smart_toy_rounded, size: 16, color: Colors.deepPurple),
+                const SizedBox(width: 8),
+                Text('Models (${models.length})', style: TextStyle(color: baseColor, fontWeight: FontWeight.w600, fontSize: 13)),
+              ]),
+              const SizedBox(height: 8),
+              if (models.isEmpty)
+                Text('No models configured', style: TextStyle(color: dimColor, fontSize: 12))
+              else
+                ...List.generate(models.length, (i) {
+                  return Container(
+                    margin: const EdgeInsets.only(bottom: 4),
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: cardBg,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: isDark ? Colors.white12 : Colors.black12),
+                    ),
+                    child: Row(children: [
+                      Container(
+                        width: 6, height: 6,
+                        decoration: BoxDecoration(shape: BoxShape.circle, color: i == 0 ? Colors.green : Colors.grey.withValues(alpha: 0.5)),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(models[i], style: TextStyle(color: baseColor, fontSize: 12), overflow: TextOverflow.ellipsis),
+                      const Spacer(),
+                      if (i == 0) Text('primary', style: TextStyle(color: Colors.green, fontSize: 10)),
+                    ]),
+                  );
+                }),
+              const SizedBox(height: 12),
+              SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  onPressed: () async {
+                    setDialog(() {});
+                    final results = await _testModels(baseUrl, apiKey, models, provider);
+                    if (ctx.mounted) {
+                      showDialog(
+                        context: ctx,
+                        builder: (_) => AlertDialog(
+                          backgroundColor: bgColor,
+                          title: Text('Model Status', style: TextStyle(color: baseColor, fontSize: 16)),
+                          content: SizedBox(
+                            width: 400,
+                            child: Column(mainAxisSize: MainAxisSize.min, children: results.map((r) => ListTile(
+                              dense: true,
+                              leading: Icon(r['ok'] == true ? Icons.check_circle_rounded : Icons.cancel_rounded,
+                                color: r['ok'] == true ? Colors.green : Colors.redAccent, size: 20),
+                              title: Text(r['model'] as String, style: TextStyle(color: baseColor, fontSize: 13)),
+                              subtitle: Text(r['msg'] as String, style: TextStyle(color: dimColor, fontSize: 11)),
+                            )).toList()),
+                          ),
+                          actions: [TextButton(onPressed: () => Navigator.pop(ctx), child: Text('Close', style: TextStyle(color: dimColor)))],
+                        ),
+                      );
+                    }
+                  },
+                  icon: const Icon(Icons.wifi_tethering_rounded, size: 16),
+                  label: const Text('Test Models', style: TextStyle(fontSize: 12)),
+                  style: OutlinedButton.styleFrom(foregroundColor: Colors.deepPurple),
+                ),
+              ),
+            ]),
+          ),
+          actions: [TextButton(onPressed: () => Navigator.pop(d), child: Text('Close', style: TextStyle(color: dimColor)))],
+        );
+      }),
+    );
+  }
+
+  Widget _previewRow(String label, String value, IconData icon, Color baseColor, Color dimColor) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Icon(icon, size: 14, color: Colors.deepPurple.withValues(alpha: 0.6)),
+        const SizedBox(width: 8),
+        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(label, style: TextStyle(color: dimColor, fontSize: 10)),
+          SizedBox(
+            width: 340,
+            child: Text(value, style: TextStyle(color: baseColor, fontSize: 12), overflow: TextOverflow.ellipsis),
+          ),
+        ]),
+      ]),
+    );
+  }
+
+  Future<List<Map<String, dynamic>>> _testModels(String baseUrl, String apiKey, List<String> models, String provider) async {
+    final results = <Map<String, dynamic>>[];
+    for (final model in models) {
+      try {
+        if (provider == 'gemini') {
+          final url = '$baseUrl/v1beta/models/$model?key=$apiKey';
+          final resp = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 8));
+          results.add({'model': model, 'ok': resp.statusCode == 200, 'msg': resp.statusCode == 200 ? 'Available' : 'HTTP ${resp.statusCode}'});
+        } else {
+          final url = '$baseUrl/models';
+          final resp = await http.get(
+            Uri.parse(url),
+            headers: {'Authorization': 'Bearer $apiKey'},
+          ).timeout(const Duration(seconds: 8));
+          results.add({'model': model, 'ok': resp.statusCode == 200, 'msg': resp.statusCode == 200 ? 'Available' : 'HTTP ${resp.statusCode}'});
+        }
+      } catch (e) {
+        results.add({'model': model, 'ok': false, 'msg': 'Error: $e'});
+      }
+    }
+    return results;
   }
 
   void _showAddKeyDialog() {
@@ -251,7 +469,6 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
                   apiKey: keyCtrl.text.trim(),
                   model: models.first,
                   models: models,
-                  isActive: true,
                 );
                 AiService.refreshKey();
                 if (d.mounted) Navigator.pop(d);

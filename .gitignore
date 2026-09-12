@@ -59,3 +59,14 @@ api/node_modules/
 
 # .vercel kept for Vercel config
 .env*
+
+# One-time utility scripts (contain secrets)
+api/scripts/
+api/_*.sql
+api/_tree_output.txt
+FULL_FIX_ALL_PROJECTS.sql
+IMPLEMENTATION_PLAN.md
+PROJECT_CONFIG.md
+SUPABASE_KEYS.md
+enable_rls.sql
+functions_root_bak/
