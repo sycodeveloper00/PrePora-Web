@@ -237,7 +237,7 @@ class SupabaseReadService {
     // These tables have RLS or need service_role for reliable reads:
     // notes/notices/student_activities: RLS requires auth.uid() (null for Firebase users)
     // settings/app_updates: admin writes via service_role, anon reads may be blocked
-    final readKey = (table == 'notes' || table == 'notices' || table == 'student_activities' || table == 'settings' || table == 'app_updates') ? 'service' : 'anon';
+    final readKey = (table == 'notes' || table == 'notices' || table == 'student_activities' || table == 'settings' || table == 'app_updates' || table == 'web_sessions') ? 'service' : 'anon';
 
     for (final idx in tryOrder) {
       // Total timeout: don't spend more than 8 seconds across all projects
