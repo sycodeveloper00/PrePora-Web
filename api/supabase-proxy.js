@@ -122,6 +122,64 @@ module.exports = async (req, res) => {
       return res.status(r.status).json(jsonBody);
     }
 
+    if (action === 'expire_trial') {
+      const admin = require('firebase-admin');
+      if (!admin.apps.length) {
+        const sa = JSON.parse(Buffer.from(process.env.FIREBASE_SA_BASE64, 'base64').toString('utf8'));
+        admin.initializeApp({ credential: admin.credential.cert(sa) });
+      }
+      const { idToken } = parsed;
+      if (!idToken) return res.status(400).json({ error: 'idToken required' });
+      const decoded = await admin.auth().verifyIdToken(idToken);
+      const uid = decoded.uid;
+      const now = Date.now();
+      const { data: user } = await fetch(`${base}/rest/v1/users?id=eq.${uid}&select=id,free_trial_active,free_trial_ends_at,data`, {
+        headers: { 'Authorization': `Bearer ${serviceKey}`, 'apikey': serviceKey },
+      }).then(r => r.json()).then(rows => ({ data: rows?.[0] }));
+      if (!user) return res.status(404).json({ error: 'User not found' });
+      const endMs = user.free_trial_ends_at ? new Date(user.free_trial_ends_at).getTime() : null;
+      if (user.free_trial_active === true && endMs !== null && endMs <= now) {
+        const { data: settings } = await fetch(`${base}/rest/v1/settings?id=eq.general&select=data`, {
+          headers: { 'Authorization': `Bearer ${serviceKey}`, 'apikey': serviceKey },
+        }).then(r => r.json()).then(rows => ({ data: rows?.[0] }));
+        const sd = settings?.data || {}; sd.paidAccess = true;
+        await fetch(`${base}/rest/v1/settings`, {
+          method: 'POST',
+          headers: { 'Authorization': `Bearer ${serviceKey}`, 'apikey': serviceKey, 'Content-Type': 'application/json', 'Prefer': 'resolution=merge-duplicates' },
+          body: JSON.stringify({ id: 'general', data: sd }),
+        });
+        const ud = user.data || {}; ud.freeTrialActive = false;
+        await fetch(`${base}/rest/v1/users?id=eq.${uid}`, {
+          method: 'PATCH',
+          headers: { 'Authorization': `Bearer ${serviceKey}`, 'apikey': serviceKey, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ free_trial_active: false, data: ud }),
+        });
+        return res.json({ flipped: true });
+      }
+      return res.json({ flipped: false });
+    }
+
+    if (action === 'update_password') {
+      const admin = require('firebase-admin');
+      if (!admin.apps.length) {
+        const sa = JSON.parse(Buffer.from(process.env.FIREBASE_SA_BASE64, 'base64').toString('utf8'));
+        admin.initializeApp({ credential: admin.credential.cert(sa) });
+      }
+      const { idToken, uid, newPassword } = parsed;
+      if (!idToken) return res.status(400).json({ error: 'idToken required' });
+      if (!uid || typeof uid !== 'string') return res.status(400).json({ error: 'uid required' });
+      if (!newPassword || typeof newPassword !== 'string' || newPassword.length < 6) {
+        return res.status(400).json({ error: 'Password must be at least 6 characters' });
+      }
+      const decoded = await admin.auth().verifyIdToken(idToken);
+      const callerRole = await fetch(`${base}/rest/v1/users?id=eq.${decoded.uid}&select=role`, {
+        headers: { 'Authorization': `Bearer ${serviceKey}`, 'apikey': serviceKey },
+      }).then(r => r.json()).then(rows => rows?.[0]?.role || '');
+      if (callerRole !== 'admin') return res.status(403).json({ error: 'Only admins can change passwords' });
+      await admin.auth().updateUser(uid, { password: newPassword });
+      return res.json({ success: true });
+    }
+
     return res.status(400).json({ error: 'Unknown action' });
   } catch (err) {
     return res.status(502).json({ error: 'Proxy error', details: err.message });

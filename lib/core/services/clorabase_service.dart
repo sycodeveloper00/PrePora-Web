@@ -67,8 +67,9 @@ class ClorabaseService {
     required String project,
     required List<int> bytes,
     required String filename,
+    String? repoName,
   }) async {
-    final repo = 'Clorabase-projects';
+    final repo = repoName ?? 'Clorabase-projects';
     final path = '$project/storage/$filename';
     final apiUrl = 'https://api.github.com/repos/$username/$repo/contents/$path';
 
@@ -142,8 +143,9 @@ class ClorabaseService {
     required String token,
     required String project,
     required String filename,
+    String? repoName,
   }) async {
-    final repo = 'Clorabase-projects';
+    final repo = repoName ?? 'Clorabase-projects';
     final path = '$project/storage/$filename';
     final apiUrl = 'https://api.github.com/repos/$username/$repo/contents/$path';
 
@@ -180,7 +182,9 @@ class ClorabaseService {
   static Future<Map<String, dynamic>> verifyCredentials({
     required String username,
     required String token,
+    String? repoName,
   }) async {
+    final repo = repoName ?? 'Clorabase-projects';
     try {
       final response = await _githubRequest(
         method: 'GET',
@@ -195,10 +199,10 @@ class ClorabaseService {
           return {'valid': false, 'error': 'Token belongs to @$login, not @$username'};
         }
 
-        // Check if "Clorabase-projects" repo exists, create if not
+        // Check if repo exists, create if not
         final repoCheck = await _githubRequest(
           method: 'GET',
-          url: 'https://api.github.com/repos/$username/Clorabase-projects',
+          url: 'https://api.github.com/repos/$username/$repo',
           token: token,
         );
 
@@ -209,7 +213,7 @@ class ClorabaseService {
             url: 'https://api.github.com/user/repos',
             token: token,
             body: {
-              'name': 'Clorabase-projects',
+              'name': repo,
               'description': 'PrePora Clorabase storage',
               'auto_init': true,
               'private': false,
@@ -233,9 +237,10 @@ class ClorabaseService {
     required String username,
     required String token,
     required String project,
+    String? repoName,
   }) async {
     try {
-      final repo = 'Clorabase-projects';
+      final repo = repoName ?? 'Clorabase-projects';
       final path = '$project/storage';
       final apiUrl = 'https://api.github.com/repos/$username/$repo/contents/$path';
 

@@ -10,6 +10,7 @@ import '../../../core/widgets/animated_pressable.dart';
 import '../../../core/services/firebase_service.dart';
 import '../../../core/services/supabase_read_service.dart';
 import '../../../core/services/notification_service.dart';
+import '../../../core/services/upload_manager.dart';
 import '../../../core/theme/theme_provider.dart';
 import '../../../core/widgets/notification_popup_box.dart';
 import '../../folders/presentation/folder_details_screen.dart' show GroupLinkDialog;
@@ -1276,7 +1277,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
     final folders = await SupabaseReadService.getFolders();
     if (folders == null) return results;
     for (final folderData in folders) {
-      if (folderData['invisible'] == true) continue;
+      // Admin sees invisible folders too — don't skip
       final folderName = folderData['name'] as String? ?? '';
       final folderId = folderData['id'] as String? ?? '';
       if (folderName.toLowerCase().contains(q)) continue;
@@ -1564,6 +1565,7 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
         withData: true,
       );
       if (result != null && result.files.isNotEmpty) {
+        SessionManager.pause();
         int count = 0;
         for (final file in result.files) {
           final bytes = file.bytes;
@@ -1582,15 +1584,30 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
               ? file.name.substring(0, file.name.lastIndexOf('.'))
               : file.name;
 
-          final downloadUrl = await FirebaseService.uploadFile(bytes, file.name);
-          await FirebaseService.addFolderContent(folderId, {
-            'type': 'mocktest_file',
-            'name': displayName,
-            'url': downloadUrl,
-            'fileType': fileType,
-            'source': 'storage',
-          });
-          count++;
+          UploadManager.instance.updateProgress(file.name, 0, 0);
+          try {
+            final downloadUrl = await FirebaseService.uploadFile(bytes, file.name, onProgress: (p) {
+              UploadManager.instance.updateProgress(file.name, p, ((bytes.length) * p).toInt());
+            });
+            UploadManager.instance.progress.remove(file.name);
+
+            final provider = await FirebaseService.getStorageProvider();
+            final actualProvider = provider == 'both'
+                ? (downloadUrl.contains('cloudinary.com') ? 'cloudinary' : 'supabase')
+                : provider;
+            await FirebaseService.addFolderContent(folderId, {
+              'type': 'mocktest_file',
+              'name': displayName,
+              'url': downloadUrl,
+              'fileType': fileType,
+              'source': 'storage',
+              'provider': actualProvider,
+            });
+            count++;
+          } catch (e) {
+            UploadManager.instance.progress.remove(file.name);
+            rethrow;
+          }
         }
         if (mounted && count > 0) {
           ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('$count mock test file(s) uploaded!'), backgroundColor: Colors.green));
@@ -1600,6 +1617,8 @@ class _AdminDashboardScreenState extends State<AdminDashboardScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Upload failed: $e'), backgroundColor: Colors.redAccent, duration: const Duration(seconds: 5)));
       }
+    } finally {
+      SessionManager.resume();
     }
   }
 

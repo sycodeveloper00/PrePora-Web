@@ -87,12 +87,12 @@ class FirebaseService {
     // Fast path: load cached Supabase credentials from SharedPreferences (instant)
     await _loadCachedSupabaseAccountAsync();
     try {
-      await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform).timeout(const Duration(seconds: 10));
+      await Firebase.initializeApp(options: DefaultFirebaseOptions.currentPlatform).timeout(const Duration(seconds: 5));
     } catch (_) {}
     // Background: refresh active account from Supabase (non-blocking if cache exists)
     if (supabaseUrl.isEmpty) {
       try {
-        await _loadActiveSupabaseAccount().timeout(const Duration(seconds: 5));
+        await _loadActiveSupabaseAccount().timeout(const Duration(seconds: 3));
         _saveCachedSupabaseAccount();
       } catch (_) {}
     } else {
@@ -101,7 +101,7 @@ class FirebaseService {
     }
     if (supabaseUrl.isNotEmpty && _supabaseAnonKey.isNotEmpty) {
       try {
-        await Supabase.initialize(url: supabaseUrl, anonKey: _supabaseAnonKey).timeout(const Duration(seconds: 5));
+        await Supabase.initialize(url: supabaseUrl, anonKey: _supabaseAnonKey).timeout(const Duration(seconds: 3));
       } catch (_) {}
     }
     _initialized = true;
@@ -645,11 +645,30 @@ class FirebaseService {
   static String _cachedStorageProvider = 'supabase';
 
   static Future<String> getStorageProvider() async {
+    // SharedPreferences is the ABSOLUTE source of truth.
+    // No background sync from Supabase — Supabase may have stale data from
+    // another session or partially-failed writes, which would overwrite the
+    // user's explicit choice.
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final saved = prefs.getString('cached_storage_provider');
+      if (saved != null && saved.isNotEmpty) {
+        _cachedStorageProvider = saved;
+        return _cachedStorageProvider;
+      }
+    } catch (_) {}
+
+    // Only if SharedPreferences is empty (first launch), seed from Supabase
     try {
       final settings = await getSettings();
       final provider = settings[_storageProviderKey] as String?;
-      if (provider == 'supabase' || provider == 'cloudinary' || provider == 'both' || provider == 'clorabase' || provider == 'supabase_clorabase') {
-        _cachedStorageProvider = provider!;
+      if (provider != null &&
+          (provider == 'supabase' || provider == 'cloudinary' || provider == 'both' || provider == 'clorabase' || provider == 'supabase_clorabase')) {
+        _cachedStorageProvider = provider;
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('cached_storage_provider', provider);
+        } catch (_) {}
       }
     } catch (_) {}
     return _cachedStorageProvider;
@@ -657,7 +676,19 @@ class FirebaseService {
 
   static Future<void> setStorageProvider(String provider) async {
     _cachedStorageProvider = provider;
-    await updateSetting(_storageProviderKey, provider);
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('cached_storage_provider', provider);
+    } catch (_) {}
+    // Do NOT call updateSetting here — it reads stale Supabase data and can
+    // overwrite the user's fresh choice. SharedPreferences is the source of truth.
+    // Background sync to Supabase is optional and non-blocking.
+    try {
+      final current = await SupabaseReadService.getSettings('general');
+      final data = Map<String, dynamic>.from(current ?? {});
+      data[_storageProviderKey] = provider;
+      SupabaseReadService.writeToAll('settings', 'general', data);
+    } catch (_) {}
   }
 
   // ─── Cloudinary Multi-Account Upload ─────────────────────────────────────────
@@ -795,7 +826,7 @@ class FirebaseService {
     return [];
   }
 
-  static Future<String> addClorabaseAccount(String githubUsername, String githubToken, String projectName, {bool isActive = true, int storageLimitMB = 1024}) async {
+  static Future<String> addClorabaseAccount(String githubUsername, String githubToken, String projectName, {String? repoName, bool isActive = true, int storageLimitMB = 1024}) async {
     final docId = 'cb_${DateTime.now().millisecondsSinceEpoch}';
     if (isActive) {
       await _mirrorWrite('settings', 'clorabase_accounts', {'isActive': false});
@@ -804,6 +835,7 @@ class FirebaseService {
       'githubUsername': githubUsername.trim(),
       'githubToken': githubToken.trim(),
       'projectName': projectName.trim(),
+      if (repoName != null && repoName.isNotEmpty) 'repoName': repoName.trim(),
       'isActive': isActive,
       'storageLimitMB': storageLimitMB,
       'currentUsageMB': 0,
@@ -813,13 +845,14 @@ class FirebaseService {
     return docId;
   }
 
-  static Future<void> updateClorabaseAccount(String id, {String? githubUsername, String? githubToken, String? projectName, bool? isActive, int? storageLimitMB, int? currentUsageMB, bool? autoSwitchEnabled}) async {
+  static Future<void> updateClorabaseAccount(String id, {String? githubUsername, String? githubToken, String? projectName, String? repoName, bool? isActive, int? storageLimitMB, int? currentUsageMB, bool? autoSwitchEnabled}) async {
     Map<String, dynamic> existing = {};
     try { existing = (await SupabaseReadService.getClorabaseAccounts())?.firstOrNull ?? {}; } catch (_) {}
     final data = <String, dynamic>{...existing};
     if (githubUsername != null) data['githubUsername'] = githubUsername.trim();
     if (githubToken != null) data['githubToken'] = githubToken.trim();
     if (projectName != null) data['projectName'] = projectName.trim();
+    if (repoName != null) data['repoName'] = repoName.trim();
     if (isActive != null) data['isActive'] = isActive;
     if (storageLimitMB != null) data['storageLimitMB'] = storageLimitMB;
     if (currentUsageMB != null) data['currentUsageMB'] = currentUsageMB;
@@ -842,6 +875,7 @@ class FirebaseService {
     final githubUsername = active['githubUsername'] as String;
     final githubToken = active['githubToken'] as String;
     final projectName = active['projectName'] as String;
+    final repoName = active['repoName'] as String?;
 
     return await ClorabaseService.uploadFile(
       username: githubUsername,
@@ -849,6 +883,7 @@ class FirebaseService {
       project: projectName,
       bytes: bytes,
       filename: filename,
+      repoName: repoName,
     );
   }
 
@@ -868,6 +903,7 @@ class FirebaseService {
     required String githubUsername,
     required String githubToken,
     required String projectName,
+    String? repoName,
   }) async {
     final docId = 'acb_${DateTime.now().millisecondsSinceEpoch}';
     await _mirrorWrite('settings', 'assistant_clorabase_$docId', {
@@ -876,23 +912,25 @@ class FirebaseService {
       'githubUsername': githubUsername.trim(),
       'githubToken': githubToken.trim(),
       'projectName': projectName.trim(),
+      if (repoName != null && repoName.isNotEmpty) 'repoName': repoName.trim(),
       'isActive': true,
       'createdAt': DateTime.now().toIso8601String(),
     });
     return docId;
   }
 
-  static Future<void> updateAssistantClorabaseAccount(String id, {String? githubUsername, String? githubToken, String? projectName, bool? isActive}) async {
+  static Future<void> updateAssistantClorabaseAccount(String id, {String? githubUsername, String? githubToken, String? projectName, String? repoName, bool? isActive}) async {
     if (isActive == true) {
       await _mirrorWrite('settings', 'assistant_clorabase_$id', {'isActive': true});
     } else if (isActive == false) {
       await _mirrorWrite('settings', 'assistant_clorabase_$id', {'isActive': false});
     }
-    if (githubUsername != null || githubToken != null || projectName != null) {
+    if (githubUsername != null || githubToken != null || projectName != null || repoName != null) {
       final data = <String, dynamic>{};
       if (githubUsername != null) data['githubUsername'] = githubUsername.trim();
       if (githubToken != null) data['githubToken'] = githubToken.trim();
       if (projectName != null) data['projectName'] = projectName.trim();
+      if (repoName != null) data['repoName'] = repoName.trim();
       await _mirrorWrite('settings', 'assistant_clorabase_$id', data);
     }
   }
@@ -1429,21 +1467,7 @@ class FirebaseService {
     }
 
     if (provider == 'supabase_clorabase') {
-      try {
-        return await _uploadViaClorabase(bytes, filename);
-      } catch (_) {
-        try {
-          return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
-        } catch (e) {
-          if (e.toString().contains('storage') || e.toString().contains('limit') || e.toString().contains('quota')) {
-            final switched = await _checkStorageAndSwitchIfNeeded(forceSwitch: true);
-            if (switched['switched'] == true) {
-              return await _uploadViaSupabase(bytes, filename, onProgress: onProgress);
-            }
-          }
-          rethrow;
-        }
-      }
+      return await _uploadViaClorabase(bytes, filename);
     }
 
     // Default: Supabase
@@ -1605,6 +1629,7 @@ class FirebaseService {
     final githubUsername = match['githubUsername'] as String;
     final githubToken = match['githubToken'] as String;
     final projectName = match['projectName'] as String;
+    final repoName = match['repoName'] as String?;
 
     return await ClorabaseService.uploadFile(
       username: githubUsername,
@@ -1612,6 +1637,7 @@ class FirebaseService {
       project: projectName,
       bytes: bytes,
       filename: filename,
+      repoName: repoName,
     );
   }
 
@@ -2501,15 +2527,21 @@ class FirebaseService {
     data[key] = value;
     // ignore: avoid_print
     print('[UPDATE_SETTING] key=$key value=$value writeData.keys=${data.keys.toList()}');
+
+    // 1) Primary write — synchronous, guaranteed to land on one project
     bool writeOk = false;
     try {
-      writeOk = await SupabaseReadService.writeToAll('settings', 'general', data);
+      writeOk = await SupabaseReadService.writePrimary('settings', 'general', data);
       // ignore: avoid_print
-      print('[UPDATE_SETTING] writeToAll completed anySuccess=$writeOk');
+      print('[UPDATE_SETTING] writePrimary completed success=$writeOk');
     } catch (e) {
       // ignore: avoid_print
-      print('[UPDATE_SETTING] writeToAll ERROR: $e');
+      print('[UPDATE_SETTING] writePrimary ERROR: $e');
     }
+
+    // 2) Background sync to remaining projects (fire-and-forget)
+    SupabaseReadService.writeToAll('settings', 'general', data);
+
     SupabaseReadService.invalidateSettingsCache();
     // Verify read-back
     try {

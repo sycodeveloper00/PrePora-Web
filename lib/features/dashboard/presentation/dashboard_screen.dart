@@ -176,12 +176,12 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (mounted) setState(() => _trialCountdownText = '$dd:$hh:$mm:$ss');
   }
 
-  /// Polls user status from Supabase mirror every 30s instead of live Firestore listener.
+  /// Polls user status from Supabase mirror every 60s instead of live Firestore listener.
 
   void _listenUserStatus() {
     _userStatusTimer?.cancel();
     _pollUserStatus();
-    _userStatusTimer = Timer.periodic(const Duration(seconds: 30), (_) => _pollUserStatus());
+    _userStatusTimer = Timer.periodic(const Duration(seconds: 60), (_) => _pollUserStatus());
   }
 
   Future<void> _pollUserStatus() async {
@@ -245,12 +245,12 @@ class _DashboardScreenState extends State<DashboardScreen>
     }
   }
 
-  /// Polls settings from Supabase mirror every 30s instead of live Firestore listener.
+  /// Polls settings from Supabase mirror every 60s instead of live Firestore listener.
 
   void _listenSettings() {
     _settingsTimer?.cancel();
     _pollSettings();
-    _settingsTimer = Timer.periodic(const Duration(seconds: 30), (_) => _pollSettings());
+    _settingsTimer = Timer.periodic(const Duration(seconds: 60), (_) => _pollSettings());
   }
 
   Future<void> _pollSettings() async {
@@ -325,7 +325,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     if (!kIsWeb) return;
     final host = Uri.base.host;
     if (!host.contains('prepora-web-fop')) return;
-    _sessionCheckTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+    _sessionCheckTimer = Timer.periodic(const Duration(seconds: 60), (_) async {
       final uid = FirebaseService.currentUser?.uid;
       if (uid == null) return;
       try {

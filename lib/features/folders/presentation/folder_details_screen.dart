@@ -1414,20 +1414,26 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
 
   Future<String> _buildFullPath(String? parentContentId) async {
     final parts = <String>[_folderName];
-    var currentId = parentContentId;
-    final visited = <String>{};
-    while (currentId != null && currentId.isNotEmpty && !visited.contains(currentId)) {
-      visited.add(currentId);
-      try {
-        final content = await SupabaseReadService.getContent(widget.folderId, currentId);
+    if (parentContentId == null || parentContentId.isEmpty) return parts.join(' > ');
+    try {
+      final allContents = await SupabaseReadService.getFolderContents(widget.folderId, fetchAll: true);
+      if (allContents == null || allContents.isEmpty) return parts.join(' > ');
+      final contentMap = <String, Map<String, dynamic>>{};
+      for (final c in allContents) {
+        final id = c['id'] as String?;
+        if (id != null) contentMap[id] = c;
+      }
+      String? currentId = parentContentId;
+      final visited = <String>{};
+      while (currentId != null && currentId.isNotEmpty && !visited.contains(currentId)) {
+        visited.add(currentId);
+        final content = contentMap[currentId];
         if (content == null) break;
         final name = content['name'] as String? ?? '';
         if (name.isNotEmpty) parts.insert(1, name);
         currentId = content['parentContentId'] as String?;
-      } catch (_) {
-        break;
       }
-    }
+    } catch (_) {}
     return parts.join(' > ');
   }
 
@@ -1826,6 +1832,8 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                     final filteredDocs = _searchQuery.isNotEmpty ? _filterDocs(parentFiltered, _searchQuery) : parentFiltered;
                     final visibleDocs = filteredDocs.where((doc) {
                       final d = doc.data() as Map<String, dynamic>;
+                      // Admin sees everything (including invisible/disabled)
+                      if (widget.isAdmin) return true;
                       if (d['invisible'] == true) return false;
                       if (d['enabled'] == false) return false;
                       return true;
@@ -2221,7 +2229,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
         builder: (ctx, setDialogState) {
           void refreshDialog() => setDialogState(() {});
           refreshTimer?.cancel();
-          refreshTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+          refreshTimer = Timer.periodic(const Duration(seconds: 1), (_) {
             if (ctx.mounted) refreshDialog(); else refreshTimer?.cancel();
           });
           final mgr = UploadManager.instance;

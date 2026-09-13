@@ -32,7 +32,7 @@ class _AdminFeedbackScreenState extends State<AdminFeedbackScreen> {
     await _markAllAsViewed();
     await _loadStudents();
     // Auto-refresh every 15 seconds to catch new tickets
-    _refreshTimer = Timer.periodic(const Duration(seconds: 15), (_) {
+    _refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (mounted) _loadStudents();
     });
   }

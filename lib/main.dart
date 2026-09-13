@@ -12,20 +12,24 @@ import 'core/services/firebase_service.dart';
 import 'core/services/supabase_read_service.dart';
 import 'core/services/storage_account_keep_alive.dart';
 import 'core/services/notification_service.dart';
+import 'core/services/offline_cache_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Init online checker for OfflineCacheService
+  if (kIsWeb) {
+    OfflineCacheService.initOnlineCheck(() => html.window.navigator.onLine ?? true);
+  }
   if (!kIsWeb) {
     HomeWidget.registerBackgroundCallback(backgroundCallback);
   }
   // Init SharedPreferences FIRST (needed by FirebaseService cache)
   await _initStorage();
   try {
-    await FirebaseService.initialize().timeout(const Duration(seconds: 12));
+    await FirebaseService.initialize().timeout(const Duration(seconds: 8));
   } catch (_) {}
   SupabaseReadService.onFailover = (projectName, role, error) async {
     try {
-      // Cooldown: don't write if last failover notification was <30 min ago
       final lastNotifTime = html.window.localStorage['last_failover_notif'];
       if (lastNotifTime != null) {
         final last = DateTime.tryParse(lastNotifTime);

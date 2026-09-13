@@ -1,5 +1,7 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import '../../../core/services/firebase_service.dart';
 import '../../../core/router/app_router.dart';
 import '../../../core/widgets/professional_loader.dart';
@@ -18,8 +20,6 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   void _navigate() async {
-    // Wait briefly for Firebase to initialize (set in main())
-    await Future.delayed(const Duration(milliseconds: 500));
     final user = FirebaseService.currentUser;
     if (user != null) {
       _checkRoleAndRedirect(user.uid);
@@ -30,13 +30,33 @@ class _SplashScreenState extends State<SplashScreen> {
 
   Future<void> _checkRoleAndRedirect(String uid) async {
     try {
-      String? role = await FirebaseService.getCachedUserRole(uid);
-      if (role == null) {
-        role = await FirebaseService.getUserRole(uid);
-        if (role != null) FirebaseService.cacheUserRole(uid, role);
+      final prefs = await SharedPreferences.getInstance();
+      final cachedRole = prefs.getString('role_$uid');
+      if (cachedRole != null) {
+        FirebaseService.cachedRole = cachedRole;
+        AuthGuard.setUserRole(cachedRole);
+        if (!mounted) return;
+        if (cachedRole == 'admin') {
+          context.go('/admin');
+          return;
+        } else if (cachedRole == 'Assistant') {
+          final snapshot = await FirebaseService.getUser(uid);
+          final data = snapshot?.data() as Map<String, dynamic>?;
+          final folderIds = (data?['folderIds'] as List<dynamic>?)?.cast<String>() ?? <String>[];
+          final assistantName = data?['name'] as String? ?? 'Assistant';
+          if (mounted) context.go('/assistant', extra: {'folderIds': folderIds, 'assistantName': assistantName});
+          return;
+        } else {
+          context.go('/dashboard');
+          return;
+        }
       }
-      FirebaseService.cachedRole = role;
-      AuthGuard.setUserRole(role);
+      final role = await FirebaseService.getUserRole(uid);
+      if (role != null) {
+        await prefs.setString('role_$uid', role);
+        FirebaseService.cachedRole = role;
+        AuthGuard.setUserRole(role);
+      }
       if (!mounted) return;
       if (role == 'admin') {
         context.go('/admin');

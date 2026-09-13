@@ -216,6 +216,7 @@ class _AssistantClorabaseScreenState extends State<AssistantClorabaseScreen> {
   }) {
     final githubUsername = acc['githubUsername'] as String? ?? '';
     final projectName = acc['projectName'] as String? ?? '';
+    final repoName = acc['repoName'] as String? ?? '';
 
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
@@ -246,6 +247,7 @@ class _AssistantClorabaseScreenState extends State<AssistantClorabaseScreen> {
             ]),
             const SizedBox(height: 4),
             Text('Project: $projectName', style: TextStyle(color: hintColor, fontSize: 11)),
+            if (repoName.isNotEmpty) Text('Repo: $repoName', style: TextStyle(color: hintColor, fontSize: 11)),
           ]),
         ),
         const SizedBox(width: 8),
@@ -290,6 +292,7 @@ class _AssistantClorabaseScreenState extends State<AssistantClorabaseScreen> {
     final usernameCtrl = TextEditingController();
     final tokenCtrl = TextEditingController();
     final projectCtrl = TextEditingController();
+    final repoCtrl = TextEditingController();
     final scopedUid = widget.assistantUid;
     final scopedName = widget.assistantName;
     String? selectedUid = scopedUid;
@@ -346,8 +349,10 @@ class _AssistantClorabaseScreenState extends State<AssistantClorabaseScreen> {
             TextField(controller: tokenCtrl, style: TextStyle(color: baseColor), maxLines: 2, decoration: InputDecoration(labelText: 'GitHub PAT', hintText: 'ghp_xxxxxxxxxxxx', labelStyle: TextStyle(color: dimColor), hintStyle: TextStyle(color: dimColor), filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
             const SizedBox(height: 12),
             TextField(controller: projectCtrl, style: TextStyle(color: baseColor), decoration: InputDecoration(labelText: 'Project Name', hintText: 'my_project', labelStyle: TextStyle(color: dimColor), hintStyle: TextStyle(color: dimColor), filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
-            const SizedBox(height: 8),
-            Text('Requires "Clorabase-projects" repo + PAT with "repo" scope.', style: TextStyle(color: dimColor, fontSize: 11)),
+            const SizedBox(height: 12),
+            TextField(controller: repoCtrl, style: TextStyle(color: baseColor), decoration: InputDecoration(labelText: 'GitHub Repo Name', hintText: 'Clorabase-projects', labelStyle: TextStyle(color: dimColor), hintStyle: TextStyle(color: dimColor), filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
+            const SizedBox(height: 4),
+            Text('Repo where files will be stored. Created automatically if missing.', style: TextStyle(color: dimColor, fontSize: 10)),
           ])),
         ),
         actions: [
@@ -359,6 +364,7 @@ class _AssistantClorabaseScreenState extends State<AssistantClorabaseScreen> {
               final verifyResult = await ClorabaseService.verifyCredentials(
                 username: usernameCtrl.text.trim(),
                 token: tokenCtrl.text.trim(),
+                repoName: repoCtrl.text.trim().isNotEmpty ? repoCtrl.text.trim() : null,
               );
               if (verifyResult['valid'] == true) {
                 await FirebaseService.addAssistantClorabaseAccount(
@@ -366,6 +372,7 @@ class _AssistantClorabaseScreenState extends State<AssistantClorabaseScreen> {
                   githubUsername: usernameCtrl.text.trim(),
                   githubToken: tokenCtrl.text.trim(),
                   projectName: projectCtrl.text.trim(),
+                  repoName: repoCtrl.text.trim().isNotEmpty ? repoCtrl.text.trim() : null,
                 );
                 if (d.mounted) Navigator.pop(d);
                 _load();
@@ -392,6 +399,7 @@ class _AssistantClorabaseScreenState extends State<AssistantClorabaseScreen> {
     final usernameCtrl = TextEditingController(text: acc['githubUsername'] as String? ?? '');
     final tokenCtrl = TextEditingController(text: acc['githubToken'] as String? ?? '');
     final projectCtrl = TextEditingController(text: acc['projectName'] as String? ?? '');
+    final repoCtrl = TextEditingController(text: acc['repoName'] as String? ?? '');
     final assistantName = acc['assistantName'] as String? ?? 'Unknown';
 
     showDialog(context: context, builder: (d) => StatefulBuilder(builder: (ctx, setDialog) {
@@ -406,6 +414,8 @@ class _AssistantClorabaseScreenState extends State<AssistantClorabaseScreen> {
             TextField(controller: tokenCtrl, style: TextStyle(color: baseColor), maxLines: 2, decoration: InputDecoration(labelText: 'GitHub PAT', labelStyle: TextStyle(color: dimColor), filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
             const SizedBox(height: 12),
             TextField(controller: projectCtrl, style: TextStyle(color: baseColor), decoration: InputDecoration(labelText: 'Project Name', labelStyle: TextStyle(color: dimColor), filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
+            const SizedBox(height: 12),
+            TextField(controller: repoCtrl, style: TextStyle(color: baseColor), decoration: InputDecoration(labelText: 'GitHub Repo Name', labelStyle: TextStyle(color: dimColor), filled: true, fillColor: fillColor, border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)))),
           ])),
         ),
         actions: [
@@ -417,6 +427,7 @@ class _AssistantClorabaseScreenState extends State<AssistantClorabaseScreen> {
               githubUsername: usernameCtrl.text.trim(),
               githubToken: tokenCtrl.text.trim(),
               projectName: projectCtrl.text.trim(),
+              repoName: repoCtrl.text.trim().isNotEmpty ? repoCtrl.text.trim() : null,
             );
             if (d.mounted) Navigator.pop(d); _load();
           }, style: ElevatedButton.styleFrom(backgroundColor: Colors.orange), child: const Text('Save', style: TextStyle(color: Colors.white))),
