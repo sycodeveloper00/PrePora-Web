@@ -441,17 +441,17 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
 
   void _listenToSessionStatus() {
     _sessionSub?.cancel();
-    // Listen to Firestore for disconnect (primary path)
+    // Listen to Supabase for disconnect (primary path)
     _sessionSub = FirebaseService.streamWebSessionDoc(_sessionId).listen((sData) {
-      if (sData == null) return;
-      if (sData['status'] == 'disconnected' && mounted) {
-        _handleRemoteDisconnect();
+      // null = row deleted or query failed = Android disconnected this session
+      if (sData == null || (sData['status'] as String?) == 'disconnected') {
+        if (mounted) _handleRemoteDisconnect();
       }
     });
-    // Also poll Supabase every 5s as backup — if Firestore write failed,
+    // Also poll Supabase every 8s as backup — if Firestore write failed,
     // Android will have written 'disconnected' to Supabase directly.
     _supabasePollSub?.cancel();
-    _supabasePollSub = Timer.periodic(const Duration(seconds: 5), (_) async {
+    _supabasePollSub = Timer.periodic(const Duration(seconds: 8), (_) async {
       if (_sessionId.isEmpty || _status != 'connected') return;
       try {
         final res = await http.get(
@@ -976,8 +976,8 @@ class _LinkedWebSession {
     stopMonitoring();
     _onDisconnected = onDisconnected;
     _globalSessionSub = FirebaseService.streamWebSessionDoc(sessionId).listen((sData) {
-      if (sData == null) return;
-      if (sData['status'] == 'disconnected') {
+      // null = row deleted or query failed = Android disconnected this session
+      if (sData == null || sData['status'] == 'disconnected') {
         stopMonitoring();
         _onDisconnected?.call();
       }
