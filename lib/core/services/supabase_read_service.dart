@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
+import 'offline_cache_service.dart';
 
 /// TTL in-memory cache for non-user data (settings, folders, etc.)
 class _TtlCache {
@@ -375,7 +376,7 @@ class SupabaseReadService {
     'admin_notifications': ['read', 'message', 'type', 'created_at'],
     'notices': ['title', 'file_type', 'added_by', 'created_at', 'file_url'],
     'feedbacks': ['uid', 'status', 'message', 'reply'],
-    'settings': ['paid_access', 'price'],
+    'settings': [],
     'app_updates': ['version', 'link'],
     'student_activities': ['uid', 'started_at'],
     'assistant_access': ['uid', 'folder_id'],
@@ -463,9 +464,12 @@ class SupabaseReadService {
   }
 
   /// Execute a write against ALL projects using service role key.
-  /// Returns true if at least one succeeded.
+  /// Returns as soon as at least one project succeeds (others continue in background).
+  /// Reduced timeout from 30s to 10s per project to avoid blocking on unreachable primaries.
   static Future<bool> _writeAll(String table, String id, Map<String, dynamic> data, {bool delete = false}) async {
-    bool anySuccess = false;
+    final completer = Completer<bool>();
+    bool returned = false;
+    int completedCount = 0;
     final futures = <Future>[];
     for (final p in _projects) {
       futures.add(Future(() async {
@@ -477,10 +481,13 @@ class SupabaseReadService {
               'apikey': p['service']!,
               'Authorization': 'Bearer ${p['service']!}',
               'Prefer': 'return=minimal',
-            }).timeout(const Duration(seconds: 30));
+            }).timeout(const Duration(seconds: 10));
             // ignore: avoid_print
             print('[WRITE_ALL] DELETE ${p['name']} $table/$id status=${res.statusCode}');
-            if (res.statusCode < 300) anySuccess = true;
+            if (res.statusCode < 300 && !returned) {
+              returned = true;
+              if (!completer.isCompleted) completer.complete(true);
+            }
           } else {
             final headers = {
               'apikey': p['service']!,
@@ -494,21 +501,32 @@ class SupabaseReadService {
               Uri.parse('${p['url']!}/rest/v1/$table'),
               headers: headers,
               body: json.encode(sanitized),
-            ).timeout(const Duration(seconds: 30));
+            ).timeout(const Duration(seconds: 10));
             // ignore: avoid_print
             print('[WRITE_ALL] UPSERT ${p['name']} $table/$id status=${res.statusCode} body=${json.encode(sanitized).length}chars${res.statusCode >= 400 ? " err=${res.body.substring(0, res.body.length.clamp(0, 200))}" : ""}');
-            if (res.statusCode < 300) anySuccess = true;
+            if (res.statusCode < 300 && !returned) {
+              returned = true;
+              if (!completer.isCompleted) completer.complete(true);
+            }
           }
         } catch (e) {
           // ignore: avoid_print
           print('[WRITE_ALL] CATCH ${p['name']} $table/$id error=$e');
         }
+        completedCount++;
+        // If all projects finished and none succeeded, complete with false
+        if (completedCount >= _projects.length && !completer.isCompleted) {
+          completer.complete(false);
+        }
       }));
     }
-    await Future.wait(futures);
     // ignore: avoid_print
-    print('[WRITE_ALL] DONE $table/$id anySuccess=$anySuccess');
-    return anySuccess;
+    print('[WRITE_ALL] DISPATCHED $table/$id — waiting for first success (10s timeout per project)');
+    // Wait for first success OR all failures (whichever comes first)
+    final result = await completer.future;
+    // ignore: avoid_print
+    print('[WRITE_ALL] DONE $table/$id anySuccess=$result');
+    return result;
   }
 
   /// Write to ALL projects (called by firebase_service._mirrorWrite)
@@ -528,7 +546,7 @@ class SupabaseReadService {
           'apikey': p['service']!,
           'Authorization': 'Bearer ${p['service']!}',
           'Prefer': 'return=minimal',
-        }).timeout(const Duration(seconds: 30));
+        }).timeout(const Duration(seconds: 10));
         return res.statusCode < 300;
       } else {
         final headers = {
@@ -542,7 +560,7 @@ class SupabaseReadService {
           Uri.parse('${p['url']!}/rest/v1/$table'),
           headers: headers,
           body: json.encode(body),
-        ).timeout(const Duration(seconds: 30));
+        ).timeout(const Duration(seconds: 10));
         return res.statusCode < 300;
       }
     } catch (_) {
@@ -573,9 +591,22 @@ class SupabaseReadService {
   // ─── users ────────────────────────────────────────────────────────────────
 
   static Future<Map<String, dynamic>?> getUser(String uid) async {
-    final rows = await _query('users', 'id=eq.$uid&limit=1&$_sel');
-    if (rows == null || rows.isEmpty) return null;
-    return _flatten(rows.first);
+    // Online → always fetch fresh from network, save to cache
+    if (OfflineCacheService.isOnline) {
+      try {
+        final rows = await _query('users', 'id=eq.$uid&limit=1&$_sel');
+        if (rows != null && rows.isNotEmpty) {
+          final flat = _flatten(rows.first);
+          await OfflineCacheService.cacheUser(uid, flat);
+          return flat;
+        }
+        return null;
+      } catch (_) {
+        // Network failed → fall to offline cache
+      }
+    }
+    // Offline or network failed → return stale cache
+    return await OfflineCacheService.getCachedUser(uid);
   }
 
   static Future<List<Map<String, dynamic>>?> getUsersByRole(String role) async {
@@ -600,14 +631,28 @@ class SupabaseReadService {
   // ─── settings ─────────────────────────────────────────────────────────────
 
   static Future<Map<String, dynamic>?> getSettings(String id) async {
-    // Check TTL cache first
-    final cached = _cache.get('settings:$id');
-    if (cached != null) return cached;
-    final rows = await _query('settings', 'id=eq.$id&limit=1&$_sel');
-    if (rows == null || rows.isEmpty) return null;
-    final flat = _flatten(rows.first);
-    _cache.set('settings:$id', flat);
-    return flat;
+    // Check in-memory TTL cache first (30s)
+    final memCached = _cache.get('settings:$id');
+    if (memCached != null) return memCached;
+    // Online → always fetch fresh, save to cache
+    if (OfflineCacheService.isOnline) {
+      try {
+        final rows = await _query('settings', 'id=eq.$id&limit=1&$_sel');
+        if (rows != null && rows.isNotEmpty) {
+          final flat = _flatten(rows.first);
+          _cache.set('settings:$id', flat);
+          await OfflineCacheService.cacheSettings(id, flat);
+          return flat;
+        }
+        return null;
+      } catch (_) {
+        // Network failed → fall to offline cache
+      }
+    }
+    // Offline or network failed → return stale cache
+    final stale = await OfflineCacheService.getCachedSettings(id);
+    if (stale != null) _cache.set('settings:$id', stale);
+    return stale;
   }
 
   /// Invalidate settings cache so next read fetches fresh data.
@@ -616,7 +661,7 @@ class SupabaseReadService {
   // ─── supabase accounts (mirrored into the settings table) ────────────────
 
   static Future<Map<String, dynamic>?> getActiveSupabaseAccount() async {
-    final rows = await _query('settings', 'id=like.supabase_account:%&$_sel');
+    final rows = await _query('settings', 'id=like.supabase_account:%25&$_sel');
     if (rows == null || rows.isEmpty) return null;
     for (final r in rows) {
       final flat = _flatten(r);
@@ -626,7 +671,7 @@ class SupabaseReadService {
   }
 
   static Future<Map<String, dynamic>?> getActiveAssistantSupabaseAccount(String assistantUid) async {
-    final rows = await _query('settings', 'id=like.assistant_supabase:%&$_sel');
+    final rows = await _query('settings', 'id=like.assistant_supabase:%25&$_sel');
     if (rows == null || rows.isEmpty) return null;
     for (final r in rows) {
       final flat = _flatten(r);
@@ -638,18 +683,30 @@ class SupabaseReadService {
   // ─── folders ──────────────────────────────────────────────────────────────
 
   static Future<List<Map<String, dynamic>>?> getFolders() async {
-    final rows = await _query('folders', '$_sel&order=created_at.asc');
-    if (rows == null) return null;
-    final list = rows.map(_flatten).toList();
-    list.sort((a, b) {
-      final ao = a['sortOrder'] as int?;
-      final bo = b['sortOrder'] as int?;
-      if (ao != null && bo != null) return ao.compareTo(bo);
-      if (ao != null) return -1;
-      if (bo != null) return 1;
-      return 0;
-    });
-    return list;
+    // Online → always fetch fresh
+    if (OfflineCacheService.isOnline) {
+      try {
+        final rows = await _query('folders', '$_sel&order=created_at.asc');
+        if (rows != null) {
+          final list = rows.map(_flatten).toList();
+          list.sort((a, b) {
+            final ao = a['sortOrder'] as int?;
+            final bo = b['sortOrder'] as int?;
+            if (ao != null && bo != null) return ao.compareTo(bo);
+            if (ao != null) return -1;
+            if (bo != null) return 1;
+            return 0;
+          });
+          await OfflineCacheService.cacheFolders('global', list);
+          return list;
+        }
+        return null;
+      } catch (_) {
+        // Network failed → fall to cache
+      }
+    }
+    // Offline → return stale cache
+    return await OfflineCacheService.getCachedFolders('global');
   }
 
   static Stream<List<Map<String, dynamic>>> streamFolders({
@@ -955,19 +1012,19 @@ class SupabaseReadService {
   }
 
   static Future<List<Map<String, dynamic>>?> getAssistantCloudinaryAccounts() async {
-    final rows = await _query('settings', 'id=like.assistant_cloudinary_%&$_sel');
+    final rows = await _query('settings', 'id=like.assistant_cloudinary_%25&$_sel');
     if (rows == null) return null;
     return rows.map(_flatten).toList();
   }
 
   static Future<List<Map<String, dynamic>>?> getSupabaseAccounts() async {
-    final rows = await _query('settings', 'id=like.supabase_account:%&$_sel');
+    final rows = await _query('settings', 'id=like.supabase_account:%25&$_sel');
     if (rows == null) return null;
     return rows.map(_flatten).toList();
   }
 
   static Future<List<Map<String, dynamic>>?> getAssistantSupabaseAccounts() async {
-    final rows = await _query('settings', 'id=like.assistant_supabase:%&$_sel');
+    final rows = await _query('settings', 'id=like.assistant_supabase:%25&$_sel');
     if (rows == null) return null;
     return rows.map(_flatten).toList();
   }
@@ -979,7 +1036,7 @@ class SupabaseReadService {
   }
 
   static Future<List<Map<String, dynamic>>?> getAssistantClorabaseAccounts() async {
-    final rows = await _query('settings', 'id=like.assistant_clorabase_%&$_sel');
+    final rows = await _query('settings', 'id=like.assistant_clorabase_%25&$_sel');
     if (rows == null) return null;
     return rows.map(_flatten).toList();
   }
