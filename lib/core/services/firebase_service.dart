@@ -418,7 +418,7 @@ class FirebaseService {
       if (mirror != null) {
         final active = mirror['freeTrialActive'] == true;
         final endsAt = mirror['freeTrialEndsAt'];
-        final endDate = endsAt is String ? DateTime.tryParse(endsAt) : (endsAt is DateTime ? endsAt : null);
+        final endDate = endsAt is String ? DateTime.tryParse(endsAt)?.toLocal() : (endsAt is DateTime ? endsAt.toLocal() : null);
         return {'active': active, 'endsAt': endDate};
       }
     } catch (_) {}
@@ -439,7 +439,8 @@ class FirebaseService {
         for (final data in students) {
           final endsAt = data['free_trial_ends_at'] ?? data['freeTrialEndsAt'];
           final d = endsAt is DateTime ? endsAt : (endsAt is String ? DateTime.tryParse(endsAt) : null);
-          if (d != null && (latest == null || d.isAfter(latest))) latest = d;
+          final local = d?.toLocal();
+          if (local != null && (latest == null || local.isAfter(latest))) latest = local;
         }
         return latest;
       }
@@ -453,6 +454,7 @@ class FirebaseService {
   /// [end] date/time (preserves minutes — no truncation).
   /// Returns the number of students the trial was applied to.
   static Future<int> startFreeTrialForAll({required DateTime end}) async {
+    final isoEnd = end.toUtc().toIso8601String();
     List<Map<String, dynamic>>? students;
     try { students = await SupabaseReadService.getUsersByRole('student'); } catch (_) {}
     final mirrorWrites = <Future>[];
@@ -465,9 +467,9 @@ class FirebaseService {
         mirrorWrites.add(_mirrorWrite('users', id, {
           ...data,
           'freeTrialActive': true,
-          'freeTrialEndsAt': end.toIso8601String(),
+          'freeTrialEndsAt': isoEnd,
           'free_trial_active': true,
-          'free_trial_ends_at': end.toIso8601String(),
+          'free_trial_ends_at': isoEnd,
         }));
         count++;
       }

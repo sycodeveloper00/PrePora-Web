@@ -670,9 +670,12 @@
       if (loader) loader.style.display = 'none';
     });
 
-    // Register service worker for offline caching
+    // Register service worker for offline caching (skip admin/assistant panels)
     if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.register('./sw.js').catch(function() {});
+      var _host = window.location.hostname;
+      if (_host.indexOf('admin-') === -1 && _host.indexOf('assistant-') === -1) {
+        navigator.serviceWorker.register('./sw.js').catch(function() {});
+      }
     }
 
     // Pass connectivity state to Flutter

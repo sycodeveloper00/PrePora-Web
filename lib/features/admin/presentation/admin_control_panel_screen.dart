@@ -444,12 +444,13 @@ class _AdminControlPanelScreenState extends State<AdminControlPanelScreen> {
   }
 
   String _formatTrialEndDate(DateTime dt) {
+    final local = dt.toLocal();
     final months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    final month = months[dt.month - 1];
-    final day = dt.day;
-    final year = dt.year;
-    final hour = dt.hour;
-    final minute = dt.minute.toString().padLeft(2, '0');
+    final month = months[local.month - 1];
+    final day = local.day;
+    final year = local.year;
+    final hour = local.hour;
+    final minute = local.minute.toString().padLeft(2, '0');
     final period = hour >= 12 ? 'PM' : 'AM';
     final hour12 = hour == 0 ? 12 : (hour > 12 ? hour - 12 : hour);
     return '$day $month $year, $hour12:$minute $period';

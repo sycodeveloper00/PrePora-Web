@@ -90,7 +90,7 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
       final folders = results[3] as List<Map<String, dynamic>>?;
       final trialActive = (userData?['freeTrialActive'] == true) || (userData?['free_trial_active'] == true);
       final endsAt = userData?['freeTrialEndsAt'] ?? userData?['free_trial_ends_at'];
-      final trialEnd = endsAt is String ? DateTime.tryParse(endsAt) : null;
+      final trialEnd = endsAt is String ? DateTime.tryParse(endsAt)?.toLocal() : null;
       final isTrialActive = trialActive && (trialEnd?.isAfter(DateTime.now()) ?? false);
       if (mounted) {
         setState(() {

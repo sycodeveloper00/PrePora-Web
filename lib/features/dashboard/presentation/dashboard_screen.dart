@@ -116,7 +116,7 @@ class _DashboardScreenState extends State<DashboardScreen>
     final verified = user?['verified'] as bool? ?? false;
     final trialActive = user?['freeTrialActive'] == true;
     final endsAt = user?['freeTrialEndsAt'];
-    final trialEnd = endsAt is String ? DateTime.tryParse(endsAt) : null;
+    final trialEnd = endsAt is String ? DateTime.tryParse(endsAt)?.toLocal() : null;
 
     if (!paidAccess && trialEnd != null && trialEnd.isBefore(DateTime.now())) {
       await FirebaseService.updateSetting('paidAccess', true);
@@ -194,7 +194,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       final verified = user['verified'] as bool? ?? false;
       final trialActive = user['freeTrialActive'] == true;
       final endsAt = user['freeTrialEndsAt'];
-      final trialEnd = endsAt is String ? DateTime.tryParse(endsAt) : null;
+      final trialEnd = endsAt is String ? DateTime.tryParse(endsAt)?.toLocal() : null;
       if (trialEnd != null && trialEnd.isBefore(DateTime.now())) {
         if (!_isPaidAccess) {
           await FirebaseService.updateSetting('paidAccess', true);
@@ -1501,7 +1501,7 @@ class _DashboardScreenState extends State<DashboardScreen>
       }
       final trialActive = user?['freeTrialActive'] == true;
       final endsAt = user?['freeTrialEndsAt'];
-      final trialEnd = endsAt is String ? DateTime.tryParse(endsAt) : null;
+      final trialEnd = endsAt is String ? DateTime.tryParse(endsAt)?.toLocal() : null;
       final inTrial = trialActive && (trialEnd?.isAfter(DateTime.now()) ?? false);
       if (inTrial) {
         _showFeedbackListDialog(context, uid);

@@ -960,6 +960,9 @@ class _LinkedWebSession {
   /// reacts to an Android-side disconnect even after the LinkWebScreen is
   /// disposed.
   StreamSubscription? _globalSessionSub;
+  Timer? _httpPollTimer;
+  String _sessionId = '';
+  bool _disposed = false;
   void Function()? _onDisconnected;
 
   void setSession({required String uid, required String name, required String email, required String role}) {
@@ -974,20 +977,53 @@ class _LinkedWebSession {
   /// listener stops.
   void startMonitoring(String sessionId, void Function() onDisconnected) {
     stopMonitoring();
+    _sessionId = sessionId;
     _onDisconnected = onDisconnected;
+    _disposed = false;
+    // Primary path: Supabase stream
     _globalSessionSub = FirebaseService.streamWebSessionDoc(sessionId).listen((sData) {
       // null = row deleted or query failed = Android disconnected this session
-      if (sData == null || sData['status'] == 'disconnected') {
-        stopMonitoring();
-        _onDisconnected?.call();
+      if (sData == null || (sData['status'] as String?) == 'disconnected') {
+        _fireDisconnect();
       }
     });
+    // Backup path: direct HTTP poll every 8s (survives stream failures)
+    _httpPollTimer?.cancel();
+    _httpPollTimer = Timer.periodic(const Duration(seconds: 8), (_) async {
+      if (_sessionId.isEmpty || _disposed) return;
+      try {
+        final res = await http.get(
+          Uri.parse('https://brqdxhqrsfxlvwgstuto.supabase.co/rest/v1/web_sessions?id=eq.$_sessionId&select=status'),
+          headers: {
+            'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJycWR4aHFyc2Z4bHZ3Z3N0dXRvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcxNTY4MzMsImV4cCI6MjAxMjczMjgzM30.qxGfLBm2gTxFHJk2mFPJGiBCxHX0Z0mN_fKzJR6bJuI',
+          },
+        ).timeout(const Duration(seconds: 5));
+        if (res.statusCode == 200) {
+          final rows = json.decode(res.body) as List<dynamic>;
+          if (rows.isEmpty || (rows.isNotEmpty && (rows[0]['status'] as String?) == 'disconnected')) {
+            _fireDisconnect();
+          }
+        }
+      } catch (_) {}
+    });
+  }
+
+  bool _fired = false;
+  void _fireDisconnect() {
+    if (_fired) return;
+    _fired = true;
+    stopMonitoring();
+    _onDisconnected?.call();
   }
 
   void stopMonitoring() {
     _globalSessionSub?.cancel();
     _globalSessionSub = null;
+    _httpPollTimer?.cancel();
+    _httpPollTimer = null;
     _onDisconnected = null;
+    _sessionId = '';
+    _fired = false;
   }
 
   void clear() {

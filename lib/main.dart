@@ -162,7 +162,7 @@ class _AppLifecycleState extends State<_AppLifecycle> with WidgetsBindingObserve
       if (user == null) return;
       final trialActive = user['freeTrialActive'] == true;
       final endsAt = user['freeTrialEndsAt'];
-      final trialEnd = endsAt is String ? DateTime.tryParse(endsAt) : null;
+      final trialEnd = endsAt is String ? DateTime.tryParse(endsAt)?.toLocal() : null;
       final trialExpired = trialActive && trialEnd != null && trialEnd.isBefore(DateTime.now());
       if (!trialExpired) return;
       final settings = await SupabaseReadService.getSettings('general');
