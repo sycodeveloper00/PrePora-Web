@@ -1006,9 +1006,13 @@ class SupabaseReadService {
   // ─── cloudinary accounts (mirrored into settings table) ──────────────────
 
   static Future<List<Map<String, dynamic>>?> getCloudinaryAccounts() async {
-    final rows = await _query('settings', 'id=eq.cloudinary_accounts&$_sel');
-    if (rows == null || rows.isEmpty) return null;
-    return rows.map(_flatten).toList();
+    final rows = await _query('settings', 'id=like.ca_%25&$_sel');
+    final legacy = await _query('settings', 'id=eq.cloudinary_accounts&$_sel');
+    final combined = <Map<String, dynamic>>[];
+    if (rows != null) combined.addAll(rows.map(_flatten));
+    if (legacy != null && legacy.isNotEmpty) combined.addAll(legacy.map(_flatten));
+    if (combined.isEmpty) return null;
+    return combined;
   }
 
   static Future<List<Map<String, dynamic>>?> getAssistantCloudinaryAccounts() async {
@@ -1030,9 +1034,13 @@ class SupabaseReadService {
   }
 
   static Future<List<Map<String, dynamic>>?> getClorabaseAccounts() async {
-    final rows = await _query('settings', 'id=eq.clorabase_accounts&$_sel');
-    if (rows == null || rows.isEmpty) return null;
-    return rows.map(_flatten).toList();
+    final rows = await _query('settings', 'id=like.cb_%25&$_sel');
+    final legacy = await _query('settings', 'id=eq.clorabase_accounts&$_sel');
+    final combined = <Map<String, dynamic>>[];
+    if (rows != null) combined.addAll(rows.map(_flatten));
+    if (legacy != null && legacy.isNotEmpty) combined.addAll(legacy.map(_flatten));
+    if (combined.isEmpty) return null;
+    return combined;
   }
 
   static Future<List<Map<String, dynamic>>?> getAssistantClorabaseAccounts() async {

@@ -663,6 +663,22 @@
     @keyframes orbit3{0%{transform:rotate(120deg)}100%{transform:rotate(480deg)}}
   </style>
 
+  <!-- Block Flutter's built-in SW (flutter_service_worker.js) — it causes infinite reload loops
+       because it skipWaiting() + navigates(clients) on activate. We use our own sw.js instead. -->
+  <script>
+    if ('serviceWorker' in navigator) {
+      var _origSWRegister = navigator.serviceWorker.register.bind(navigator.serviceWorker);
+      navigator.serviceWorker.register = function(urlOrScript, opts) {
+        var url = (typeof urlOrScript === 'string') ? urlOrScript : (urlOrScript && urlOrScript.url) || '';
+        if (url.indexOf('flutter_service_worker') !== -1) {
+          console.debug('[SW] Blocked Flutter built-in SW registration');
+          return Promise.resolve({ scope: '/' });
+        }
+        return _origSWRegister(urlOrScript, opts);
+      };
+    }
+  </script>
+
   <script src="flutter_bootstrap.js" async></script>
   <script>
     window.addEventListener('flutter-first-frame', function() {

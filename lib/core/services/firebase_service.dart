@@ -437,6 +437,7 @@ class FirebaseService {
       DateTime? latest;
       if (students != null && students.isNotEmpty) {
         for (final data in students) {
+          if (data['verified'] == true) continue;
           final endsAt = data['free_trial_ends_at'] ?? data['freeTrialEndsAt'];
           final d = endsAt is DateTime ? endsAt : (endsAt is String ? DateTime.tryParse(endsAt) : null);
           final local = d?.toLocal();
@@ -706,9 +707,17 @@ class FirebaseService {
   static Future<String> addCloudinaryAccount(String cloudName, String uploadPreset, {bool isActive = true, int storageLimitMB = 25600}) async {
     final docId = 'ca_${DateTime.now().millisecondsSinceEpoch}';
     if (isActive) {
-      await _mirrorWrite('settings', 'cloudinary_accounts', {'isActive': false});
+      final existing = await getCloudinaryAccounts();
+      if (existing != null) {
+        for (final acc in existing) {
+          final aid = acc['id'] as String? ?? '';
+          if (aid.isNotEmpty && acc['isActive'] == true) {
+            await _mirrorWrite('settings', aid, {'isActive': false});
+          }
+        }
+      }
     }
-    await _mirrorWrite('settings', 'cloudinary_accounts', {
+    await _mirrorWrite('settings', docId, {
       'cloudName': cloudName.trim(),
       'uploadPreset': uploadPreset.trim(),
       'isActive': isActive,
@@ -721,20 +730,31 @@ class FirebaseService {
   }
 
   static Future<void> updateCloudinaryAccount(String id, {String? cloudName, String? uploadPreset, bool? isActive, int? storageLimitMB, int? currentUsageMB, bool? autoSwitchEnabled}) async {
-    Map<String, dynamic> existing = {};
-    try { existing = (await SupabaseReadService.getCloudinaryAccounts())?.firstOrNull ?? {}; } catch (_) {}
-    final data = <String, dynamic>{...existing};
+    if (id.isEmpty) return;
+    if (isActive == true) {
+      final existing = await getCloudinaryAccounts();
+      if (existing != null) {
+        for (final acc in existing) {
+          final aid = acc['id'] as String? ?? '';
+          if (aid.isNotEmpty && aid != id && acc['isActive'] == true) {
+            await _mirrorWrite('settings', aid, {'isActive': false});
+          }
+        }
+      }
+    }
+    final data = <String, dynamic>{};
     if (cloudName != null) data['cloudName'] = cloudName.trim();
     if (uploadPreset != null) data['uploadPreset'] = uploadPreset.trim();
     if (isActive != null) data['isActive'] = isActive;
     if (storageLimitMB != null) data['storageLimitMB'] = storageLimitMB;
     if (currentUsageMB != null) data['currentUsageMB'] = currentUsageMB;
     if (autoSwitchEnabled != null) data['autoSwitchEnabled'] = autoSwitchEnabled;
-    await _mirrorWrite('settings', 'cloudinary_accounts', data);
+    await _mirrorWrite('settings', id, data);
   }
 
   static Future<void> deleteCloudinaryAccount(String id) async {
-    await _mirrorWrite('settings', 'cloudinary_accounts', {}, delete: true);
+    if (id.isEmpty) return;
+    await _mirrorWrite('settings', id, {}, delete: true);
   }
 
   static Future<String> uploadToCloudinary(Uint8List bytes, String filename) async {
@@ -831,9 +851,17 @@ class FirebaseService {
   static Future<String> addClorabaseAccount(String githubUsername, String githubToken, String projectName, {String? repoName, bool isActive = true, int storageLimitMB = 1024}) async {
     final docId = 'cb_${DateTime.now().millisecondsSinceEpoch}';
     if (isActive) {
-      await _mirrorWrite('settings', 'clorabase_accounts', {'isActive': false});
+      final existing = await getClorabaseAccounts();
+      if (existing != null) {
+        for (final acc in existing) {
+          final aid = acc['id'] as String? ?? '';
+          if (aid.isNotEmpty && acc['isActive'] == true) {
+            await _mirrorWrite('settings', aid, {'isActive': false});
+          }
+        }
+      }
     }
-    await _mirrorWrite('settings', 'clorabase_accounts', {
+    await _mirrorWrite('settings', docId, {
       'githubUsername': githubUsername.trim(),
       'githubToken': githubToken.trim(),
       'projectName': projectName.trim(),
@@ -848,9 +876,19 @@ class FirebaseService {
   }
 
   static Future<void> updateClorabaseAccount(String id, {String? githubUsername, String? githubToken, String? projectName, String? repoName, bool? isActive, int? storageLimitMB, int? currentUsageMB, bool? autoSwitchEnabled}) async {
-    Map<String, dynamic> existing = {};
-    try { existing = (await SupabaseReadService.getClorabaseAccounts())?.firstOrNull ?? {}; } catch (_) {}
-    final data = <String, dynamic>{...existing};
+    if (id.isEmpty) return;
+    if (isActive == true) {
+      final existing = await getClorabaseAccounts();
+      if (existing != null) {
+        for (final acc in existing) {
+          final aid = acc['id'] as String? ?? '';
+          if (aid.isNotEmpty && aid != id && acc['isActive'] == true) {
+            await _mirrorWrite('settings', aid, {'isActive': false});
+          }
+        }
+      }
+    }
+    final data = <String, dynamic>{};
     if (githubUsername != null) data['githubUsername'] = githubUsername.trim();
     if (githubToken != null) data['githubToken'] = githubToken.trim();
     if (projectName != null) data['projectName'] = projectName.trim();
@@ -859,11 +897,12 @@ class FirebaseService {
     if (storageLimitMB != null) data['storageLimitMB'] = storageLimitMB;
     if (currentUsageMB != null) data['currentUsageMB'] = currentUsageMB;
     if (autoSwitchEnabled != null) data['autoSwitchEnabled'] = autoSwitchEnabled;
-    await _mirrorWrite('settings', 'clorabase_accounts', data);
+    await _mirrorWrite('settings', id, data);
   }
 
   static Future<void> deleteClorabaseAccount(String id) async {
-    await _mirrorWrite('settings', 'clorabase_accounts', {}, delete: true);
+    if (id.isEmpty) return;
+    await _mirrorWrite('settings', id, {}, delete: true);
   }
 
   static Future<String> uploadToClorabase(Uint8List bytes, String filename) async {

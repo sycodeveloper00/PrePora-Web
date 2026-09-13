@@ -88,13 +88,14 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
       final feedbacks = results[1] as List<Map<String, dynamic>>;
       final streak = results[2] as Map<String, dynamic>;
       final folders = results[3] as List<Map<String, dynamic>>?;
+      final isVerified = userData?['verified'] == true;
       final trialActive = (userData?['freeTrialActive'] == true) || (userData?['free_trial_active'] == true);
       final endsAt = userData?['freeTrialEndsAt'] ?? userData?['free_trial_ends_at'];
       final trialEnd = endsAt is String ? DateTime.tryParse(endsAt)?.toLocal() : null;
       final isTrialActive = trialActive && (trialEnd?.isAfter(DateTime.now()) ?? false);
       if (mounted) {
         setState(() {
-          _isVerified = userData?['verified'] == true;
+          _isVerified = isVerified;
           _isBlocked = userData?['blocked'] == true;
           _email = (userData?['email'] as String?) ?? '';
           _studentName = (userData?['name'] as String?) ?? '';
@@ -104,8 +105,8 @@ class _StudentProgressScreenState extends State<StudentProgressScreen> with Sing
           _totalActiveDays = streak['totalActiveDays'] as int? ?? 0;
           _lastActiveDate = streak['lastActiveDate'] as String? ?? '';
           _streakBest = (userData?['streakBest'] as int?) ?? (userData?['streak_best'] as int?) ?? _streakCount;
-          _freeTrialActive = isTrialActive;
-          _freeTrialEndsAt = trialEnd;
+          _freeTrialActive = !isVerified && isTrialActive;
+          _freeTrialEndsAt = isVerified ? null : trialEnd;
           _mainFolders = (folders ?? []).where((f) => f['parentFolderId'] == null && f['invisible'] != true && f['enabled'] != false).toList();
           _loadingUser = false;
         });

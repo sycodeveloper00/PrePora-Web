@@ -964,6 +964,7 @@ class _LinkedWebSession {
   String _sessionId = '';
   bool _disposed = false;
   void Function()? _onDisconnected;
+  html.EventListener? _beforeUnloadHandler;
 
   void setSession({required String uid, required String name, required String email, required String role}) {
     this.uid = uid;
@@ -980,6 +981,12 @@ class _LinkedWebSession {
     _sessionId = sessionId;
     _onDisconnected = onDisconnected;
     _disposed = false;
+    // Register beforeunload in the singleton so it fires even after
+    // the user navigates away from LinkWebScreen to dashboard.
+    _beforeUnloadHandler = (_) {
+      _cleanupSessionForTabClose();
+    };
+    html.window.addEventListener('beforeunload', _beforeUnloadHandler!);
     // Primary path: Supabase stream
     _globalSessionSub = FirebaseService.streamWebSessionDoc(sessionId).listen((sData) {
       // null = row deleted or query failed = Android disconnected this session
@@ -1024,10 +1031,29 @@ class _LinkedWebSession {
     _onDisconnected = null;
     _sessionId = '';
     _fired = false;
+    _removeBeforeUnloadListener();
+  }
+
+  void _removeBeforeUnloadListener() {
+    if (_beforeUnloadHandler != null) {
+      html.window.removeEventListener('beforeunload', _beforeUnloadHandler!);
+      _beforeUnloadHandler = null;
+    }
+  }
+
+  Future<void> _cleanupSessionForTabClose() async {
+    if (_sessionId.isEmpty) return;
+    try {
+      await FirebaseService.mirrorWebSession(_sessionId, {
+        'status': 'disconnected',
+        'disconnectedAt': DateTime.now().toIso8601String(),
+      });
+    } catch (_) {}
   }
 
   void clear() {
     stopMonitoring();
+    _removeBeforeUnloadListener();
     uid = '';
     name = '';
     email = '';

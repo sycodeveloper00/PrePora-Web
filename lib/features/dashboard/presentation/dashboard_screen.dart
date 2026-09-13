@@ -132,8 +132,8 @@ class _DashboardScreenState extends State<DashboardScreen>
       _isBlocked = blocked;
       _isVerified = verified;
       _isPaidAccess = paidAccess;
-      _isFreeTrialActive = trialActive && (trialEnd?.isAfter(DateTime.now()) ?? false);
-      _freeTrialEndsAt = trialEnd;
+      _isFreeTrialActive = !verified && (trialActive && (trialEnd?.isAfter(DateTime.now()) ?? false));
+      _freeTrialEndsAt = verified ? null : trialEnd;
       _price = (settings?['price'] as num?)?.toDouble() ?? 0;
       _accountTitle = settings?['accountTitle'] as String? ?? '';
       _accountNo = settings?['accountNo'] as String? ?? '';
@@ -205,8 +205,8 @@ class _DashboardScreenState extends State<DashboardScreen>
       if (mounted) setState(() {
         _isBlocked = blocked;
         _isVerified = verified;
-        _isFreeTrialActive = isTrialNow;
-        _freeTrialEndsAt = trialEnd;
+        _isFreeTrialActive = !verified && isTrialNow;
+        _freeTrialEndsAt = verified ? null : trialEnd;
       });
       if (isTrialNow && trialEnd != null && !_isVerified) {
         _sendTrialExpiryWarning(uid, trialEnd);

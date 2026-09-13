@@ -216,7 +216,7 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
         _isBlocked = blocked;
         _isVerified = verified;
         _isPaidAccess = paidAccess;
-        _isFreeTrialActive = trialActive && (trialEnd?.isAfter(DateTime.now()) ?? false);
+        _isFreeTrialActive = !verified && trialActive && (trialEnd?.isAfter(DateTime.now()) ?? false);
       });
     }
   }
@@ -1848,6 +1848,11 @@ class _FolderDetailsScreenState extends State<FolderDetailsScreen> {
                       });
                       for (int i = 0; i < visibleDocs.length; i++) {
                         _localOrderMap[visibleDocs[i].id] = i;
+                        final existing = visibleDocs[i].data() as Map<String, dynamic>;
+                        if (existing['order'] == null) {
+                          final merged = Map<String, dynamic>.from(existing)..['order'] = i;
+                          SupabaseReadService.writeToAll('contents', visibleDocs[i].id, merged);
+                        }
                       }
                       if (_sortMode != 'az' && _sortMode != 'za') {
                         _hasLocalOrder = true;
