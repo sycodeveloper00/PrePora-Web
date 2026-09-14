@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../../core/services/firebase_service.dart';
-import '../../../core/services/supabase_read_service.dart';
+import '../../../core/services/master_supabase_service.dart';
 
 class TermsAcceptScreen extends StatefulWidget {
   const TermsAcceptScreen({super.key});
@@ -11,6 +12,7 @@ class TermsAcceptScreen extends StatefulWidget {
 
 class _TermsAcceptScreenState extends State<TermsAcceptScreen> {
   bool _agreed = false;
+  bool _saving = false;
 
   final _terms = [
     ('Acceptance', 'By creating an account, you agree to these Terms & Conditions. If you do not agree, do not use the app.'),
@@ -121,14 +123,25 @@ class _TermsAcceptScreenState extends State<TermsAcceptScreen> {
                     SizedBox(
                       width: double.infinity,
                       child: ElevatedButton(
-                    onPressed: _agreed ? () async {
-                           final uid = FirebaseService.currentUser?.uid ?? '';
-                           final existing = await SupabaseReadService.getUser(uid);
-                           final merged = Map<String, dynamic>.from(existing ?? {})
-                             ..['termsAccepted'] = true
-                             ..['termsAcceptedAt'] = DateTime.now().toIso8601String();
-                           await SupabaseReadService.writeToAll('users', uid, merged);
-                           if (context.mounted) context.go('/dashboard');
+                        onPressed: _agreed && !_saving ? () async {
+                          setState(() => _saving = true);
+                          try {
+                            await MasterSupabaseService.update('users', FirebaseService.currentUser!.uid, {
+                              'terms_accepted': true,
+                              'terms_accepted_at': DateTime.now().toIso8601String(),
+                            });
+                            await FirebaseService.firestore.collection('users').doc(FirebaseService.currentUser?.uid)
+                                .set({'termsAccepted': true, 'termsAcceptedAt': FieldValue.serverTimestamp()}, SetOptions(merge: true))
+                                .timeout(const Duration(seconds: 10), onTimeout: () {
+                              // If Firestore write times out, still navigate — data will sync later
+                            });
+                            if (context.mounted) context.go('/dashboard');
+                          } catch (_) {
+                            // Even on error, navigate to dashboard (user can retry sync later)
+                            if (context.mounted) context.go('/dashboard');
+                          } finally {
+                            if (mounted) setState(() => _saving = false);
+                          }
                         } : null,
                         style: ElevatedButton.styleFrom(
                           backgroundColor: isDark ? const Color(0xFF4A148C) : const Color(0xFF4A148C),
@@ -136,7 +149,9 @@ class _TermsAcceptScreenState extends State<TermsAcceptScreen> {
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                           disabledBackgroundColor: isDark ? Colors.white12 : Colors.black12,
                         ),
-                        child: const Text('Continue', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
+                        child: _saving
+                            ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                            : const Text('Continue', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: Colors.white)),
                       ),
                     ),
                   ],

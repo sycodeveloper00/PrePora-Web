@@ -482,8 +482,6 @@ class SupabaseReadService {
               'Authorization': 'Bearer ${p['service']!}',
               'Prefer': 'return=minimal',
             }).timeout(const Duration(seconds: 10));
-            // ignore: avoid_print
-            print('[WRITE_ALL] DELETE ${p['name']} $table/$id status=${res.statusCode}');
             if (res.statusCode < 300 && !returned) {
               returned = true;
               if (!completer.isCompleted) completer.complete(true);
@@ -502,30 +500,19 @@ class SupabaseReadService {
               headers: headers,
               body: json.encode(sanitized),
             ).timeout(const Duration(seconds: 10));
-            // ignore: avoid_print
-            print('[WRITE_ALL] UPSERT ${p['name']} $table/$id status=${res.statusCode} body=${json.encode(sanitized).length}chars${res.statusCode >= 400 ? " err=${res.body.substring(0, res.body.length.clamp(0, 200))}" : ""}');
             if (res.statusCode < 300 && !returned) {
               returned = true;
               if (!completer.isCompleted) completer.complete(true);
             }
           }
-        } catch (e) {
-          // ignore: avoid_print
-          print('[WRITE_ALL] CATCH ${p['name']} $table/$id error=$e');
-        }
+        } catch (_) {}
         completedCount++;
-        // If all projects finished and none succeeded, complete with false
         if (completedCount >= _projects.length && !completer.isCompleted) {
           completer.complete(false);
         }
       }));
     }
-    // ignore: avoid_print
-    print('[WRITE_ALL] DISPATCHED $table/$id — waiting for first success (10s timeout per project)');
-    // Wait for first success OR all failures (whichever comes first)
     final result = await completer.future;
-    // ignore: avoid_print
-    print('[WRITE_ALL] DONE $table/$id anySuccess=$result');
     return result;
   }
 
@@ -1394,13 +1381,13 @@ class SupabaseReadService {
   // ─── share links ──────────────────────────────────────────────────────────
 
   static String _generateShortId() {
-    const chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
-    final rng = DateTime.now().millisecondsSinceEpoch;
+    const chars = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    final rng = DateTime.now().microsecondsSinceEpoch;
     var id = '';
-    var n = rng;
-    for (int i = 0; i < 8; i++) {
-      id += chars[n % chars.length];
-      n = (n ~/ 37) + i;
+    var val = rng;
+    for (var i = 0; i < 8; i++) {
+      id += chars[val % chars.length];
+      val = (val ~/ chars.length) ^ (i * 31);
     }
     return id;
   }
@@ -1412,6 +1399,7 @@ class SupabaseReadService {
     String slug = '',
   }) async {
     final shortId = _generateShortId();
+    final uuid = const Uuid().v4();
     final data = {
       'short_id': shortId,
       'content_id': contentId,
@@ -1420,6 +1408,12 @@ class SupabaseReadService {
       'slug': slug,
     };
     try {
+      final rows = await _query('share_links', "short_id=eq.$shortId&limit=1");
+      if (rows != null && rows.isNotEmpty) return await createShareLink(
+        contentId: contentId, contentType: contentType, folderId: folderId, slug: slug,
+      );
+    } catch (_) {}
+    try {
       final primary = _projects.first;
       final headers = {
         'apikey': primary['service']!,
@@ -1427,13 +1421,20 @@ class SupabaseReadService {
         'Content-Type': 'application/json',
         'Prefer': 'return=minimal',
       };
+      final body = {'id': uuid, ...data};
       final res = await http.post(
         Uri.parse('${primary['url']!}/rest/v1/share_links'),
         headers: headers,
-        body: json.encode(data),
+        body: json.encode(body),
       ).timeout(const Duration(seconds: 10));
       if (res.statusCode >= 200 && res.statusCode < 300) return shortId;
     } catch (_) {}
     return null;
+  }
+
+  static Future<Map<String, dynamic>?> getShareLinkByShortId(String shortId) async {
+    final rows = await _query('share_links', 'short_id=eq.$shortId&limit=1&select=*');
+    if (rows == null || rows.isEmpty) return null;
+    return rows.first;
   }
 }

@@ -1,9 +1,8 @@
 import 'dart:convert';
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:http/http.dart' as http;
-import '../../../core/services/supabase_read_service.dart';
+import '../../../core/services/master_supabase_service.dart';
 import '../../../core/widgets/professional_loader.dart';
 
 class ForgotPasswordScreen extends StatefulWidget {
@@ -23,8 +22,6 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     _emailCtrl.dispose();
     super.dispose();
   }
-
-  String get _apiBase => kIsWeb ? '' : 'https://prepora-web.vercel.app';
 
   void _showAssistantDialog() {
     showDialog(
@@ -70,7 +67,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                 border: Border.all(color: const Color(0xFF7B2FF7).withValues(alpha: 0.3)),
               ),
               child: Row(mainAxisSize: MainAxisSize.min, children: [
-                Icon(Icons.info_outline_rounded, color: const Color(0xFFC084FC), size: 16),
+                const Icon(Icons.info_outline_rounded, color: Color(0xFFC084FC), size: 16),
                 const SizedBox(width: 8),
                 Text('Admin can change your password from\nthe Control Panel.',
                     style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 12)),
@@ -103,10 +100,9 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     }
     setState(() { _isLoading = true; _error = null; });
     try {
-      List<Map<String, dynamic>>? users;
-      try { users = await SupabaseReadService.getUsersWhere('email=eq.$email'); } catch (_) {}
-      if (users != null && users.isNotEmpty) {
-        final role = users.first['role'] as String?;
+      final user = await MasterSupabaseService.readSingle('users', field: 'email', value: email);
+      if (user != null) {
+        final role = user['role'] as String?;
         if (role == 'Assistant') {
           if (mounted) setState(() { _isLoading = false; });
           _showAssistantDialog();
@@ -114,7 +110,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
         }
       }
       final res = await http.post(
-        Uri.parse('$_apiBase/api/send-reset-email'),
+        Uri.parse('https://prepora-web.vercel.app/api/send-reset-email'),
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({'email': email}),
       );
@@ -132,9 +128,6 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
   @override
   Widget build(BuildContext context) {
     final isDark = Theme.of(context).brightness == Brightness.dark;
-    final screenWidth = MediaQuery.of(context).size.width;
-    final isPC = screenWidth > 900;
-    final cardWidth = isPC ? 480.0 : (screenWidth > 600 ? 420.0 : double.infinity);
     return Scaffold(
       body: Container(
         width: double.infinity, height: double.infinity,
@@ -143,10 +136,9 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
         ),
         child: Center(
           child: SingleChildScrollView(
-            padding: EdgeInsets.symmetric(horizontal: isPC ? 0 : 24, vertical: 24),
+            padding: const EdgeInsets.all(24),
             child: Container(
-              width: cardWidth,
-              padding: EdgeInsets.all(isPC ? 40 : 32),
+              padding: const EdgeInsets.all(32),
               decoration: BoxDecoration(
                 color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.white.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(24),
@@ -154,10 +146,10 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
               ),
               child: Column(mainAxisSize: MainAxisSize.min, children: [
                 Icon(_sent ? Icons.mark_email_read_rounded : Icons.lock_reset_rounded,
-                    size: isPC ? 72 : 64, color: isDark ? Colors.white70 : Colors.white),
+                    size: 64, color: isDark ? Colors.white70 : Colors.white),
                 const SizedBox(height: 16),
                 Text(_sent ? 'Email Sent' : 'Forgot Password',
-                    style: TextStyle(color: Colors.white, fontSize: isPC ? 30 : 26, fontWeight: FontWeight.w900)),
+                    style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w900)),
                 const SizedBox(height: 8),
                 Text(_sent
                     ? 'A password reset link has been sent to\n${_emailCtrl.text.trim()}\n\nCheck your email and follow the link to reset your password.'

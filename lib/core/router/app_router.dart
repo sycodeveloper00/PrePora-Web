@@ -37,6 +37,7 @@ import '../../features/settings/presentation/ai_api_keys_screen.dart' deferred a
 import '../../features/webview/presentation/webview_screen.dart' deferred as webview_deferred;
 import '../../features/student/presentation/student_progress_screen.dart' deferred as student_progress_deferred;
 import '../../features/admin/presentation/admin_fop_emails_screen.dart' deferred as admin_fop_deferred;
+import '../../features/deep_link/presentation/short_link_resolver.dart' deferred as shortlink_deferred;
 
 enum WebDomain { preporaWeb, adminPrepora, assistantPrepora, preporaWebFop, unknown }
 
@@ -100,6 +101,7 @@ WebDomain _detectDomain() {
     if (host.contains('admin-prepora')) return WebDomain.adminPrepora;
     if (host.contains('assistant-prepora')) return WebDomain.assistantPrepora;
     if (host.contains('prepora-web-fop')) return WebDomain.preporaWebFop;
+    if (host.contains('prepora-coral')) return WebDomain.preporaWeb;
     if (host.contains('prepora-web')) return WebDomain.preporaWeb;
   } catch (_) {}
   return WebDomain.unknown;
@@ -117,6 +119,7 @@ class AuthGuard {
 
     if (_currentDomain == WebDomain.preporaWeb) {
       if (path == '/link-web') return null;
+      if (path.startsWith('/s/')) return null;
       if (path == '/auth/login' || path == '/auth/signup' || path == '/auth/forgot-password') return '/link-web';
 
       try {
@@ -194,7 +197,7 @@ class AuthGuard {
       return null;
     }
 
-    if (path == '/link-web' || path == '/splash' || path == '/auth/login' || path == '/auth/signup' || path == '/auth/forgot-password' || path == '/auth/reset-password' || path == '/terms') return null;
+    if (path == '/link-web' || path == '/splash' || path == '/auth/login' || path == '/auth/signup' || path == '/auth/forgot-password' || path == '/auth/reset-password' || path == '/terms' || path.startsWith('/s/')) return null;
 
     try {
       final user = FirebaseService.currentUser;
@@ -454,6 +457,24 @@ class AppRouter {
               isMockTest: extra?['isMockTest'] as bool? ?? false,
             );
           },
+        ),
+      ),
+      GoRoute(
+        path: '/s/:shortId/:slug',
+        builder: (c, s) => _DeferredRoute(
+          loadLibrary: shortlink_deferred.loadLibrary,
+          builder: () => shortlink_deferred.ShortLinkResolver(
+            shortId: s.pathParameters['shortId'] ?? '',
+          ),
+        ),
+      ),
+      GoRoute(
+        path: '/s/:shortId',
+        builder: (c, s) => _DeferredRoute(
+          loadLibrary: shortlink_deferred.loadLibrary,
+          builder: () => shortlink_deferred.ShortLinkResolver(
+            shortId: s.pathParameters['shortId'] ?? '',
+          ),
         ),
       ),
     ],

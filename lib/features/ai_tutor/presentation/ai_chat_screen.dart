@@ -8,14 +8,15 @@ import 'package:markdown/markdown.dart' as md;
 import 'package:connectivity_plus/connectivity_plus.dart';
 import '../../../core/services/ai_service.dart';
 import '../../../core/services/firebase_service.dart';
-import '../../../core/services/supabase_read_service.dart';
+import '../../../core/services/master_supabase_service.dart';
 import '../../../core/services/web_scraper_service.dart';
 import '../../../core/services/file_reader_service.dart';
 import '../../../core/widgets/professional_loader.dart';
 
 class AiChatScreen extends StatefulWidget {
   final String? folderContext;
-  const AiChatScreen({super.key, this.folderContext});
+  final String? folderId;
+  const AiChatScreen({super.key, this.folderContext, this.folderId});
   @override
   State<AiChatScreen> createState() => _AiChatScreenState();
 }
@@ -59,8 +60,11 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
     );
     _sessionId = DateTime.now().millisecondsSinceEpoch.toString();
     _aiService.setContext(widget.folderContext ?? 'New chat');
+    if (widget.folderId != null && widget.folderContext != null) {
+      _loadFolderContextInBackground(widget.folderId!);
+    }
     _messages.add(_Message(
-      text: "Welcome to PrePora AI! \u{1F44B}\n\nI am your AI-powered learning assistant. I can help you in your studies and with the preparation for your tests. Feel free to ask me anything!",
+      text: "Welcome to PrePora AI! \u{1F44B}\n\nI am your AI-powered learning assistant. I can help you understand concepts, solve problems, and prepare for exams. Feel free to ask me anything!",
       isUser: false,
     ));
     _scrollController.addListener(_onScroll);
@@ -69,6 +73,28 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
         _retryLastMessage();
       }
     });
+  }
+
+  Future<void> _loadFolderContextInBackground(String folderId) async {
+    try {
+      final folderDoc = await MasterSupabaseService.readById('folders', folderId);
+      final folderName = folderDoc != null ? (folderDoc['name'] as String? ?? 'Folder') : 'Folder';
+      final contents = await MasterSupabaseService.read('contents', query: 'folder_id=eq.$folderId');
+      if (contents.isEmpty) return;
+      contents.sort((a, b) => (a['created_at'] as String? ?? '').compareTo(b['created_at'] as String? ?? ''));
+      final buffer = StringBuffer('User is viewing folder "$folderName". Contents:\n');
+      for (final data in contents) {
+        final type = data['file_type'] as String? ?? 'text';
+        final name = FirebaseService.cleanTitle(data['title'] as String? ?? 'Unnamed');
+        buffer.write('- "$name" (type: $type)');
+        if (type == 'lecture') {
+          final url = data['youtube_url'] as String?;
+          if (url != null && url.isNotEmpty) buffer.write(' — YouTube: $url');
+        }
+        buffer.write('\n');
+      }
+      _aiService.setContext(buffer.toString());
+    } catch (_) {}
   }
 
   void _onScroll() {
@@ -82,7 +108,6 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
 
   @override
   void dispose() {
-    _typingTimer?.cancel();
     _pulseController.dispose();
     _controller.dispose();
     _scrollController.dispose();
@@ -90,10 +115,6 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
     _connectivitySubscription?.cancel();
     super.dispose();
   }
-
-  Timer? _typingTimer;
-  String _pendingTyping = '';
-  _Message? _typingMsg;
 
   /// Strips the hidden file-content context out of a retry message so the
   /// extracted text never appears in the visible chat bubble.
@@ -113,13 +134,13 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
 
     String fullMessage = text;
     String displayMessage = _cleanDisplayText(text);
-    String? aiAttachmentContext;
     _FilePickResult? attachedFile;
     if (_selectedFile != null) {
       attachedFile = _selectedFile;
-      displayMessage = '\u{1F4C4} File: ${attachedFile!.fileName}${text.isNotEmpty ? '\n$text' : ''}';
-      aiAttachmentContext = 'The user shared a file: "${attachedFile!.fileName}"\n\n'
-          'File contents:\n${attachedFile!.content}';
+      displayMessage =
+          '\u{1F4C4} File: ${attachedFile!.fileName}${text.isNotEmpty ? '\n$text' : ''}';
+      final aiAttachmentContext = 'The user shared a file: "${attachedFile.fileName}"\n\n'
+          'File contents:\n${attachedFile.content}';
       if (fullMessage.isNotEmpty) fullMessage += '\n\n';
       fullMessage = '$displayMessage\n\n$aiAttachmentContext';
     }
@@ -136,26 +157,50 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
     try {
       String messageToSend = fullMessage;
 
-      final webContext = await WebScraperService.processMessage(fullMessage);
+      // Add timeout for web context so it doesn't block AI response
+      String? webContext;
+      try {
+        webContext = await WebScraperService.processMessage(fullMessage)
+            .timeout(const Duration(seconds: 10), onTimeout: () => null);
+      } catch (_) {
+        webContext = null; // Fail silently, continue without web context
+      }
+      
       if (webContext != null) {
         messageToSend = '$fullMessage\n\n[WEB CONTEXT]\n$webContext';
       }
 
       final aiMsg = _Message(text: '', isUser: false);
-      _typingMsg = aiMsg;
       if (mounted) setState(() => _messages.add(aiMsg));
 
       bool hasContent = false;
+      String buffer = '';
+      const int batchInterval = 50; // ms between setState calls
+      DateTime lastUpdate = DateTime.now();
+
       await for (final chunk in _aiService.sendMessageStream(messageToSend)) {
         if (!mounted) break;
-        _pendingTyping += chunk;
+        buffer += chunk;
         hasContent = true;
+
+        // Batch setState calls - only update every 50ms or on last chunk
+        final now = DateTime.now();
+        if (now.difference(lastUpdate).inMilliseconds >= batchInterval) {
+          setState(() => aiMsg.text = buffer);
+          _scrollToBottom();
+          lastUpdate = now;
+        }
       }
 
-      if (hasContent && mounted) {
-        _startTypingAnimation(aiMsg);
-      } else if (mounted) {
+      // Final update with complete text
+      if (mounted && buffer != aiMsg.text) {
+        setState(() => aiMsg.text = buffer);
+      }
+
+      if (mounted) {
         setState(() => _isLoading = false);
+        if (hasContent) _saveMessageToHistory(aiMsg.text, 'ai');
+        _scrollToBottom();
       }
     } catch (e) {
       if (mounted) {
@@ -163,44 +208,10 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
         _messages.removeWhere((m) => m.text.isEmpty && !m.isUser);
         setState(() {
           _loadingError = '\u26A0\uFE0F Connection lost. Tap to retry.';
-          _isLoading = true;
+          _isLoading = false;
         });
       }
     }
-  }
-
-  void _startTypingAnimation(_Message aiMsg) {
-    _pendingTyping = aiMsg.text.isEmpty ? _pendingTyping : _pendingTyping;
-    final fullText = _pendingTyping;
-    _pendingTyping = '';
-    int charIndex = 0;
-    const charsPerTick = 3;
-    const tickDuration = Duration(milliseconds: 20);
-
-    _typingTimer?.cancel();
-    _typingTimer = Timer.periodic(tickDuration, (timer) {
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
-      charIndex += charsPerTick;
-      if (charIndex >= fullText.length) {
-        charIndex = fullText.length;
-        timer.cancel();
-        setState(() {
-          aiMsg.text = fullText;
-          _isLoading = false;
-          _typingMsg = null;
-        });
-        if (_failedText == null) _saveMessageToHistory(fullText, 'ai');
-        _scrollToBottom();
-      } else {
-        setState(() {
-          aiMsg.text = fullText.substring(0, charIndex);
-        });
-        _scrollToBottom();
-      }
-    });
   }
 
   Future<void> _pickAttachFile() async {
@@ -214,7 +225,6 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
 
   void _retryLastMessage() {
     if (_failedText != null && _loadingError != null) {
-      _messages.removeWhere((m) => m.isError);
       setState(() {
         _loadingError = null;
         _isLoading = false;
@@ -226,17 +236,15 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
   Future<void> _saveMessageToHistory(String text, String role) async {
     final uid = FirebaseService.currentUser?.uid;
     if (uid == null || _sessionId == null) return;
-    await SupabaseReadService.writeToAll('messages', '${_sessionId}_${DateTime.now().millisecondsSinceEpoch}', {
+    await MasterSupabaseService.insert('messages', {
+      'conversation_id': _sessionId,
       'uid': uid,
-      'convId': _sessionId,
       'role': role,
       'content': text,
-      'createdAt': DateTime.now().toIso8601String(),
+      'timestamp': DateTime.now().toIso8601String(),
     });
-    await SupabaseReadService.writeToAll('conversations', _sessionId!, {
-      'uid': uid,
-      'lastMessage': text.length > 60 ? '${text.substring(0, 60)}...' : text,
-      'updatedAt': DateTime.now().toIso8601String(),
+    await MasterSupabaseService.update('conversations', _sessionId!, {
+      'updated_at': DateTime.now().toIso8601String(),
     });
   }
 
@@ -267,21 +275,23 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
             child: Text('Chat History', style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 16, fontWeight: FontWeight.bold)),
           ),
           Expanded(
-            child: FutureBuilder<List<Map<String, dynamic>>>(
-              future: SupabaseReadService.getConversations(uid).then((v) => v ?? []),
+            child: StreamBuilder<List<Map<String, dynamic>>>(
+              stream: MasterSupabaseService.stream('conversations', filterField: 'uid', filterValue: uid),
               builder: (_, snap) {
                 if (!snap.hasData || snap.data!.isEmpty) {
                   return Center(child: Text('No history yet', style: TextStyle(color: isDark ? Colors.white38 : Colors.black45)));
                 }
+                final docs = List<Map<String, dynamic>>.from(snap.data!);
+                docs.sort((a, b) => (b['updated_at'] as String? ?? '').compareTo(a['updated_at'] as String? ?? ''));
                 return ListView.separated(
-                  itemCount: snap.data!.length,
+                  itemCount: docs.length,
                   separatorBuilder: (_, __) => Divider(color: isDark ? Colors.white12 : Colors.black12, height: 1),
                   itemBuilder: (_, i) {
-                    final data = snap.data![i];
-                    final sessionId = data['id'] as String? ?? '';
+                    final data = docs[i];
+                    final sessionId = data['id'] as String;
                     return ListTile(
                       leading: const Icon(Icons.chat_bubble_outline_rounded, color: Color(0xFF00B8D4)),
-                      title: Text(data['lastMessage'] ?? 'Chat', style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 13)),
+                      title: Text(data['last_message'] ?? 'Chat', style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 13)),
                       trailing: Row(mainAxisSize: MainAxisSize.min, children: [
                         IconButton(
                           icon: const Icon(Icons.open_in_new_rounded, color: Color(0xFF00B8D4), size: 18),
@@ -295,8 +305,7 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
                           icon: const Icon(Icons.delete_outline_rounded, color: Colors.redAccent, size: 18),
                           tooltip: 'Delete',
                           onPressed: () async {
-                            await SupabaseReadService.writeToAll('conversations', sessionId, {}, delete: true);
-                            await SupabaseReadService.writeToAll('messages', sessionId, {}, delete: true);
+                            await MasterSupabaseService.delete('conversations', sessionId);
                           },
                         ),
                       ]),
@@ -316,14 +325,18 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
   }
 
   Future<void> _loadSession(String sessionId) async {
+    _isPendingResume = false;
     final uid = FirebaseService.currentUser?.uid;
     if (uid == null) return;
-    List<Map<String, dynamic>>? rows;
-    try { rows = await SupabaseReadService.getMessages(sessionId); } catch (_) {}
-    final msgs = (rows ?? []).map((d) {
+    final messages = await MasterSupabaseService.read(
+      'messages',
+      query: 'conversation_id=eq.$sessionId&uid=eq.$uid',
+    );
+    messages.sort((a, b) => (a['timestamp'] as String? ?? '').compareTo(b['timestamp'] as String? ?? ''));
+    final msgs = messages.map((data) {
       return _Message(
-        text: d['content'] as String? ?? '',
-        isUser: d['role'] == 'user',
+        text: data['content'] as String? ?? '',
+        isUser: data['role'] == 'user',
       );
     }).toList();
     if (mounted) {
@@ -453,7 +466,7 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
             ),
           if (_selectedFile != null)
             Padding(
-              padding: EdgeInsets.only(bottom: 4),
+              padding: const EdgeInsets.only(bottom: 4),
               child: GestureDetector(
                 onTap: () => setState(() => _selectedFile = null),
                 child: Container(
@@ -467,7 +480,7 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.description_rounded, size: 18, color: const Color(0xFF00B8D4)),
+                      const Icon(Icons.description_rounded, size: 18, color: Color(0xFF00B8D4)),
                       const SizedBox(width: 8),
                       Flexible(
                         child: Text(
@@ -495,8 +508,8 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
                 boxShadow: [
                   BoxShadow(
                     color: (isDark ? Colors.black : Colors.grey).withValues(alpha: 0.08),
-                    blurRadius: 8,
-                    offset: const Offset(0, -2),
+                    blurRadius: 12,
+                    offset: const Offset(0, 4),
                   ),
                 ],
               ),
@@ -507,30 +520,21 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
                   children: [
                     const SizedBox(width: 4),
                     Expanded(
-                      child: Focus(
-                        onKey: (node, event) {
-                          if (event.logicalKey == LogicalKeyboardKey.enter && !event.isShiftPressed) {
-                            _sendMessage();
-                            return KeyEventResult.handled;
-                          }
-                          return KeyEventResult.ignored;
-                        },
-                        child: TextField(
-                          controller: _controller,
-                          focusNode: _focusNode,
-                          style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 14, fontFamilyFallback: const ['Noto Nastaliq Urdu']),
-                          maxLines: 6,
-                          minLines: 1,
-                          scrollPhysics: const BouncingScrollPhysics(),
-                          keyboardType: TextInputType.multiline,
-                          textInputAction: TextInputAction.newline,
-                          decoration: InputDecoration(
-                            hintText: 'Ask anything...',
-                            hintStyle: TextStyle(color: isDark ? Colors.white38 : Colors.black45, fontFamilyFallback: const ['Noto Nastaliq Urdu']),
-                            filled: false,
-                            border: InputBorder.none,
-                            contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
-                          ),
+                      child: TextField(
+                        controller: _controller,
+                        focusNode: _focusNode,
+                        style: TextStyle(color: isDark ? Colors.white : Colors.black87, fontSize: 14, fontFamilyFallback: const ['Noto Nastaliq Urdu']),
+                        maxLines: 6,
+                        minLines: 1,
+                        scrollPhysics: const BouncingScrollPhysics(),
+                        keyboardType: TextInputType.multiline,
+                        textInputAction: TextInputAction.newline,
+                        decoration: InputDecoration(
+                          hintText: 'Ask anything...',
+                          hintStyle: TextStyle(color: isDark ? Colors.white38 : Colors.black45, fontFamilyFallback: const ['Noto Nastaliq Urdu']),
+                          filled: false,
+                          border: InputBorder.none,
+                          contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 12),
                         ),
                       ),
                     ),
@@ -597,12 +601,12 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
             child: Container(
               width: 40,
               height: 40,
-              decoration: BoxDecoration(
-                gradient: const LinearGradient(
+              decoration: const BoxDecoration(
+                gradient: LinearGradient(
                   colors: [Color(0xFF4A148C), Color(0xFF00B8D4)],
                 ),
                 shape: BoxShape.circle,
-                boxShadow: const [BoxShadow(color: Colors.black26, blurRadius: 8)],
+                boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 8)],
               ),
               child: const Icon(Icons.keyboard_arrow_down_rounded, color: Colors.white, size: 24),
             ),
@@ -644,39 +648,9 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
 
   Widget _buildMessage(_Message msg, bool isDark, {bool isStreaming = false}) {
     final isUser = msg.isUser;
-    final isError = msg.isError;
 
     Widget bubble;
-    if (isError) {
-      bubble = Align(
-        alignment: Alignment.centerLeft,
-        child: GestureDetector(
-          onTap: _failedText != null ? _retryLastMessage : null,
-          child: Container(
-            margin: const EdgeInsets.only(bottom: 12),
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-            decoration: BoxDecoration(
-              color: Colors.red.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(Icons.refresh_rounded, color: Colors.redAccent, size: 18),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Text(
-                    msg.text,
-                    style: const TextStyle(color: Colors.redAccent, fontSize: 13, height: 1.5),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      );
-    } else {
+    {
       final timeStr = '${msg.timestamp.hour.toString().padLeft(2, '0')}:${msg.timestamp.minute.toString().padLeft(2, '0')}';
       final maxBubbleWidth = MediaQuery.of(context).size.width - 32;
       bubble = Align(
@@ -706,11 +680,11 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
               if (isUser)
                 Text(
                   msg.text,
-                  style: TextStyle(
-                    color: msg.isError ? Colors.redAccent : Colors.white,
+                  style: const TextStyle(
+                    color: Colors.white,
                     fontSize: 14,
                     height: 1.5,
-                    fontFamilyFallback: const ['Noto Nastaliq Urdu'],
+                    fontFamilyFallback: ['Noto Nastaliq Urdu'],
                   ),
                 )
               else
@@ -745,7 +719,7 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
                         border: Border.all(color: isDark ? Colors.white12 : Colors.black12),
                       ),
                       blockquoteDecoration: BoxDecoration(
-                        border: Border(left: BorderSide(color: const Color(0xFFCE93D8), width: 3)),
+                        border: const Border(left: BorderSide(color: Color(0xFFCE93D8), width: 3)),
                         color: isDark ? Colors.white.withValues(alpha: 0.05) : Colors.grey.withValues(alpha: 0.1),
                       ),
                       listBullet: const TextStyle(color: Color(0xFFCE93D8), fontFamilyFallback: ['Noto Nastaliq Urdu']),
@@ -753,7 +727,7 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
                       tableHead: TextStyle(fontWeight: FontWeight.bold, color: isDark ? Colors.white : Colors.black87),
                       tableColumnWidth: const IntrinsicColumnWidth(),
                       tableScrollbarThumbVisibility: null,
-                      tablePadding: EdgeInsets.only(bottom: 6),
+                      tablePadding: const EdgeInsets.only(bottom: 6),
                       tableCellsPadding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                       strong: const TextStyle(fontWeight: FontWeight.bold),
                       em: const TextStyle(fontStyle: FontStyle.italic),
@@ -842,10 +816,7 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
         children: [
           Text('Thinking', style: TextStyle(color: Colors.grey.shade500, fontSize: 14)),
           const SizedBox(width: 8),
-          SizedBox(
-            width: 16, height: 16,
-            child: ProfessionalLoader(size: 16),
-          ),
+          const ProfessionalLoader(size: 16),
         ],
       ),
     );
@@ -863,7 +834,7 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
       ),
       child: Row(
         children: [
-          Icon(Icons.wifi_off_rounded, color: Colors.redAccent, size: 18),
+          const Icon(Icons.wifi_off_rounded, color: Colors.redAccent, size: 18),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -891,9 +862,8 @@ class _AiChatScreenState extends State<AiChatScreen> with SingleTickerProviderSt
 class _Message {
   String text;
   final bool isUser;
-  final bool isError;
   final DateTime timestamp;
-  _Message({required this.text, required this.isUser, this.isError = false, DateTime? timestamp})
+  _Message({required this.text, required this.isUser, DateTime? timestamp})
       : timestamp = timestamp ?? DateTime.now();
 }
 
@@ -1006,8 +976,9 @@ class ScrollableTableBuilder extends MarkdownElementBuilder {
         for (final cell in tr.children?.whereType<md.Element>().where((e) => e.tag == 'td' || e.tag == 'th') ?? <md.Element>[]) {
           final align = cell.attributes['align'];
           TextAlign textAlign = TextAlign.left;
-          if (align == 'center') textAlign = TextAlign.center;
-          else if (align == 'right') textAlign = TextAlign.right;
+          if (align == 'center') {
+            textAlign = TextAlign.center;
+          } else if (align == 'right') textAlign = TextAlign.right;
 
           cells.add(TableCell(
             child: Container(
@@ -1103,12 +1074,12 @@ class CodeBlockBuilder extends MarkdownElementBuilder {
               ),
               child: Row(
                 children: [
-                  Icon(Icons.code_rounded, size: 14, color: const Color(0xFF00B8D4)),
+                  const Icon(Icons.code_rounded, size: 14, color: Color(0xFF00B8D4)),
                   const SizedBox(width: 6),
                   Text(
                     lang,
-                    style: TextStyle(
-                      color: const Color(0xFF00B8D4),
+                    style: const TextStyle(
+                      color: Color(0xFF00B8D4),
                       fontSize: 12,
                       fontFamily: 'monospace',
                       fontWeight: FontWeight.w600,
@@ -1128,8 +1099,8 @@ class CodeBlockBuilder extends MarkdownElementBuilder {
             padding: const EdgeInsets.all(14),
             child: SelectableText(
               text,
-              style: TextStyle(
-                color: const Color(0xFF00E5FF),
+              style: const TextStyle(
+                color: Color(0xFF00E5FF),
                 fontFamily: 'monospace',
                 fontSize: 13,
                 height: 1.5,

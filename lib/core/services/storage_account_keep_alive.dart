@@ -1,12 +1,14 @@
 import 'dart:async';
-import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
+import 'dart:convert';
 import 'package:uuid/uuid.dart';
 import 'firebase_service.dart';
+import 'master_supabase_service.dart';
 import 'supabase_read_service.dart';
 
-/// Keep-alive service for user-added Supabase storage accounts (Admin + Assistant).
-/// Runs independently of SupabaseReadService, pings ALL accounts every 1h
+/// Keep-alive service for user-added Supabase storage accounts (Assistant).
+/// Runs independently of SupabaseReadService, pings ALL accounts every 24h
 /// regardless of isActive toggle state. Toggle only controls uploads.
 class StorageAccountKeepAliveService {
   StorageAccountKeepAliveService._();
@@ -14,7 +16,7 @@ class StorageAccountKeepAliveService {
   static Timer? _timer;
   static DateTime? _lastPingTime;
   static bool _lastPingSuccess = false;
-  static const Duration _pingInterval = Duration(hours: 1);
+  static const Duration _pingInterval = Duration(hours: 24);
   static const int _defaultStorageLimitMB = 1024;
 
   static DateTime? get lastPingTime => _lastPingTime;
@@ -33,32 +35,10 @@ class StorageAccountKeepAliveService {
     _timer = null;
   }
 
-  /// Pings all admin and assistant Supabase storage accounts.
+  /// Pings all assistant Supabase storage accounts.
   /// Continues pinging regardless of isActive toggle state.
   static Future<void> _pingAllStorageAccounts() async {
     bool anySuccess = false;
-
-    // Ping Admin Supabase Accounts
-    try {
-      final adminAccounts = await FirebaseService.getSupabaseAccounts();
-      for (final acc in adminAccounts) {
-        final result = await _pingStorageAccount(
-          projectUrl: acc['projectUrl'] as String? ?? '',
-          serviceKey: acc['serviceRoleKey'] as String? ?? '',
-          accountId: acc['id'] as String? ?? '',
-          projectType: 'admin_storage',
-          storageLimitMB: acc['storageLimitMB'] as int? ?? _defaultStorageLimitMB,
-        );
-        if (result.success) anySuccess = true;
-        
-        // Check storage limit and auto-switch if needed
-        if (result.success && acc['isActive'] == true) {
-          await _checkAndAutoSwitch(acc, result.currentUsageMB, 'admin');
-        }
-      }
-    } catch (e) {
-      print('[StorageKeepAlive] Error pinging admin accounts: $e');
-    }
 
     // Ping Assistant Supabase Accounts
     try {
@@ -72,14 +52,14 @@ class StorageAccountKeepAliveService {
           storageLimitMB: acc['storageLimitMB'] as int? ?? _defaultStorageLimitMB,
         );
         if (result.success) anySuccess = true;
-        
+
         // Check storage limit and auto-switch if needed
         if (result.success && acc['isActive'] == true) {
           await _checkAndAutoSwitch(acc, result.currentUsageMB, 'assistant');
         }
       }
     } catch (e) {
-      print('[StorageKeepAlive] Error pinging assistant accounts: $e');
+      debugPrint('[StorageKeepAlive] Error pinging assistant accounts: $e');
     }
 
     _lastPingTime = DateTime.now();
@@ -101,21 +81,20 @@ class StorageAccountKeepAliveService {
 
     try {
       // Verify project is reachable
-      final verifyUrl = '$projectUrl/rest/v1/settings?select=id&limit=1';
+      final verifyUrl = '$projectUrl/storage/v1/bucket';
       final verifyResp = await http.get(
         Uri.parse(verifyUrl),
         headers: {
-          'apikey': serviceKey,
           'Authorization': 'Bearer $serviceKey',
         },
       ).timeout(const Duration(seconds: 10));
 
       if (verifyResp.statusCode == 200) {
         success = true;
-        
+
         // Get storage usage
         currentUsageMB = await _getStorageUsageMB(projectUrl, serviceKey);
-        
+
         // Update currentUsageMB in Firestore
         await _updateAccountUsage(accountId, currentUsageMB, projectType);
       } else if (verifyResp.statusCode == 530) {
@@ -148,33 +127,48 @@ class StorageAccountKeepAliveService {
     );
   }
 
-  /// Gets storage usage in MB via the supabase-proxy endpoint.
+  /// Gets storage usage in MB by listing objects in buckets.
   static Future<int> _getStorageUsageMB(String projectUrl, String serviceKey) async {
     try {
-      final proxyUrl = _getProxyUrl();
-      final response = await http.post(
-        Uri.parse(proxyUrl),
-        headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({
-          'action': 'storage_usage',
-          'projectUrl': projectUrl,
-          'serviceKey': serviceKey,
-        }),
-      ).timeout(const Duration(seconds: 20));
+      int totalBytes = 0;
+      for (final bucket in ['folder_files', 'notices']) {
+        try {
+          final listUri = Uri.parse('$projectUrl/storage/v1/object/list/$bucket');
+          final listResp = await http.post(
+            listUri,
+            headers: {
+              'Authorization': 'Bearer $serviceKey',
+              'Content-Type': 'application/json',
+            },
+            body: jsonEncode({
+              'prefix': '',
+              'limit': 1000,
+              'offset': 0,
+              'sortBy': {'column': 'created_at', 'order': 'desc'}
+            }),
+          ).timeout(const Duration(seconds: 15));
 
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body) as Map<String, dynamic>;
-        final totalBytes = data['totalBytes'] as int? ?? 0;
-        return (totalBytes / (1024 * 1024)).round();
+          if (listResp.statusCode == 200) {
+            final items = jsonDecode(listResp.body) as List<dynamic>;
+            for (final item in items) {
+              totalBytes += item['metadata']?['size'] as int? ?? 0;
+            }
+          }
+        } catch (_) {}
       }
-    } catch (_) {}
-    return 0;
+      return (totalBytes / (1024 * 1024)).round();
+    } catch (_) {
+      return 0;
+    }
   }
 
   /// Updates the account's currentUsageMB in Firestore.
   static Future<void> _updateAccountUsage(String accountId, int usageMB, String projectType) async {
     try {
-      await FirebaseService.mirrorWrite('settings', accountId, {
+      await MasterSupabaseService.update('assistant_supabase', accountId, {
+        'current_usage_mb': usageMB,
+      });
+      await FirebaseService.firestore.collection('assistant_supabase').doc(accountId).update({
         'currentUsageMB': usageMB,
       });
     } catch (_) {}
@@ -182,39 +176,41 @@ class StorageAccountKeepAliveService {
 
   /// Checks if active account hit storage limit and auto-switches to next available.
   static Future<void> _checkAndAutoSwitch(Map<String, dynamic> activeAcc, int currentUsageMB, String type) async {
-    final storageLimitMB = activeAcc['storageLimitMB'] as int? ?? _defaultStorageLimitMB;
-    final autoSwitchEnabled = activeAcc['autoSwitchEnabled'] as bool? ?? true;
-    
+    // Support both snake_case (MasterSupabase) and camelCase (Firestore)
+    final storageLimitMB = (activeAcc['storage_limit_mb'] as int?) ?? (activeAcc['storageLimitMB'] as int?) ?? _defaultStorageLimitMB;
+    final autoSwitchEnabled = (activeAcc['auto_switch_enabled'] as bool?) ?? (activeAcc['autoSwitchEnabled'] as bool?) ?? true;
+
     if (!autoSwitchEnabled) return;
     if (currentUsageMB < storageLimitMB) return;
 
-    print('[StorageKeepAlive] $type account ${activeAcc['id']} hit limit ($currentUsageMB MB >= $storageLimitMB MB)');
+    debugPrint('[StorageKeepAlive] $type account ${activeAcc['id']} hit limit ($currentUsageMB MB >= $storageLimitMB MB)');
 
     // Deactivate current account
     try {
-      if (type == 'admin') {
-        await FirebaseService.updateSupabaseAccount(activeAcc['id'], isActive: false);
-      } else {
-        await FirebaseService.updateAssistantSupabaseAccount(activeAcc['id'], isActive: false);
-      }
+      await MasterSupabaseService.update('assistant_supabase', activeAcc['id'], {
+        'is_active': false,
+      });
+      await FirebaseService.firestore.collection('assistant_supabase').doc(activeAcc['id']).update({
+        'isActive': false,
+      });
     } catch (e) {
-      print('[StorageKeepAlive] Failed to deactivate account: $e');
+      debugPrint('[StorageKeepAlive] Failed to deactivate account: $e');
       return;
     }
 
     // Find next available account
-    final allAccounts = type == 'admin' 
-        ? await FirebaseService.getSupabaseAccounts()
-        : await FirebaseService.getAssistantSupabaseAccounts();
+    final allAccounts = await FirebaseService.getAssistantSupabaseAccounts();
 
     Map<String, dynamic>? nextAccount;
     for (final acc in allAccounts) {
       if (acc['id'] == activeAcc['id']) continue;
-      if (acc['isActive'] == true) continue;
-      if (acc['bucketStatus'] != 'ready') continue;
-      
-      final accLimit = acc['storageLimitMB'] as int? ?? _defaultStorageLimitMB;
-      final accUsage = acc['currentUsageMB'] as int? ?? 0;
+      final isActive = (acc['is_active'] as bool?) ?? (acc['isActive'] as bool?) ?? false;
+      if (!isActive) continue;
+      final bucketStatus = (acc['bucket_status'] as String?) ?? (acc['bucketStatus'] as String?) ?? '';
+      if (bucketStatus != 'ready') continue;
+
+      final accLimit = (acc['storage_limit_mb'] as int?) ?? (acc['storageLimitMB'] as int?) ?? _defaultStorageLimitMB;
+      final accUsage = (acc['current_usage_mb'] as num?)?.toInt() ?? (acc['currentUsageMB'] as num?)?.toInt() ?? 0;
       if (accUsage < accLimit) {
         nextAccount = acc;
         break;
@@ -223,51 +219,20 @@ class StorageAccountKeepAliveService {
 
     if (nextAccount != null) {
       try {
-        if (type == 'admin') {
-          await FirebaseService.updateSupabaseAccount(nextAccount!['id'], isActive: true);
-        } else {
-          await FirebaseService.updateAssistantSupabaseAccount(nextAccount!['id'], isActive: true);
-        }
+        await MasterSupabaseService.update('assistant_supabase', nextAccount!['id'], {
+          'is_active': true,
+        });
+        await FirebaseService.firestore.collection('assistant_supabase').doc(nextAccount!['id']).update({
+          'isActive': true,
+        });
         await FirebaseService.reinitializeSupabase();
-        
-        // Notify admin
-        await _notifyAutoSwitch(
-          fromUrl: activeAcc['projectUrl'] as String? ?? '',
-          toUrl: nextAccount!['projectUrl'] as String? ?? '',
-          type: type,
-        );
-        print('[StorageKeepAlive] Auto-switched from ${activeAcc['id']} to ${nextAccount['id']}');
+        debugPrint('[StorageKeepAlive] Auto-switched from ${activeAcc['id']} to ${nextAccount['id']}');
       } catch (e) {
-        print('[StorageKeepAlive] Failed to activate next account: $e');
+        debugPrint('[StorageKeepAlive] Failed to activate next account: $e');
       }
     } else {
-      // No available account - notify admin
-      await _notifyNoAvailableAccount(activeAcc['projectUrl'] as String? ?? '', type);
-      print('[StorageKeepAlive] No available account to switch to for $type');
+      debugPrint('[StorageKeepAlive] No available account to switch to for $type');
     }
-  }
-
-  /// Sends admin notification about auto-switch.
-  static Future<void> _notifyAutoSwitch({
-    required String fromUrl,
-    required String toUrl,
-    required String type,
-  }) async {
-    final fromDisplay = fromUrl.replaceFirst('https://', '');
-    final toDisplay = toUrl.replaceFirst('https://', '');
-    await FirebaseService.addAdminNotification(
-      'storage_auto_switch',
-      '$type storage auto-switched: $fromDisplay → $toDisplay (storage limit reached)',
-    );
-  }
-
-  /// Notifies admin when no account available to switch to.
-  static Future<void> _notifyNoAvailableAccount(String fromUrl, String type) async {
-    final fromDisplay = fromUrl.replaceFirst('https://', '');
-    await FirebaseService.addAdminNotification(
-      'storage_no_account',
-      '$type storage limit reached for $fromDisplay — no available account to switch to. Uploads will fail.',
-    );
   }
 
   /// Logs ping result to Supabase ping_log table.
@@ -293,8 +258,6 @@ class StorageAccountKeepAliveService {
       await SupabaseReadService.writePrimary('supabase_ping_log', const Uuid().v4(), data);
     } catch (_) {}
   }
-
-  static String _getProxyUrl() => 'https://prepora-web.vercel.app/api/supabase-proxy';
 }
 
 class _PingResult {

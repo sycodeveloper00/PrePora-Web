@@ -13,17 +13,18 @@ import 'core/services/supabase_read_service.dart';
 import 'core/services/storage_account_keep_alive.dart';
 import 'core/services/notification_service.dart';
 import 'core/services/offline_cache_service.dart';
+import 'core/services/master_supabase_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Init online checker for OfflineCacheService
   if (kIsWeb) {
     OfflineCacheService.initOnlineCheck(() => html.window.navigator.onLine ?? true);
   }
   if (!kIsWeb) {
     HomeWidget.registerBackgroundCallback(backgroundCallback);
   }
-  // Init SharedPreferences FIRST (needed by FirebaseService cache)
+  // Master Supabase MUST init FIRST
+  await MasterSupabaseService.init();
   await _initStorage();
   try {
     await FirebaseService.initialize().timeout(const Duration(seconds: 8));
@@ -42,7 +43,6 @@ void main() async {
       );
     } catch (_) {}
   };
-  // Pre-load FOP allowed emails for router guard (async → cached)
   if (kIsWeb) {
     FirebaseService.getFopAllowedEmails();
   }
@@ -86,9 +86,9 @@ class _AppLifecycleState extends State<_AppLifecycle> with WidgetsBindingObserve
         NotificationService.startListeningForNotifications(FirebaseService.currentUser!.uid);
         _autoExpireTrial();
       }
-    _startSessionIfAdminOrAssistant();
-    _startWebActivityListeners();
-    FirebaseService.startTokenWatchdog(onSessionExpired: () {
+      _startSessionIfAdminOrAssistant();
+      _startWebActivityListeners();
+      FirebaseService.startTokenWatchdog(onSessionExpired: () {
         SessionManager.stop();
         AppRouter.router.go('/auth/login');
       });

@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/services/firebase_service.dart';
+import '../../../core/services/master_supabase_service.dart';
 import '../../../core/services/supabase_read_service.dart';
 import '../../../core/utils.dart';
 import '../../../core/widgets/professional_loader.dart';
+import '../../../core/widgets/network_error_overlay.dart';
 
 class BrowseNode {
   final String id;
@@ -41,6 +43,7 @@ class FolderBrowserScreen extends StatefulWidget {
 
 class _FolderBrowserScreenState extends State<FolderBrowserScreen> {
   bool _loading = true;
+  String? _error;
 
   // Tree structure: top-level folders (root level)
   List<BrowseNode> _rootFolders = [];
@@ -58,72 +61,65 @@ class _FolderBrowserScreenState extends State<FolderBrowserScreen> {
   }
 
   Future<void> _loadAll() async {
-    setState(() => _loading = true);
+    setState(() { _loading = true; _error = null; });
     try {
-      // 1. Fetch all top-level folders from Supabase
-      final folderRows = await SupabaseReadService.getFolders();
+      final folders = await SupabaseReadService.getFolders()
+          .timeout(const Duration(seconds: 10), onTimeout: () {
+        throw Exception('timeout');
+      });
+      if (folders == null || !mounted) return;
+      
+      // Build tree structure from flat list
       final rootNodes = <BrowseNode>[];
-      if (folderRows != null) {
-        for (final row in folderRows) {
+      final subFoldersByTopLevel = <String, List<Map<String, dynamic>>>{};
+      
+      for (final f in folders) {
+        final isTopLevel = f['parentContentId'] == null;
+        if (isTopLevel) {
           rootNodes.add(BrowseNode(
-            id: row['id'] as String,
-            name: row['name'] as String? ?? 'Untitled',
+            id: f['id'] as String,
+            name: f['name'] as String? ?? 'Untitled',
             isTopLevel: true,
-            topLevelFolderId: row['id'] as String,
+            topLevelFolderId: f['id'] as String,
             parentContentId: null,
           ));
+        } else {
+          final topLevelId = f['topLevelFolderId'] as String? ?? f['id'] as String;
+          subFoldersByTopLevel.putIfAbsent(topLevelId, () => []).add(f);
         }
       }
+      
       rootNodes.sort((a, b) => a.name.compareTo(b.name));
       _rootFolders = rootNodes;
 
-      // 2. Batch load all sub-folders for each top-level folder from Supabase
-      //    Paginate with 1000 rows per request (Supabase free tier cap)
+      // Build sub-folder cache from flat list
       _subFolderCache.clear();
-      for (final root in rootNodes) {
-        final allSubs = <Map<String, dynamic>>[];
-        int offset = 0;
-        const pageSize = 1000;
-        while (true) {
-          final page = await SupabaseReadService.getFolderContentsByType(
-            root.id,
-            contentType: 'subfolder',
-            limit: pageSize,
-            offset: offset,
-          );
-          if (page == null || page.isEmpty) break;
-          allSubs.addAll(page);
-          if (page.length < pageSize) break;
-          offset += pageSize;
-        }
+      for (final entry in subFoldersByTopLevel.entries) {
+        final topLevelId = entry.key;
+        final subs = entry.value;
         final byParent = <String?, List<BrowseNode>>{};
-        for (final row in allSubs) {
-          final parentId = row['parentContentId'] as String?;
+        for (final f in subs) {
+          final parentId = f['parentContentId'] as String?;
           byParent.putIfAbsent(parentId, () => []);
           byParent[parentId]!.add(BrowseNode(
-            id: row['id'] as String,
-            name: row['name'] as String? ?? 'Untitled',
+            id: f['id'] as String,
+            name: f['name'] as String? ?? 'Untitled',
             isTopLevel: false,
-            topLevelFolderId: root.id,
+            topLevelFolderId: topLevelId,
             parentContentId: parentId,
           ));
         }
-        // Sort each list
         for (final key in byParent.keys) {
           byParent[key]!.sort((a, b) => a.name.compareTo(b.name));
         }
-        _subFolderCache[root.id] = byParent;
+        _subFolderCache[topLevelId] = byParent;
       }
 
       if (!mounted) return;
       setState(() => _loading = false);
     } catch (e) {
       if (mounted) {
-        setState(() => _loading = false);
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(
-          content: Text('Error loading: $e'),
-          backgroundColor: Colors.redAccent,
-        ));
+        setState(() { _loading = false; _error = 'Network error'; });
       }
     }
   }
@@ -169,15 +165,14 @@ class _FolderBrowserScreenState extends State<FolderBrowserScreen> {
     final action = widget.isMove ? 'Moved' : 'Copied';
     try {
       for (final contentId in widget.selectedIds) {
-        await _copyOrMoveContent(
+        await _copyContentRecursive(
           srcFolderId: srcFolderId,
           contentId: contentId,
           targetTopLevelFolderId: targetTopLevelFolderId,
           targetParentContentId: targetParentContentId,
-          isMove: widget.isMove,
         );
       }
-      await FirebaseService.addNotification('$action ${widget.selectedIds.length} item(s)', folderId: srcFolderId, parentContentId: widget.parentContentId);
+      await FirebaseService.addNotification('$action ${widget.selectedIds.length} item(s)', folderId: srcFolderId, parentContentId: targetParentContentId);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('$action successfully'), backgroundColor: Colors.green),
@@ -193,68 +188,56 @@ class _FolderBrowserScreenState extends State<FolderBrowserScreen> {
     }
   }
 
-  Future<void> _copyOrMoveContent({
+  Future<void> _copyContentRecursive({
     required String srcFolderId,
     required String contentId,
     required String targetTopLevelFolderId,
     required String? targetParentContentId,
-    required bool isMove,
   }) async {
-    final srcContent = await SupabaseReadService.getContent(srcFolderId, contentId);
-    if (srcContent == null) return;
-    final data = Map<String, dynamic>.from(srcContent);
-    // Remove fields that conflict with addFolderContent parameters
-    // _flatten() returns BOTH camelCase (from JSONB) AND snake_case (typed columns).
-    // When spread into addFolderContent, the snake_case entries overwrite camelCase
-    // in _buildBody because typed.contains(snakeKey) matches both.
-    data.remove('id');
-    data.remove('createdAt');
-    data.remove('created_at');
-    data.remove('folder_id');
-    data.remove('folderId');
-    data.remove('parent_content_id');
-    data.remove('parentContentId');
+    final doc = await FirebaseService.firestore
+        .collection('folders').doc(srcFolderId)
+        .collection('contents').doc(contentId).get();
+    if (!doc.exists) return;
+    final srcData = doc.data() as Map<String, dynamic>;
+    final isSubfolder = srcData['type'] == 'subfolder';
+    final newData = Map<String, dynamic>.from(srcData)
+      ..remove('createdAt');
     if (targetParentContentId != null) {
-      data['parentContentId'] = targetParentContentId;
+      newData['parentContentId'] = targetParentContentId;
+    } else {
+      newData.remove('parentContentId');
     }
 
     // Get max order at destination to place item at end
-    final targetContents = await SupabaseReadService.getFolderContentsByType(
-      targetTopLevelFolderId,
-      contentType: data['type'] as String?,
-    );
+    final targetQuery = await FirebaseService.firestore
+        .collection('folders').doc(targetTopLevelFolderId)
+        .collection('contents')
+        .where('parentContentId', isEqualTo: targetParentContentId)
+        .get();
     int maxOrder = -1;
-    if (targetContents != null) {
-      for (final d in targetContents) {
-        if (d['parentContentId'] != targetParentContentId) continue;
-        final order = (d['order'] as num?)?.toInt() ?? -1;
-        if (order > maxOrder) maxOrder = order;
-      }
+    for (final d in targetQuery.docs) {
+      final order = (d.data()['order'] as num?)?.toInt() ?? -1;
+      if (order > maxOrder) maxOrder = order;
     }
-    data['order'] = maxOrder + 1;
+    newData['order'] = maxOrder + 1;
 
-    final newContentId = await FirebaseService.addFolderContent(targetTopLevelFolderId, data);
-    final isSubfolder = data['type'] == 'subfolder';
+    final newContentId = await FirebaseService.addFolderContent(targetTopLevelFolderId, newData);
     if (isSubfolder && newContentId != null) {
-      // Copy immediate children only — parentContentId filter is essential
-      // fetchAll=true would skip the filter and return ALL items in the top-level folder
-      final children = await SupabaseReadService.getFolderContents(
-        srcFolderId,
-        parentContentId: contentId,
-      );
-      if (children != null) {
-        for (final child in children) {
-          await _copyOrMoveContent(
-            srcFolderId: srcFolderId,
-            contentId: child['id'] as String,
-            targetTopLevelFolderId: targetTopLevelFolderId,
-            targetParentContentId: newContentId,
-            isMove: isMove,
-          );
-        }
+      final childrenSnap = await FirebaseService.firestore
+          .collection('folders').doc(srcFolderId)
+          .collection('contents')
+          .where('parentContentId', isEqualTo: contentId)
+          .get();
+      for (final childDoc in childrenSnap.docs) {
+        await _copyContentRecursive(
+          srcFolderId: srcFolderId,
+          contentId: childDoc.id,
+          targetTopLevelFolderId: targetTopLevelFolderId,
+          targetParentContentId: newContentId,
+        );
       }
     }
-    if (isMove) {
+    if (widget.isMove) {
       await FirebaseService.deleteFolderContent(srcFolderId, contentId);
     }
   }
@@ -303,37 +286,34 @@ class _FolderBrowserScreenState extends State<FolderBrowserScreen> {
     );
     if (name == null || name.isEmpty) return;
     try {
-      await FirebaseService.addFolderContent(
-        parent.topLevelFolderId,
-        {
-          'type': 'subfolder',
-          'name': name,
-          'parentContentId': parent.isTopLevel ? null : parent.id,
-        },
-      );
-      // Re-fetch sub-folders for this top-level folder (paginate)
-      final allSubs = <Map<String, dynamic>>[];
-      int offset = 0;
-      const pageSize = 1000;
-      while (true) {
-        final page = await SupabaseReadService.getFolderContentsByType(
-          parent.topLevelFolderId,
-          contentType: 'subfolder',
-          limit: pageSize,
-          offset: offset,
-        );
-        if (page == null || page.isEmpty) break;
-        allSubs.addAll(page);
-        if (page.length < pageSize) break;
-        offset += pageSize;
-      }
+      await MasterSupabaseService.insert('folder_contents', {
+        'folder_id': parent.topLevelFolderId,
+        'type': 'subfolder',
+        'name': name,
+        'parent_content_id': parent.isTopLevel ? null : parent.id,
+        'created_at': DateTime.now().toIso8601String(),
+      });
+      await FirebaseService.firestore
+          .collection('folders').doc(parent.topLevelFolderId)
+          .collection('contents').add({
+        'type': 'subfolder',
+        'name': name,
+        'parentContentId': parent.isTopLevel ? null : parent.id,
+        'createdAt': DateTime.now().toIso8601String(),
+      });
+      // Re-fetch sub-folders for this top-level folder
+      final snap = await FirebaseService.firestore
+          .collection('folders').doc(parent.topLevelFolderId)
+          .collection('contents')
+          .where('type', isEqualTo: 'subfolder')
+          .get();
       final byParent = <String?, List<BrowseNode>>{};
-      for (final row in allSubs) {
-        final pid = row['parentContentId'] as String?;
+      for (final d in snap.docs) {
+        final pid = d.data()['parentContentId'] as String?;
         byParent.putIfAbsent(pid, () => []);
         byParent[pid]!.add(BrowseNode(
-          id: row['id'] as String,
-          name: row['name'] as String? ?? 'Untitled',
+          id: d.id,
+          name: d.data()['name'] as String? ?? 'Untitled',
           isTopLevel: false,
           topLevelFolderId: parent.topLevelFolderId,
           parentContentId: pid,
@@ -417,7 +397,9 @@ class _FolderBrowserScreenState extends State<FolderBrowserScreen> {
           Expanded(
             child: _loading
                 ? const Center(child: ProfessionalLoader())
-                : _currentNodes.isEmpty
+                : _error != null
+                    ? NetworkErrorOverlay(message: _error!, onRetry: _loadAll)
+                    : _currentNodes.isEmpty
                     ? Center(child: Column(
                         mainAxisAlignment: MainAxisAlignment.center,
                         children: [

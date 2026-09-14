@@ -13,6 +13,7 @@ import 'package:http/http.dart' as http;
 import 'package:uuid/uuid.dart';
 import 'supabase_read_service.dart';
 import 'clorabase_service.dart';
+import 'master_supabase_service.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import '../../firebase_options.dart';
 
@@ -64,6 +65,8 @@ class FirebaseService {
   }
 
   static fb_auth.User? get currentUser => fb_auth.FirebaseAuth.instance.currentUser;
+
+  static FirebaseFirestore get firestore => FirebaseFirestore.instance;
 
   static SupabaseClient get supabase => Supabase.instance.client;
 
@@ -159,6 +162,18 @@ class FirebaseService {
   }
 
   static Future<void> _loadActiveSupabaseAccount() async {
+    // 1) Master Supabase (no Firestore quota)
+    try {
+      final rows = await MasterSupabaseService.read('supabase_accounts', query: 'is_active=eq.true');
+      if (rows.isNotEmpty) {
+        final data = rows.first;
+        supabaseUrl = data['project_url'] as String? ?? '';
+        serviceRoleKey = data['service_role_key'] as String? ?? '';
+        _supabaseAnonKey = data['anon_key'] as String? ?? '';
+        return;
+      }
+    } catch (_) {}
+    // 2) Storage Supabase mirror
     try {
       final mirror = await SupabaseReadService.getActiveSupabaseAccount();
       if (mirror != null && (mirror['serviceRoleKey'] as String? ?? '').isNotEmpty) {
@@ -229,25 +244,59 @@ class FirebaseService {
         password: password,
       );
       if (cred.user != null) {
+        // Read user data from MasterSupabase first, then Firestore fallback
         Map<String, dynamic>? userData;
         try {
-          userData = await SupabaseReadService.getUser(cred.user!.uid);
+          final rows = await MasterSupabaseService.read('users', query: 'auth_id=eq.${cred.user!.uid}');
+          if (rows.isNotEmpty) userData = rows.first;
         } catch (_) {}
+        userData ??= (await firestore.collection('users').doc(cred.user!.uid).get()).data();
         final userRole = userData?['role'] as String?;
-        if (userData?['blocked'] == true) {
-          if (userRole == 'admin' || userRole == 'Assistant') {
-            await _mirrorWrite('users', cred.user!.uid, {'blocked': false});
-          } else {
-            await fb_auth.FirebaseAuth.instance.signOut();
-            throw Exception('BLOCKED');
+        final blocked = userData?['blocked'] as bool? ?? false;
+        if (blocked) {
+          if (userRole == 'Assistant' || userRole == 'assistant') {
+            // Unblock in both places
+            try {
+              final rows = await MasterSupabaseService.read('users', query: 'auth_id=eq.${cred.user!.uid}');
+              if (rows.isNotEmpty) await MasterSupabaseService.update('users', rows.first['id'] as String, {'blocked': false});
+            } catch (_) {}
+            await firestore.collection('users').doc(cred.user!.uid).update({'blocked': false});
           }
         }
         await storeSession(cred.user!.uid);
         final deviceId = await getDeviceId();
+        // Update last login in both places
+        try {
+          final rows = await MasterSupabaseService.read('users', query: 'auth_id=eq.${cred.user!.uid}');
+          if (rows.isNotEmpty) {
+            await MasterSupabaseService.update('users', rows.first['id'] as String, {
+              'current_device_id': deviceId,
+              'last_login_at': DateTime.now().toIso8601String(),
+            });
+          }
+        } catch (_) {}
+        await firestore.collection('users').doc(cred.user!.uid).update({
+          'currentDeviceId': deviceId,
+          'lastLoginAt': FieldValue.serverTimestamp(),
+        });
         await _trackLogin(cred.user!.uid, deviceId);
+        if (userRole != 'Assistant' && userRole != 'assistant') {
+          final violation = await isMultiDeviceViolation(cred.user!.uid, deviceId);
+          if (violation) {
+            try {
+              final rows = await MasterSupabaseService.read('users', query: 'auth_id=eq.${cred.user!.uid}');
+              if (rows.isNotEmpty) await MasterSupabaseService.update('users', rows.first['id'] as String, {
+                'blocked': true,
+              });
+            } catch (_) {}
+            await firestore.collection('users').doc(cred.user!.uid).update({
+              'blocked': true,
+              'blockedReason': 'Multi-device violation: 3+ unique devices detected within 24 hours.',
+              'blockedAt': FieldValue.serverTimestamp(),
+            });
+          }
+        }
         await updateStreak(cred.user!.uid);
-        final label = userRole == 'admin' ? 'Admin' : (userRole == 'Assistant' ? 'Assistant' : 'Student');
-        await addAdminNotification('login', '$label logged in: ${cred.user!.email}', relatedUid: cred.user!.uid);
       }
       return cred;
     } on fb_auth.FirebaseAuthException catch (e) {
@@ -270,7 +319,7 @@ class FirebaseService {
       await cred.user?.updateDisplayName(name);
       final uid = cred.user!.uid;
       await storeSession(uid);
-      await _mirrorWrite('users', uid, {
+      await firestore.collection('users').doc(uid).set({
         'uid': uid,
         'name': name,
         'email': email.trim(),
@@ -278,11 +327,31 @@ class FirebaseService {
         'role': role,
         'gender': gender,
         'blocked': false,
-        'verified': role == 'admin',
-        'createdAt': DateTime.now().toIso8601String(),
+        'verified': false,
+        'createdAt': FieldValue.serverTimestamp(),
         'termsAccepted': false,
       });
-      await addAdminNotification('registration', 'New student registered: $name ($email)', relatedUid: uid);
+      // Write to MasterSupabase too
+      await MasterSupabaseService.insert('users', {
+        'auth_id': uid,
+        'email': email.trim(),
+        'display_name': name,
+        'role': role,
+        'blocked': false,
+        'verified': false,
+        'terms_accepted': false,
+        'created_at': DateTime.now().toIso8601String(),
+      });
+      await _mirrorWrite('users', uid, {
+        'uid': uid,
+        'name': name,
+        'email': email.trim(),
+        'role': role,
+        'gender': gender,
+        'blocked': false,
+        'verified': false,
+        'createdAt': DateTime.now().toIso8601String(),
+      });
       return cred;
     } on fb_auth.FirebaseAuthException catch (e) {
       throw Exception(e.message ?? 'Sign up failed');
@@ -432,7 +501,7 @@ class FirebaseService {
     try {
       List<Map<String, dynamic>>? students;
       try {
-        students = await SupabaseReadService.getUsersWhere('role=eq.student&free_trial_active=eq.true');
+        students = await SupabaseReadService.getUsersWhere('role=eq.student&free_trial_active=eq.true&verified=eq.false');
       } catch (_) {}
       DateTime? latest;
       if (students != null && students.isNotEmpty) {
@@ -698,63 +767,45 @@ class FirebaseService {
 
   static Future<List<Map<String, dynamic>>> getCloudinaryAccounts() async {
     try {
-      final rows = await SupabaseReadService.getCloudinaryAccounts();
-      if (rows != null && rows.isNotEmpty) return rows;
+      final rows = await MasterSupabaseService.read('cloudinary_accounts', query: 'order=created_at.asc');
+      if (rows.isNotEmpty) return rows;
     } catch (_) {}
-    return [];
+    final snap = await firestore.collection('cloudinary_accounts').orderBy('createdAt', descending: false).get();
+    return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
   }
 
-  static Future<String> addCloudinaryAccount(String cloudName, String uploadPreset, {bool isActive = true, int storageLimitMB = 25600}) async {
-    final docId = 'ca_${DateTime.now().millisecondsSinceEpoch}';
-    if (isActive) {
-      final existing = await getCloudinaryAccounts();
-      if (existing != null) {
-        for (final acc in existing) {
-          final aid = acc['id'] as String? ?? '';
-          if (aid.isNotEmpty && acc['isActive'] == true) {
-            await _mirrorWrite('settings', aid, {'isActive': false});
-          }
-        }
-      }
-    }
-    await _mirrorWrite('settings', docId, {
-      'cloudName': cloudName.trim(),
-      'uploadPreset': uploadPreset.trim(),
-      'isActive': isActive,
-      'storageLimitMB': storageLimitMB,
-      'currentUsageMB': 0,
-      'autoSwitchEnabled': true,
-      'createdAt': DateTime.now().toIso8601String(),
+  static Future<String> addCloudinaryAccount(String cloudName, String uploadPreset, {bool isActive = true}) async {
+    final id = await MasterSupabaseService.insert('cloudinary_accounts', {
+      'cloud_name': cloudName.trim(),
+      'upload_preset': uploadPreset.trim(),
+      'is_active': isActive,
+      'created_at': DateTime.now().toIso8601String(),
     });
-    return docId;
+    if (id == null) throw Exception('Failed to insert Cloudinary account');
+    if (isActive) {
+      await MasterSupabaseService.updateWhere('cloudinary_accounts', filterField: 'is_active', filterValue: 'true', data: {'is_active': false});
+      await MasterSupabaseService.update('cloudinary_accounts', id, {'is_active': true});
+    }
+    return id;
   }
 
-  static Future<void> updateCloudinaryAccount(String id, {String? cloudName, String? uploadPreset, bool? isActive, int? storageLimitMB, int? currentUsageMB, bool? autoSwitchEnabled}) async {
-    if (id.isEmpty) return;
+  static Future<void> updateCloudinaryAccount(String id, {String? cloudName, String? uploadPreset, bool? isActive}) async {
     if (isActive == true) {
-      final existing = await getCloudinaryAccounts();
-      if (existing != null) {
-        for (final acc in existing) {
-          final aid = acc['id'] as String? ?? '';
-          if (aid.isNotEmpty && aid != id && acc['isActive'] == true) {
-            await _mirrorWrite('settings', aid, {'isActive': false});
-          }
-        }
-      }
+      await MasterSupabaseService.updateWhere('cloudinary_accounts', filterField: 'is_active', filterValue: 'true', data: {'is_active': false});
+      await MasterSupabaseService.update('cloudinary_accounts', id, {'is_active': true});
+    } else if (isActive == false) {
+      await MasterSupabaseService.update('cloudinary_accounts', id, {'is_active': false});
     }
-    final data = <String, dynamic>{};
-    if (cloudName != null) data['cloudName'] = cloudName.trim();
-    if (uploadPreset != null) data['uploadPreset'] = uploadPreset.trim();
-    if (isActive != null) data['isActive'] = isActive;
-    if (storageLimitMB != null) data['storageLimitMB'] = storageLimitMB;
-    if (currentUsageMB != null) data['currentUsageMB'] = currentUsageMB;
-    if (autoSwitchEnabled != null) data['autoSwitchEnabled'] = autoSwitchEnabled;
-    await _mirrorWrite('settings', id, data);
+    if (cloudName != null || uploadPreset != null) {
+      final data = <String, dynamic>{};
+      if (cloudName != null) data['cloud_name'] = cloudName.trim();
+      if (uploadPreset != null) data['upload_preset'] = uploadPreset.trim();
+      await MasterSupabaseService.update('cloudinary_accounts', id, data);
+    }
   }
 
   static Future<void> deleteCloudinaryAccount(String id) async {
-    if (id.isEmpty) return;
-    await _mirrorWrite('settings', id, {}, delete: true);
+    await MasterSupabaseService.delete('cloudinary_accounts', id);
   }
 
   static Future<String> uploadToCloudinary(Uint8List bytes, String filename) async {
@@ -796,10 +847,11 @@ class FirebaseService {
 
   static Future<List<Map<String, dynamic>>> getAssistantCloudinaryAccounts() async {
     try {
-      final rows = await SupabaseReadService.getAssistantCloudinaryAccounts();
-      if (rows != null && rows.isNotEmpty) return rows;
+      final rows = await MasterSupabaseService.read('assistant_cloudinary', query: 'order=created_at.asc');
+      if (rows.isNotEmpty) return rows;
     } catch (_) {}
-    return [];
+    final snap = await firestore.collection('assistant_cloudinary').orderBy('createdAt', descending: false).get();
+    return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
   }
 
   static Future<String> addAssistantCloudinaryAccount({
@@ -808,34 +860,42 @@ class FirebaseService {
     required String cloudName,
     required String uploadPreset,
   }) async {
-    final docId = 'ac_${DateTime.now().millisecondsSinceEpoch}';
-    await _mirrorWrite('settings', 'assistant_cloudinary_$docId', {
-      'assistantUid': assistantUid,
-      'assistantName': assistantName,
-      'cloudName': cloudName.trim(),
-      'uploadPreset': uploadPreset.trim(),
-      'isActive': true,
-      'createdAt': DateTime.now().toIso8601String(),
+    final id = await MasterSupabaseService.insert('assistant_cloudinary', {
+      'assistant_uid': assistantUid,
+      'assistant_name': assistantName,
+      'cloud_name': cloudName.trim(),
+      'upload_preset': uploadPreset.trim(),
+      'is_active': true,
+      'created_at': DateTime.now().toIso8601String(),
     });
-    return docId;
+    if (id == null) throw Exception('Failed to insert Assistant Cloudinary');
+    // Deactivate others for same assistant
+    await MasterSupabaseService.updateWhere('assistant_cloudinary', filterField: 'assistant_uid', filterValue: assistantUid, data: {'is_active': false});
+    await MasterSupabaseService.update('assistant_cloudinary', id, {'is_active': true});
+    return id;
   }
 
   static Future<void> updateAssistantCloudinaryAccount(String id, {String? cloudName, String? uploadPreset, bool? isActive}) async {
     if (isActive == true) {
-      await _mirrorWrite('settings', 'assistant_cloudinary_$id', {'isActive': true});
+      final existing = await MasterSupabaseService.readById('assistant_cloudinary', id);
+      final assistantUid = existing?['assistant_uid'] as String?;
+      if (assistantUid != null) {
+        await MasterSupabaseService.updateWhere('assistant_cloudinary', filterField: 'assistant_uid', filterValue: assistantUid, data: {'is_active': false});
+        await MasterSupabaseService.update('assistant_cloudinary', id, {'is_active': true});
+      }
     } else if (isActive == false) {
-      await _mirrorWrite('settings', 'assistant_cloudinary_$id', {'isActive': false});
+      await MasterSupabaseService.update('assistant_cloudinary', id, {'is_active': false});
     }
     if (cloudName != null || uploadPreset != null) {
       final data = <String, dynamic>{};
-      if (cloudName != null) data['cloudName'] = cloudName.trim();
-      if (uploadPreset != null) data['uploadPreset'] = uploadPreset.trim();
-      await _mirrorWrite('settings', 'assistant_cloudinary_$id', data);
+      if (cloudName != null) data['cloud_name'] = cloudName.trim();
+      if (uploadPreset != null) data['upload_preset'] = uploadPreset.trim();
+      await MasterSupabaseService.update('assistant_cloudinary', id, data);
     }
   }
 
   static Future<void> deleteAssistantCloudinaryAccount(String id) async {
-    await _mirrorWrite('settings', 'assistant_cloudinary_$id', {}, delete: true);
+    await MasterSupabaseService.delete('assistant_cloudinary', id);
   }
 
   // ─── Clorabase Multi-Account Upload ────────────────────────────────────────
@@ -984,10 +1044,11 @@ class FirebaseService {
 
   static Future<List<Map<String, dynamic>>> getAssistantSupabaseAccounts() async {
     try {
-      final rows = await SupabaseReadService.getAssistantSupabaseAccounts();
-      if (rows != null && rows.isNotEmpty) return rows;
+      final rows = await MasterSupabaseService.read('assistant_supabase', query: 'order=created_at.desc');
+      if (rows.isNotEmpty) return rows;
     } catch (_) {}
-    return [];
+    final snap = await firestore.collection('assistant_supabase').orderBy('createdAt', descending: true).get();
+    return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
   }
 
   static Future<String> addAssistantSupabaseAccount({
@@ -999,70 +1060,67 @@ class FirebaseService {
     int storageLimitMB = 1024,
     bool autoSwitchEnabled = true,
   }) async {
-    final docId = 'as_${DateTime.now().millisecondsSinceEpoch}';
-    final bucketResult = await _autoCreateBuckets(projectUrl.trim(), serviceRoleKey.trim());
-    await _mirrorWrite('settings', 'assistant_supabase:$docId', {
-      'assistantUid': assistantUid,
-      'assistantName': assistantName,
-      'projectUrl': projectUrl.trim(),
-      'serviceRoleKey': serviceRoleKey.trim(),
-      'anonKey': anonKey.trim(),
-      'bucketStatus': bucketResult['status'],
-      'failedBuckets': bucketResult['failedBuckets'],
-      'isActive': true,
-      'storageLimitMB': storageLimitMB,
-      'autoSwitchEnabled': autoSwitchEnabled,
-      'currentUsageMB': 0,
-      'createdAt': DateTime.now().toIso8601String(),
+    final id = await MasterSupabaseService.insert('assistant_supabase', {
+      'assistant_uid': assistantUid,
+      'assistant_name': assistantName,
+      'project_url': projectUrl.trim(),
+      'service_role_key': serviceRoleKey.trim(),
+      'anon_key': anonKey.trim(),
+      'bucket_status': 'pending',
+      'failed_buckets': <String>[],
+      'is_active': true,
+      'storage_limit_mb': storageLimitMB,
+      'auto_switch_enabled': autoSwitchEnabled,
+      'current_usage_mb': 0,
+      'created_at': DateTime.now().toIso8601String(),
     });
-    return docId;
+    if (id == null) throw Exception('Failed to insert Assistant Supabase');
+    // Deactivate others for same assistant
+    await MasterSupabaseService.updateWhere('assistant_supabase', filterField: 'assistant_uid', filterValue: assistantUid, data: {'is_active': false});
+    await MasterSupabaseService.update('assistant_supabase', id, {'is_active': true});
+    final bucketResult = await _autoCreateBuckets(projectUrl.trim(), serviceRoleKey.trim());
+    await MasterSupabaseService.update('assistant_supabase', id, {
+      'bucket_status': bucketResult['status'],
+      'failed_buckets': bucketResult['failedBuckets'],
+    });
+    return id;
   }
 
   static Future<void> updateAssistantSupabaseAccount(String id, {String? projectUrl, String? serviceRoleKey, String? anonKey, bool? isActive, int? storageLimitMB, bool? autoSwitchEnabled}) async {
-    // When activating an assistant account, deactivate ALL other accounts for the same assistant first
     if (isActive == true) {
-      try {
-        final all = await SupabaseReadService.getAssistantSupabaseAccounts();
-        if (all != null) {
-          for (final acc in all) {
-            final accId = acc['id'] as String?;
-            if (accId == null || accId == id) continue;
-            if (acc['isActive'] == true) {
-              final existingOther = await SupabaseReadService.getSettings('assistant_supabase:$accId') ?? {};
-              await _mirrorWrite('settings', 'assistant_supabase:$accId', {...existingOther, 'isActive': false});
-            }
-          }
-        }
-      } catch (_) {}
+      final existing = await MasterSupabaseService.readById('assistant_supabase', id);
+      final assistantUid = existing?['assistant_uid'] as String?;
+      if (assistantUid != null) {
+        await MasterSupabaseService.updateWhere('assistant_supabase', filterField: 'assistant_uid', filterValue: assistantUid, data: {'is_active': false});
+        await MasterSupabaseService.update('assistant_supabase', id, {'is_active': true});
+      }
+    } else if (isActive == false) {
+      await MasterSupabaseService.update('assistant_supabase', id, {'is_active': false});
     }
-    try {
-      final existing = await SupabaseReadService.getSettings('assistant_supabase:$id') ?? {};
-      await _mirrorWrite('settings', 'assistant_supabase:$id', {
-        ...existing,
-        if (projectUrl != null) 'projectUrl': projectUrl.trim(),
-        if (serviceRoleKey != null) 'serviceRoleKey': serviceRoleKey.trim(),
-        if (anonKey != null) 'anonKey': anonKey.trim(),
-        if (isActive != null) 'isActive': isActive,
-        if (storageLimitMB != null) 'storageLimitMB': storageLimitMB,
-        if (autoSwitchEnabled != null) 'autoSwitchEnabled': autoSwitchEnabled,
-      });
-      SupabaseReadService.invalidateSettingsCache();
-    } catch (_) {}
+    if (projectUrl != null || serviceRoleKey != null || anonKey != null || storageLimitMB != null || autoSwitchEnabled != null) {
+      final data = <String, dynamic>{};
+      if (projectUrl != null) data['project_url'] = projectUrl.trim();
+      if (serviceRoleKey != null) data['service_role_key'] = serviceRoleKey.trim();
+      if (anonKey != null) data['anon_key'] = anonKey.trim();
+      if (storageLimitMB != null) data['storage_limit_mb'] = storageLimitMB;
+      if (autoSwitchEnabled != null) data['auto_switch_enabled'] = autoSwitchEnabled;
+      await MasterSupabaseService.update('assistant_supabase', id, data);
+    }
   }
 
   static Future<void> deleteAssistantSupabaseAccount(String id) async {
-    await _mirrorWrite('settings', 'assistant_supabase:$id', const {}, delete: true);
+    await MasterSupabaseService.delete('assistant_supabase', id);
   }
 
   static Future<Map<String, dynamic>> retryAssistantSupabaseBuckets(String accountId) async {
-    final existing = await SupabaseReadService.getSettings('assistant_supabase:$accountId');
-    if (existing == null) return {'status': 'error', 'error': 'Account not found'};
-    final projectUrl = existing['projectUrl'] as String;
-    final serviceKey = existing['serviceRoleKey'] as String;
+    final data = await MasterSupabaseService.readById('assistant_supabase', accountId);
+    if (data == null) return {'status': 'error', 'error': 'Account not found'};
+    final projectUrl = data['project_url'] as String;
+    final serviceKey = data['service_role_key'] as String;
     final result = await _autoCreateBuckets(projectUrl, serviceKey);
-    await _mirrorWrite('settings', 'assistant_supabase:$accountId', {
-      'bucketStatus': result['status'],
-      'failedBuckets': result['failedBuckets'],
+    await MasterSupabaseService.update('assistant_supabase', accountId, {
+      'bucket_status': result['status'],
+      'failed_buckets': result['failedBuckets'],
     });
     return result;
   }
@@ -1082,10 +1140,11 @@ class FirebaseService {
 
   static Future<List<Map<String, dynamic>>> getSupabaseAccounts() async {
     try {
-      final rows = await SupabaseReadService.getSupabaseAccounts();
-      if (rows != null && rows.isNotEmpty) return rows;
+      final rows = await MasterSupabaseService.read('supabase_accounts', query: 'order=created_at.desc');
+      if (rows.isNotEmpty) return rows;
     } catch (_) {}
-    return [];
+    final snap = await firestore.collection('supabase_accounts').orderBy('createdAt', descending: true).get();
+    return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
   }
 
   static String get _supabaseProxyUrl => 'https://prepora-web.vercel.app/api/supabase-proxy';
@@ -1153,68 +1212,52 @@ class FirebaseService {
     return {'status': allReady ? 'ready' : (failed.length == 2 ? 'failed' : 'partial'), 'failedBuckets': failed};
   }
 
-  static Future<String> addSupabaseAccount(String projectUrl, String serviceRoleKey, String anonKey, {bool isActive = true, int storageLimitMB = 1024, bool autoSwitchEnabled = true, String name = '', String email = '', String projectName = ''}) async {
-    final docId = 'sa_${DateTime.now().millisecondsSinceEpoch}';
-    final bucketResult = await _autoCreateBuckets(projectUrl.trim(), serviceRoleKey.trim());
-    await _mirrorWrite('settings', 'supabase_account:$docId', {
-      'projectUrl': projectUrl.trim(),
-      'serviceRoleKey': serviceRoleKey.trim(),
-      'anonKey': anonKey.trim(),
-      'bucketStatus': bucketResult['status'],
-      'failedBuckets': bucketResult['failedBuckets'],
-      'isActive': isActive,
-      'storageLimitMB': storageLimitMB,
-      'autoSwitchEnabled': autoSwitchEnabled,
-      'currentUsageMB': 0,
-      'name': name.trim(),
-      'email': email.trim(),
-      'projectName': projectName.trim(),
-      'createdAt': DateTime.now().toIso8601String(),
+  static Future<String> addSupabaseAccount(String projectUrl, String serviceRoleKey, String anonKey, {bool isActive = true, int storageLimitMB = 1024, bool autoSwitchEnabled = true}) async {
+    final id = await MasterSupabaseService.insert('supabase_accounts', {
+      'project_url': projectUrl.trim(),
+      'service_role_key': serviceRoleKey.trim(),
+      'anon_key': anonKey.trim(),
+      'bucket_status': 'pending',
+      'failed_buckets': <String>[],
+      'is_active': isActive,
+      'storage_limit_mb': storageLimitMB,
+      'auto_switch_enabled': autoSwitchEnabled,
+      'current_usage_mb': 0,
+      'created_at': DateTime.now().toIso8601String(),
     });
-    return docId;
+    if (id == null) throw Exception('Failed to insert Supabase account');
+    if (isActive) {
+      await MasterSupabaseService.updateWhere('supabase_accounts', filterField: 'is_active', filterValue: 'true', data: {'is_active': false});
+      await MasterSupabaseService.update('supabase_accounts', id, {'is_active': true});
+    }
+    final bucketResult = await _autoCreateBuckets(projectUrl.trim(), serviceRoleKey.trim());
+    await MasterSupabaseService.update('supabase_accounts', id, {
+      'bucket_status': bucketResult['status'],
+      'failed_buckets': bucketResult['failedBuckets'],
+    });
+    return id;
   }
 
-  static Future<void> updateSupabaseAccount(String id, {String? projectUrl, String? serviceRoleKey, String? anonKey, bool? isActive, int? storageLimitMB, bool? autoSwitchEnabled, String? name, String? email, String? projectName}) async {
+  static Future<void> updateSupabaseAccount(String id, {String? projectUrl, String? serviceRoleKey, String? anonKey, bool? isActive, int? storageLimitMB, bool? autoSwitchEnabled}) async {
     if (isActive == true) {
-      try {
-        final all = await SupabaseReadService.getSupabaseAccounts();
-        if (all != null) {
-          final deactivateFutures = <Future>[];
-          for (final acc in all) {
-            final accId = acc['id'] as String?;
-            if (accId == null || accId == id) continue;
-            if (acc['isActive'] == true) {
-              // Use the account data we already have — never wipe fields
-              final deactivateData = Map<String, dynamic>.from(acc);
-              deactivateData['isActive'] = false;
-              deactivateFutures.add(_mirrorWrite('settings', accId, deactivateData));
-            }
-          }
-          await Future.wait(deactivateFutures);
-        }
-      } catch (e) {
-        print('[updateSupabaseAccount] Failed to deactivate others: $e');
-      }
+      await MasterSupabaseService.updateWhere('supabase_accounts', filterField: 'is_active', filterValue: 'true', data: {'is_active': false});
+      await MasterSupabaseService.update('supabase_accounts', id, {'is_active': true});
+    } else if (isActive == false) {
+      await MasterSupabaseService.update('supabase_accounts', id, {'is_active': false});
     }
-    final existing = await SupabaseReadService.getSettings(id) ?? {};
-    final merged = <String, dynamic>{
-      ...existing,
-      if (projectUrl != null) 'projectUrl': projectUrl.trim(),
-      if (serviceRoleKey != null) 'serviceRoleKey': serviceRoleKey.trim(),
-      if (anonKey != null) 'anonKey': anonKey.trim(),
-      if (isActive != null) 'isActive': isActive,
-      if (storageLimitMB != null) 'storageLimitMB': storageLimitMB,
-      if (autoSwitchEnabled != null) 'autoSwitchEnabled': autoSwitchEnabled,
-      if (name != null) 'name': name.trim(),
-      if (email != null) 'email': email.trim(),
-      if (projectName != null) 'projectName': projectName.trim(),
-    };
-    await _mirrorWrite('settings', id, merged);
-    SupabaseReadService.invalidateSettingsCache();
+    if (projectUrl != null || serviceRoleKey != null || anonKey != null || storageLimitMB != null || autoSwitchEnabled != null) {
+      final data = <String, dynamic>{};
+      if (projectUrl != null) data['project_url'] = projectUrl.trim();
+      if (serviceRoleKey != null) data['service_role_key'] = serviceRoleKey.trim();
+      if (anonKey != null) data['anon_key'] = anonKey.trim();
+      if (storageLimitMB != null) data['storage_limit_mb'] = storageLimitMB;
+      if (autoSwitchEnabled != null) data['auto_switch_enabled'] = autoSwitchEnabled;
+      await MasterSupabaseService.update('supabase_accounts', id, data);
+    }
   }
 
   static Future<void> deleteSupabaseAccount(String id) async {
-    await _mirrorWrite('settings', id, const {}, delete: true);
+    await MasterSupabaseService.delete('supabase_accounts', id);
   }
 
   static Future<Map<String, dynamic>> getStorageUsage(String projectUrl, String serviceKey) async {
@@ -1246,17 +1289,35 @@ class FirebaseService {
   // ─── AI API Keys ───────────────────────────────────────────────────────────
 
   static Future<List<Map<String, dynamic>>> getAiApiKeys() async {
+    // 1) Mirror from storage Supabase
     try {
       final mirror = await SupabaseReadService.getAiApiKeys();
-      if (mirror != null) return mirror;
+      if (mirror != null && mirror.isNotEmpty) return mirror;
     } catch (_) {}
-    return [];
+    // 2) Master Supabase
+    try {
+      final rows = await MasterSupabaseService.read('ai_api_keys', query: 'order=created_at.asc');
+      if (rows.isNotEmpty) return rows;
+    } catch (_) {}
+    // 3) Firestore fallback
+    final snap = await firestore.collection('ai_api_keys').orderBy('createdAt', descending: false).get();
+    return snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
   }
 
   static Future<Map<String, dynamic>?> getActiveAiApiKey() async {
+    // 1) Mirror first
     final mirrorKey = await SupabaseReadService.getActiveAiApiKey();
     if (mirrorKey != null) return mirrorKey;
-    return null;
+    // 2) Master Supabase
+    try {
+      final rows = await MasterSupabaseService.read('ai_api_keys', query: 'is_active=eq.true');
+      if (rows.isNotEmpty) return rows.first;
+    } catch (_) {}
+    // 3) Firestore fallback
+    final snap = await firestore.collection('ai_api_keys').where('isActive', isEqualTo: true).limit(1).get();
+    if (snap.docs.isEmpty) return null;
+    final d = snap.docs.first;
+    return {'id': d.id, ...d.data()};
   }
 
   /// Mirrors an AI key row into the read-mirror Supabase (best effort — never
@@ -1339,42 +1400,56 @@ class FirebaseService {
     required String apiKey,
     required String model,
     List<String>? models,
-    bool isActive = false,
+    bool isActive = true,
   }) async {
     final data = <String, dynamic>{
       'name': name.trim(),
       'provider': provider.trim(),
-      'baseUrl': baseUrl.trim(),
-      'apiKey': apiKey.trim(),
+      'base_url': baseUrl.trim(),
+      'api_key': apiKey.trim(),
       'model': model.trim(),
-      'isActive': isActive,
-      'createdAt': DateTime.now().toIso8601String(),
+      'is_active': isActive,
     };
     if (models != null && models.isNotEmpty) {
       data['models'] = models.map((m) => m.trim()).where((m) => m.isNotEmpty).toList();
     }
-    final docId = 'aik_${DateTime.now().millisecondsSinceEpoch}';
-    await _mirrorWrite('ai_api_keys', docId, data);
-    await _mirrorAiApiKey(id: docId, data: data, isActive: isActive);
-    return docId;
+    // Write to master Supabase
+    final id = await MasterSupabaseService.insert('ai_api_keys', {
+      ...data,
+      'created_at': DateTime.now().toIso8601String(),
+    });
+    if (id == null) throw Exception('Failed to insert AI key');
+    // Toggle isActive: deactivate others
+    if (isActive) {
+      await MasterSupabaseService.updateWhere('ai_api_keys', filterField: 'is_active', filterValue: 'true', data: {'is_active': false});
+      await MasterSupabaseService.update('ai_api_keys', id, {'is_active': true});
+    }
+    // Mirror to storage Supabase
+    await _mirrorAiApiKey(id: id, data: data, isActive: isActive);
+    return id;
   }
 
-  static Future<void> updateAiApiKey(String id, {String? name, String? provider, String? baseUrl, String? apiKey, String? model, List<String>? models, bool? isActive}) async {
-    // Read existing data first to prevent JSONB overwrite
-    Map<String, dynamic>? existing;
-    try { existing = await SupabaseReadService.getAiApiKeyById(id); } catch (_) {}
-    final data = Map<String, dynamic>.from(existing ?? {});
+  static Future<void> updateAiApiKey(String id, {
+    String? name, String? provider, String? baseUrl, String? apiKey, String? model, List<String>? models, bool? isActive,
+  }) async {
+    if (isActive == true) {
+      await MasterSupabaseService.updateWhere('ai_api_keys', filterField: 'is_active', filterValue: 'true', data: {'is_active': false});
+      await MasterSupabaseService.update('ai_api_keys', id, {'is_active': true});
+    } else if (isActive == false) {
+      await MasterSupabaseService.update('ai_api_keys', id, {'is_active': false});
+    }
+    final data = <String, dynamic>{};
     if (name != null) data['name'] = name.trim();
     if (provider != null) data['provider'] = provider.trim();
-    if (baseUrl != null) data['baseUrl'] = baseUrl.trim();
-    if (apiKey != null) data['apiKey'] = apiKey.trim();
+    if (baseUrl != null) data['base_url'] = baseUrl.trim();
+    if (apiKey != null) data['api_key'] = apiKey.trim();
     if (model != null) data['model'] = model.trim();
     if (models != null) data['models'] = models.map((m) => m.trim()).where((m) => m.isNotEmpty).toList();
-    if (isActive != null) data['isActive'] = isActive;
     if (data.isNotEmpty) {
-      await _mirrorWrite('ai_api_keys', id, data);
+      await MasterSupabaseService.update('ai_api_keys', id, data);
       await _mirrorAiApiKey(id: id, data: data, isActive: isActive);
-      if (isActive == true) await _deactivateOtherAiApiKeys(id);
+    } else if (isActive != null) {
+      await _mirrorAiApiKey(id: id, data: const {}, isActive: isActive);
     }
   }
 
@@ -1399,23 +1474,21 @@ class FirebaseService {
   }
 
   static Future<void> deleteAiApiKey(String id) async {
-    await _mirrorWrite('ai_api_keys', id, const {}, delete: true);
+    await MasterSupabaseService.delete('ai_api_keys', id);
+    try {
+      await SupabaseReadService.writeToAll('ai_api_keys', id, const {}, delete: true);
+    } catch (_) {}
   }
 
   static Future<Map<String, dynamic>> retryBucketCreation(String accountId) async {
-    final existing = await SupabaseReadService.getSettings(accountId);
-    if (existing == null) return {'status': 'error', 'error': 'Account not found'};
-    final projectUrl = existing['projectUrl'] as String;
-    final serviceKey = existing['serviceRoleKey'] as String;
-    if (projectUrl.isEmpty || serviceKey.isEmpty) {
-      return {'status': 'error', 'error': 'Account data incomplete (missing projectUrl or serviceRoleKey)'};
-    }
+    final data = await MasterSupabaseService.readById('supabase_accounts', accountId);
+    if (data == null) return {'status': 'error', 'error': 'Account not found'};
+    final projectUrl = data['project_url'] as String;
+    final serviceKey = data['service_role_key'] as String;
     final result = await _autoCreateBuckets(projectUrl, serviceKey);
-    // Merge with existing data so we don't lose projectUrl, serviceRoleKey, etc.
-    await _mirrorWrite('settings', accountId, {
-      ...existing,
-      'bucketStatus': result['status'],
-      'failedBuckets': result['failedBuckets'],
+    await MasterSupabaseService.update('supabase_accounts', accountId, {
+      'bucket_status': result['status'],
+      'failed_buckets': result['failedBuckets'],
     });
     return result;
   }
@@ -1619,18 +1692,13 @@ class FirebaseService {
   }
 
   static Future<String> _uploadToAssistantCloudinary(String assistantUid, Uint8List bytes, String filename) async {
-    List<Map<String, dynamic>>? accounts;
-    try { accounts = await SupabaseReadService.getAssistantCloudinaryAccounts(); } catch (_) {}
-    final match = accounts?.firstWhere(
-      (a) => a['assistantUid'] == assistantUid && a['isActive'] == true,
-      orElse: () => {},
-    );
-    if (match == null || match.isEmpty) {
+    final rows = await MasterSupabaseService.read('assistant_cloudinary', query: 'assistant_uid=eq.$assistantUid&is_active=eq.true');
+    if (rows.isEmpty) {
       return await uploadToCloudinary(bytes, filename);
     }
-
-    final cloudName = match['cloudName'] as String;
-    final uploadPreset = match['uploadPreset'] as String;
+    final data = rows.first;
+    final cloudName = data['cloud_name'] as String;
+    final uploadPreset = data['upload_preset'] as String;
 
     final uri = Uri.parse('https://api.cloudinary.com/v1_1/$cloudName/raw/upload');
     final request = http.MultipartRequest('POST', uri);
@@ -1748,10 +1816,8 @@ class FirebaseService {
   }
 
   static Future<void> toggleFolderLock(String folderId, String field, dynamic value) async {
-    Map<String, dynamic>? existing;
-    try { existing = await SupabaseReadService.getFolder(folderId); } catch (_) {}
-    final merged = <String, dynamic>{...?existing, field: value};
-    await _mirrorWrite('folders', folderId, merged);
+    final supaField = field == 'locked' ? 'locked' : field == 'updating' ? 'updating' : field == 'invisible' ? 'invisible' : field;
+    await MasterSupabaseService.update('folders', folderId, {supaField: value});
   }
 
   /// Async: check content-level group_link first, fall back to root folder doc.
@@ -1955,18 +2021,21 @@ class FirebaseService {
   }
 
   static Future<void> grantContentAccess(String uid, String folderId, String contentId, String name) async {
-    final docId = 'ca_${DateTime.now().millisecondsSinceEpoch}';
-    await _mirrorWrite('content_assistant_access', docId, {
-      'userId': uid,
-      'folderId': folderId,
-      'contentId': contentId,
+    await MasterSupabaseService.insert('content_assistant_access', {
+      'user_id': uid,
+      'content_id': contentId,
+      'folder_id': folderId,
       'name': name,
-      'createdAt': DateTime.now().toIso8601String(),
+      'created_at': DateTime.now().toIso8601String(),
     });
   }
 
   static Future<void> revokeContentAccess(String uid, String folderId, String contentId) async {
-    await _mirrorBulk('content_assistant_access', 'delete_filter', filter: {'user_id': uid, 'content_id': contentId});
+    final rows = await MasterSupabaseService.read('content_assistant_access', query: 'content_id=eq.$contentId&user_id=eq.$uid');
+    for (final row in rows) {
+      final id = row['id'] as String;
+      await MasterSupabaseService.delete('content_assistant_access', id);
+    }
   }
 
   // ─── Notices ────────────────────────────────────────────────────────────────────
@@ -2081,38 +2150,104 @@ class FirebaseService {
     try {
       final now = DateTime.now();
       final iso = now.toIso8601String();
-      var deviceModel = 'Web Browser';
-      if (kIsWeb) {
-        try {
-          final info = await DeviceInfoPlugin().webBrowserInfo;
-          final browserName = info.browserName.name;
-          deviceModel = browserName;
-        } catch (_) {}
-      } else {
-        try {
-          final info = await DeviceInfoPlugin().androidInfo;
-          deviceModel = '${info.manufacturer} ${info.model}';
-        } catch (_) {}
-      }
-      final docId = 'la_${DateTime.now().millisecondsSinceEpoch}';
-      await _mirrorWrite('login_attempts', docId, {
-        'uid': uid,
-        'deviceId': deviceId,
-        'deviceModel': deviceModel,
-        'timestamp': iso,
-        'createdAt': DateTime.now().toIso8601String(),
-      });
+      var deviceModel = 'Android device';
+      var androidVersion = '';
       try {
-        final loginHistoryData = {
+        final info = await DeviceInfoPlugin().androidInfo;
+        deviceModel = '${info.manufacturer} ${info.model}';
+        androidVersion = 'Android ${info.version.release} (API ${info.version.sdkInt})';
+      } catch (_) {}
+      // Write to master Supabase
+      await MasterSupabaseService.insert('login_attempts', {
+        'uid': uid,
+        'device_id': deviceId,
+        'device_model': deviceModel,
+        'android_version': androidVersion,
+        'timestamp': iso,
+        'created_at': iso,
+      });
+      await MasterSupabaseService.insert('login_history', {
+        'user_id': uid,
+        'device': deviceModel,
+        'device_id': deviceId,
+        'android_version': androidVersion,
+        'ip': '',
+        'created_at': iso,
+      });
+      // Mirror to storage Supabase
+      try {
+        final docId = 'la_${now.millisecondsSinceEpoch}';
+        await _mirrorWrite('login_attempts', docId, {
           'uid': uid,
-          'timestamp': DateTime.now().toIso8601String(),
-          'device': deviceModel,
           'deviceId': deviceId,
-          'ip': '',
-        };
-        await _mirrorWrite('login_history', '${uid}_${now.millisecondsSinceEpoch}', loginHistoryData);
+          'deviceModel': deviceModel,
+          'timestamp': iso,
+          'createdAt': iso,
+        });
       } catch (_) {}
     } catch (_) {}
+  }
+
+  static Future<bool> isMultiDeviceViolation(String uid, String currentDeviceId) async {
+    try {
+      if (currentDeviceId.isEmpty) return false;
+      List<Map<String, dynamic>> docs;
+      try {
+        docs = await MasterSupabaseService.read('login_attempts', query: 'uid=eq.$uid');
+      } catch (_) {
+        final snap = await firestore.collection('login_attempts').where('uid', isEqualTo: uid).get();
+        docs = snap.docs.map((d) => {'id': d.id, ...d.data()}).toList();
+      }
+      if (docs.isEmpty) return false;
+      final cutoff = DateTime.now().subtract(const Duration(hours: 24));
+      final devicesIn24h = <String>{};
+      for (final data in docs) {
+        final devId = data['device_id'] as String? ?? data['deviceId'] as String? ?? '';
+        if (devId.isEmpty) continue;
+        final ts = data['created_at'];
+        DateTime at;
+        if (ts is String) {
+          at = DateTime.tryParse(ts) ?? DateTime.now();
+        } else if (ts is Timestamp) {
+          at = ts.toDate();
+        } else {
+          at = DateTime.tryParse(data['timestamp'] as String? ?? '') ?? DateTime.now();
+        }
+        if (!at.isBefore(cutoff)) {
+          devicesIn24h.add(devId);
+        }
+      }
+      if (devicesIn24h.length >= 3) return true;
+      return false;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  static Future<bool> checkSingleDeviceLogin() async {
+    try {
+      final user = fb_auth.FirebaseAuth.instance.currentUser;
+      if (user == null) return true;
+      final deviceId = await getDeviceId();
+      // Try MasterSupabase first
+      try {
+        final rows = await MasterSupabaseService.read('users', query: 'auth_id=eq.${user.uid}');
+        if (rows.isNotEmpty) {
+          final currentDeviceId = rows.first['current_device_id'] as String? ?? '';
+          if (currentDeviceId.isEmpty) return true;
+          return currentDeviceId == deviceId;
+        }
+      } catch (_) {}
+      // Firestore fallback
+      final doc = await firestore.collection('users').doc(user.uid).get();
+      if (!doc.exists) return true;
+      final data = doc.data();
+      final currentDeviceId = data?['currentDeviceId'] as String? ?? '';
+      if (currentDeviceId.isEmpty) return true;
+      return currentDeviceId == deviceId;
+    } catch (_) {
+      return true;
+    }
   }
 
   static Future<void> updateStreak(String uid) async {
@@ -2196,6 +2331,9 @@ class FirebaseService {
     } catch (_) {}
     return false;
   }
+
+  static Future<bool> isAnyAncestorRestricted(String folderId, String? contentId) =>
+      _isAnyAncestorRestricted(folderId, contentId);
 
   static Future<bool> _isNotificationBlocked(String? folderId, String? parentContentId, Map<String, dynamic>? contentData) async {
     if (contentData != null) {
@@ -2511,18 +2649,20 @@ class FirebaseService {
   }
 
   static Future<void> grantAssistantAccess(String uid, String folderId, String name) async {
-    final docId = 'aa_${DateTime.now().millisecondsSinceEpoch}';
-    await _mirrorWrite('assistant_access', docId, {
+    await MasterSupabaseService.insert('assistant_access', {
       'uid': uid,
-      'folderId': folderId,
+      'folder_id': folderId,
       'name': name,
-      'createdAt': DateTime.now().toIso8601String(),
+      'created_at': DateTime.now().toIso8601String(),
     });
   }
 
   static Future<void> revokeAssistantAccess(String uid, String folderId) async {
-    await _mirrorBulk('assistant_access', 'delete_filter', filter: {'uid': uid, 'folder_id': folderId});
-    await _mirrorBulk('content_assistant_access', 'delete_filter', filter: {'user_id': uid, 'folder_id': folderId});
+    await MasterSupabaseService.deleteWhere('assistant_access', field: 'uid', value: uid);
+    // Cascade: also revoke content access
+    try {
+      await MasterSupabaseService.deleteWhere('content_assistant_access', field: 'user_id', value: uid);
+    } catch (_) {}
   }
 
   static Future<List<Map<String, dynamic>>> getAssistantFolderIds(String uid) async {
@@ -2554,11 +2694,22 @@ class FirebaseService {
   // ─── Settings ──────────────────────────────────────────────────────────────────
 
   static Future<Map<String, dynamic>> getSettings() async {
+    // 1) Mirror from storage Supabase projects (existing behavior)
     try {
       final mirror = await SupabaseReadService.getSettings('general');
       if (mirror != null) return mirror;
     } catch (_) {}
-    return {};
+    // 2) Master Supabase (no Firestore quota)
+    try {
+      final rows = await MasterSupabaseService.read('settings', query: 'key=eq.general');
+      if (rows.isNotEmpty) {
+        final value = rows.first['value'];
+        if (value is Map) return Map<String, dynamic>.from(value);
+      }
+    } catch (_) {}
+    // 3) Firestore fallback
+    final snap = await firestore.collection('settings').doc('general').get();
+    return snap.data() ?? {};
   }
 
   static Future<void> updateSetting(String key, dynamic value) async {
@@ -2600,13 +2751,18 @@ class FirebaseService {
   static Future<String?> createConversation(String title) async {
     final uid = currentUser?.uid;
     if (uid == null) return null;
-    final docId = 'conv_${DateTime.now().millisecondsSinceEpoch}';
-    await _mirrorWrite('conversations', docId, {
+    final id = await MasterSupabaseService.insert('conversations', {
+      'uid': uid,
+      'title': title,
+      'updated_at': DateTime.now().toIso8601String(),
+      'created_at': DateTime.now().toIso8601String(),
+    });
+    await _mirrorWrite('conversations', id ?? '', {
       'uid': uid,
       'title': title,
       'updatedAt': DateTime.now().toIso8601String(),
     });
-    return docId;
+    return id;
   }
 
   static Future<List<Map<String, dynamic>>> getConversations() async {
@@ -2616,14 +2772,33 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getConversations(uid);
       if (mirror != null) return mirror;
     } catch (_) {}
-    return [];
+    try {
+      final rows = await MasterSupabaseService.read('conversations', query: 'uid=eq.$uid&order=updated_at.desc');
+      if (rows.isNotEmpty) return rows;
+    } catch (_) {}
+    final snap = await firestore
+        .collection('users')
+        .doc(uid)
+        .collection('conversations')
+        .orderBy('updatedAt', descending: true)
+        .get();
+    return snap.docs.map((e) => {'id': e.id, ...e.data()}).toList();
   }
 
   static Future<void> addMessage(String convId, String role, String content) async {
     final uid = currentUser?.uid;
     if (uid == null) return;
-    final msgId = 'msg_${DateTime.now().millisecondsSinceEpoch}';
-    await _mirrorWrite('messages', msgId, {
+    final msgId = await MasterSupabaseService.insert('messages', {
+      'conversation_id': convId,
+      'uid': uid,
+      'role': role,
+      'content': content,
+      'timestamp': DateTime.now().toIso8601String(),
+    });
+    await MasterSupabaseService.update('conversations', convId, {
+      'updated_at': DateTime.now().toIso8601String(),
+    });
+    await _mirrorWrite('messages', msgId ?? '', {
       'conversationId': convId,
       'uid': uid,
       'role': role,
@@ -2643,13 +2818,26 @@ class FirebaseService {
       final mirror = await SupabaseReadService.getMessages(convId);
       if (mirror != null) return mirror;
     } catch (_) {}
-    return [];
+    try {
+      final rows = await MasterSupabaseService.read('messages', query: 'conversation_id=eq.$convId&order=timestamp.asc');
+      if (rows.isNotEmpty) return rows;
+    } catch (_) {}
+    final snap = await firestore
+        .collection('users')
+        .doc(uid)
+        .collection('conversations')
+        .doc(convId)
+        .collection('messages')
+        .orderBy('timestamp', descending: false)
+        .get();
+    return snap.docs.map((e) => {'id': e.id, ...e.data()}).toList();
   }
 
   static Future<void> deleteConversation(String convId) async {
     final uid = currentUser?.uid;
     if (uid == null) return;
-    await _mirrorWrite('conversations', convId, {}, delete: true);
+    await MasterSupabaseService.deleteWhere('messages', field: 'conversation_id', value: convId);
+    await MasterSupabaseService.delete('conversations', convId);
   }
 
   // ─── App Updates ───────────────────────────────────────────────────────────────
@@ -2659,6 +2847,31 @@ class FirebaseService {
 
   static Stream<QuerySnapshot> getAppUpdates() {
     return SupabaseReadService.streamAppUpdates().map((rows) => _MirrorQuerySnapshot(rows));
+  }
+
+  static Future<bool> getUserAutoDownload() async {
+    final user = FirebaseService.currentUser;
+    if (user == null) return true;
+    try {
+      final row = await MasterSupabaseService.readSingle('users', field: 'auth_id', value: user.uid);
+      if (row != null) return row['auto_download'] as bool? ?? false;
+    } catch (_) {}
+    final doc = await FirebaseService.firestore.collection('users').doc(user.uid).get();
+    final data = doc.data();
+    return data?['autoDownload'] as bool? ?? false;
+  }
+
+  static Future<void> updateUserAutoDownload(bool value) async {
+    final user = FirebaseService.currentUser;
+    if (user == null) return;
+    try {
+      final rows = await MasterSupabaseService.read('users', query: 'auth_id=eq.${user.uid}');
+      if (rows.isNotEmpty) {
+        await MasterSupabaseService.update('users', rows.first['id'] as String, {'auto_download': value});
+        return;
+      }
+    } catch (_) {}
+    await FirebaseService.firestore.collection('users').doc(user.uid).update({'autoDownload': value});
   }
 
   static Stream<QuerySnapshot> getLoginHistory(String uid) {

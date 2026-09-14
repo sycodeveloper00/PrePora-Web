@@ -454,12 +454,12 @@ class _LinkWebScreenState extends State<LinkWebScreen> {
     _supabasePollSub = Timer.periodic(const Duration(seconds: 8), (_) async {
       if (_sessionId.isEmpty || _status != 'connected') return;
       try {
-        final res = await http.get(
-          Uri.parse('https://brqdxhqrsfxlvwgstuto.supabase.co/rest/v1/web_sessions?id=eq.$_sessionId&select=status'),
-          headers: {
-            'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJycWR4aHFyc2Z4bHZ3Z3N0dXRvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcxNTY4MzMsImV4cCI6MjAxMjczMjgzM30.qxGfLBm2gTxFHJk2mFPJGiBCxHX0Z0mN_fKzJR6bJuI',
-          },
-        ).timeout(const Duration(seconds: 5));
+          final res = await http.get(
+            Uri.parse('https://brqdxhqrsfxlvwgstuto.supabase.co/rest/v1/web_sessions?id=eq.$_sessionId&select=status'),
+            headers: {
+              'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJycWR4aHFyc2Z4bHZ3Z3N0dXRvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE1NjgzMywiZXhwIjoyMTAyNzMyODMzfQ.gPkiuNGYAP_pJR1uSbAQWc25SyhmpwwgspJeFInXgWE',
+            },
+          ).timeout(const Duration(seconds: 5));
         if (res.statusCode == 200) {
           final rows = json.decode(res.body) as List<dynamic>;
           if (rows.isEmpty || (rows.isNotEmpty && (rows[0]['status'] as String?) == 'disconnected')) {
@@ -1002,7 +1002,7 @@ class _LinkedWebSession {
         final res = await http.get(
           Uri.parse('https://brqdxhqrsfxlvwgstuto.supabase.co/rest/v1/web_sessions?id=eq.$_sessionId&select=status'),
           headers: {
-            'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJycWR4aHFyc2Z4bHZ3Z3N0dXRvIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODcxNTY4MzMsImV4cCI6MjAxMjczMjgzM30.qxGfLBm2gTxFHJk2mFPJGiBCxHX0Z0mN_fKzJR6bJuI',
+            'apikey': 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJycWR4aHFyc2Z4bHZ3Z3N0dXRvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE1NjgzMywiZXhwIjoyMTAyNzMyODMzfQ.gPkiuNGYAP_pJR1uSbAQWc25SyhmpwwgspJeFInXgWE',
           },
         ).timeout(const Duration(seconds: 5));
         if (res.statusCode == 200) {
@@ -1019,8 +1019,10 @@ class _LinkedWebSession {
   void _fireDisconnect() {
     if (_fired) return;
     _fired = true;
+    // Save handler BEFORE stopMonitoring() nulls it out
+    final handler = _onDisconnected;
     stopMonitoring();
-    _onDisconnected?.call();
+    handler?.call();
   }
 
   void stopMonitoring() {
