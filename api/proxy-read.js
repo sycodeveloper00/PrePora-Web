@@ -10,6 +10,20 @@ const MASTER = {
   serviceKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InliaXZpeW11eHVidmxvcWpuZ2Z1Iiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4OTM3MjQzOSwiZXhwIjoyMTA0OTQ4NDM5fQ.kIoWInC-ZDNsPx6xpCACO0ee2Kfer7jMBRCtAQv_8gQ',
 };
 
+// In-memory response cache — persists across requests within same Vercel function instance
+const CACHE = new Map();
+const CACHE_TTL = 15000; // 15 seconds
+function getCached(key) {
+  const entry = CACHE.get(key);
+  if (!entry) return null;
+  if (Date.now() > entry.exp) { CACHE.delete(key); return null; }
+  return entry.data;
+}
+function setCache(key, data) {
+  if (CACHE.size > 500) CACHE.clear(); // prevent memory leak
+  CACHE.set(key, { data, exp: Date.now() + CACHE_TTL });
+}
+
 // Storage projects — folders, contents, share_links (keys NEVER exposed to client)
 const PROJECTS = [
   { name: 'Primary 2',  role: 'primary',  url: 'https://brqdxhqrsfxlvwgstuto.supabase.co', serviceKey: 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJycWR4aHFyc2Z4bHZ3Z3N0dXRvIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4NzE1NjgzMywiZXhwIjoyMTAyNzMyODMzfQ.gPkiuNGYAP_pJR1uSbAQWc25SyhmpwwgspJeFInXgWE' },
@@ -51,6 +65,10 @@ module.exports = async (req, res) => {
 
     // Route to Master Supabase
     if (target === 'master') {
+      const cacheKey = `master:${table}:${query || ''}`;
+      const cached = getCached(cacheKey);
+      if (cached) return res.status(200).json(cached);
+
       let q = query || '';
       if (!q.includes('limit=')) q += q ? '&limit=5000' : 'limit=5000';
       const url = `${MASTER.url}/rest/v1/${table}?${q}`;
@@ -65,7 +83,9 @@ module.exports = async (req, res) => {
         clearTimeout(timer);
         if (r.status === 200 || r.status === 206) {
           const rows = await r.json();
-          return res.status(200).json({ data: rows, project: MASTER.name, index: 0 });
+          const resp = { data: rows, project: MASTER.name, index: 0 };
+          setCache(cacheKey, resp);
+          return res.status(200).json(resp);
         }
         return res.status(200).json({ data: [], project: MASTER.name, index: 0 });
       } catch (e) {
@@ -76,11 +96,15 @@ module.exports = async (req, res) => {
 
     // Storage projects — failover chain
     const startIdx = typeof startIndex === 'number' ? startIndex : 0;
-    const timeout = 5000;
+    const timeout = 3000; // reduced from 5s to 3s
 
     for (let attempt = 0; attempt < PROJECTS.length; attempt++) {
       const idx = (startIdx + attempt) % PROJECTS.length;
       const p = PROJECTS[idx];
+
+      const cacheKey = `${idx}:${table}:${query || ''}`;
+      const cached = getCached(cacheKey);
+      if (cached) return res.status(200).json({ ...cached, project: p.name, index: idx });
 
       try {
         let q = query || '';
@@ -105,11 +129,9 @@ module.exports = async (req, res) => {
 
         if (r.status === 200 || r.status === 206) {
           const rows = await r.json();
-          return res.status(200).json({
-            data: rows,
-            project: p.name,
-            index: idx,
-          });
+          const resp = { data: rows, project: p.name, index: idx };
+          setCache(cacheKey, resp);
+          return res.status(200).json(resp);
         }
       } catch (_) {
         continue;
