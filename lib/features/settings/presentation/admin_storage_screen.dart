@@ -607,15 +607,12 @@ class _AdminStorageScreenState extends State<AdminStorageScreen> {
               final verifyResult = await FirebaseService.verifySupabaseCredentials(urlCtrl.text.trim(), serviceKeyCtrl.text.trim());
               if (verifyResult['valid'] == true) {
                 await FirebaseService.addSupabaseAccount(
-                  urlCtrl.text.trim(), 
-                  serviceKeyCtrl.text.trim(), 
-                  anonKeyCtrl.text.trim(), 
-                  isActive: false,
-                  storageLimitMB: storageLimit,
-                  autoSwitchEnabled: autoSwitchEnabled,
-                  name: nameCtrl.text.trim(),
-                  email: emailCtrl.text.trim(),
-                  projectName: projectCtrl.text.trim(),
+                   urlCtrl.text.trim(), 
+                   serviceKeyCtrl.text.trim(), 
+                   anonKeyCtrl.text.trim(), 
+                   isActive: false,
+                   storageLimitMB: storageLimit,
+                   autoSwitchEnabled: autoSwitchEnabled,
                 );
                 try {
                   await FirebaseService.getStorageUsage(urlCtrl.text.trim(), serviceKeyCtrl.text.trim());
@@ -644,9 +641,6 @@ class _AdminStorageScreenState extends State<AdminStorageScreen> {
                 isActive: false,
                 storageLimitMB: storageLimit,
                 autoSwitchEnabled: autoSwitchEnabled,
-                name: nameCtrl.text.trim(),
-                email: emailCtrl.text.trim(),
-                projectName: projectCtrl.text.trim(),
               );
               await FirebaseService.reinitializeSupabase();
               if (d.mounted) Navigator.pop(d);
@@ -715,9 +709,6 @@ class _AdminStorageScreenState extends State<AdminStorageScreen> {
               anonKey: anonKeyCtrl.text.trim(),
               storageLimitMB: storageLimit,
               autoSwitchEnabled: autoSwitchEnabled,
-              name: nameCtrl.text.trim(),
-              email: emailCtrl.text.trim(),
-              projectName: projectCtrl.text.trim(),
             );
             if (acc['isActive'] == true) await FirebaseService.reinitializeSupabase();
             if (d.mounted) Navigator.pop(d); _load();

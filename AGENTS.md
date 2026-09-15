@@ -8,11 +8,11 @@ PrePora is a study platform with AI tutoring, note management, PDF viewing, and 
 
 ## Deployment
 - **Web:** Vercel `prepora-web.vercel.app` (Flutter build + `/api` serverless functions)
-- **Admin:** Cloudflare Pages `admin-prepora.pages.dev`
+- **Admin:** Cloudflare Pages `admin-prepora.pages.dev` + Surge `admin-prepora.surge.sh`
 - **Password Reset:** Vercel `prepora-passwordreset` (standalone HTML)
-- Deploy Vercel: `flutter build web` → `Remove-Item -Recurse -Force build\web\api -ErrorAction SilentlyContinue` → `Copy-Item -Path api -Destination build\web\api -Recurse -Force` → `cd build\web` → `vercel --prod --yes`
-- **CRITICAL:** Always remove `build\web\api` before copying. Otherwise `Copy-Item` nests `api` inside itself creating `api\api\` (18 functions instead of 9 → exceeds Hobby plan 12-function limit)
-- `.vercel/project.json` must be copied to `build\web\.vercel\` after `flutter clean`
+- **FOP:** Vercel `prepora-web-fop.vercel.app` (blocked — shows 404 page)
+- Deploy Vercel (main): `flutter build web` → copy api → `cd build\web` → `vercel --prod --yes`
+- Deploy Vercel (FOP): copy `project_fop.json` to `build\web\.vercel\project.json` → `vercel --prod --yes --token=$VERCEL_TOKEN`
 - Deploy Cloudflare: `npx wrangler pages deploy "build\web" --project-name=admin-prepora --branch=main --commit-dirty=true` (set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` env vars before running)
 
 ## Domain-Based Routing (Web)
