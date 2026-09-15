@@ -87,7 +87,7 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
                         else
                           ...List.generate(_keys.length, (i) {
                             final k = _keys[i];
-                            final isActive = k['isActive'] as bool? ?? false;
+                            final isActive = k['is_active'] as bool? ?? false;
                             return _keyTile(
                               k: k, isActive: isActive,
                               textColor: textColor, hintColor: hintColor, isDark: isDark,
@@ -95,7 +95,7 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
                                 if (isActive) return;
                                 setState(() {
                                   for (final x in _keys) {
-                                    x['isActive'] = (x['id'] == k['id']);
+                                    x['is_active'] = (x['id'] == k['id']);
                                   }
                                 });
                                 try {
@@ -265,7 +265,7 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
     }
     final baseUrl = k['baseUrl'] as String? ?? '';
     final provider = k['provider'] as String? ?? 'openai';
-    final isActive = k['isActive'] as bool? ?? false;
+    final isActive = k['is_active'] as bool? ?? false;
 
     showDialog(
       context: context,
@@ -585,8 +585,8 @@ class _AiApiKeysScreenState extends State<AiApiKeysScreen> {
     final dimColor = isDark ? Colors.white38 : Colors.black54;
     final bgColor = isDark ? const Color(0xFF1A0533) : Colors.white;
     final name = k['name'] as String? ?? 'this key';
-    final isActive = k['isActive'] as bool? ?? false;
-    final activeCount = _keys.where((x) => x['isActive'] == true).length;
+    final isActive = k['is_active'] as bool? ?? false;
+    final activeCount = _keys.where((x) => x['is_active'] == true).length;
     if (isActive && activeCount <= 1) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Cannot delete the only active key. Add another first.'), backgroundColor: Colors.orange));
       return;
