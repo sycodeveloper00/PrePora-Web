@@ -41,6 +41,66 @@ import '../../features/deep_link/presentation/short_link_resolver.dart' deferred
 
 enum WebDomain { preporaWeb, adminPrepora, assistantPrepora, preporaWebFop, unknown }
 
+/// Browser-style 404 page — looks like Chrome's "This site can't be reached"
+class _NotFoundPage extends StatelessWidget {
+  const _NotFoundPage();
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      debugShowCheckedModeBanner: false,
+      home: Scaffold(
+        body: Container(
+          color: Colors.white,
+          padding: const EdgeInsets.symmetric(horizontal: 50, vertical: 80),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'This site can\'t be reached',
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.normal, color: Color(0xFF202124)),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                '${Uri.base.host} refused to connect.',
+                style: const TextStyle(fontSize: 16, color: Color(0xFF202124)),
+              ),
+              const SizedBox(height: 30),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('ERR_CONNECTION_REFUSED', style: TextStyle(fontSize: 14, color: Color(0xFF5F6368))),
+                  const SizedBox(width: 40),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        _buildSuggestion('Try: Checking the connection'),
+                        _buildSuggestion('Checking the proxy and the firewall'),
+                        const SizedBox(height: 20),
+                        const Text(
+                          'HTTP ERROR 404',
+                          style: TextStyle(fontSize: 14, color: Color(0xFF5F6368)),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  static Widget _buildSuggestion(String text) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Text(text, style: const TextStyle(fontSize: 14, color: Color(0xFF5F6368))),
+    );
+  }
+}
+
 /// Wraps a deferred-loaded widget with a loading placeholder while the library loads.
 class _DeferredRoute extends StatefulWidget {
   final Future<void> Function() loadLibrary;
@@ -170,31 +230,8 @@ class AuthGuard {
     }
 
     if (_currentDomain == WebDomain.preporaWebFop) {
-      if (path == '/auth/login' || path == '/auth/forgot-password' || path == '/auth/reset-password') return null;
-
-      try {
-        final user = FirebaseService.currentUser;
-        if (user == null) return '/auth/login';
-
-        final email = user.email?.toLowerCase() ?? '';
-        var allowedEmails = FirebaseService.cachedFopEmails;
-        // If cache is empty, load with timeout to avoid race condition on cold start
-        if (allowedEmails.isEmpty) {
-          try {
-            allowedEmails = await FirebaseService.getFopAllowedEmails()
-                .timeout(const Duration(seconds: 5));
-          } catch (_) {}
-        }
-        // Only block if we have a loaded list AND email is not in it
-        // If cache is still empty, allow access (user was verified at login)
-        if (allowedEmails.isNotEmpty && !allowedEmails.contains(email)) {
-          FirebaseService.signOut();
-          return '/auth/login';
-        }
-      } catch (_) {
-        return '/auth/login';
-      }
-      return null;
+      if (path == '/404') return null;
+      return '/404';
     }
 
     if (path == '/link-web' || path == '/splash' || path == '/auth/login' || path == '/auth/signup' || path == '/auth/forgot-password' || path == '/auth/reset-password' || path == '/terms' || path.startsWith('/s/')) return null;
@@ -231,6 +268,7 @@ class AppRouter {
     initialLocation: _initialLocation,
     redirect: AuthGuard.guard,
     routes: <RouteBase>[
+      GoRoute(path: '/404', builder: (c, s) => const _NotFoundPage()),
       GoRoute(path: '/splash', builder: (c, s) => const SplashScreen()),
       GoRoute(path: '/link-web', builder: (c, s) => const LinkWebScreen()),
       GoRoute(path: '/auth/login', builder: (c, s) => const LoginScreen()),
